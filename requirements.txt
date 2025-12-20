@@ -1,0 +1,8 @@
+tushare==1.2.61
+flask==2.3.3
+flask-cors==4.0.0
+pandas==2.0.3
+numpy==1.24.3
+duckdb==1.1.2
+jieba==0.42.1
+snownlp==0.12.3

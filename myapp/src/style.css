@@ -1,0 +1,302 @@
+/* 移除所有 Vite 默认样式，替换为你项目需要的样式 */
+/* 你 index.html 中的 <style> 标签内容 */
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background-color: #0b0e14;
+  color: #e2e8f0;
+  margin: 0;
+  padding: 0;
+}
+
+/* 全局滚动条样式 - 深色模式美化 */
+/* Webkit 浏览器 (Chrome, Safari, Edge) 专用 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+/* Firefox 滚动条样式 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
+}
+
+.nav-link {
+  transition: all 0.2s ease;
+}
+
+.nav-link:hover {
+  background-color: rgba(26, 86, 219, 0.1);
+}
+
+.nav-link.active {
+  background-color: rgba(26, 86, 219, 0.1);
+  border-left: 3px solid #1a56db;
+}
+
+.card {
+  transition: all 0.3s ease;
+}
+
+.card:hover {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+.metric-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.positive {
+  color: #10b981;
+}
+
+.negative {
+  color: #ef4444;
+}
+
+.chart-container {
+  position: relative;
+  height: 300px;
+  width: 100%;
+}
+
+.loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
+
+.spinner {
+  border: 4px solid rgba(0, 0, 0, 0.1);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border-left-color: #1a56db;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+      transform: rotate(0deg);
+  }
+  100% {
+      transform: rotate(360deg);
+  }
+}
+
+.table-container {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.table-header {
+  position: sticky;
+  top: 0;
+  background-color: #f1f5f9;
+  z-index: 1;
+}
+
+.heatmap-cell {
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.heatmap-cell:hover {
+  transform: scale(1.1);
+  z-index: 2;
+  box-shadow: 0 0 0 2px rgba(26, 86, 219, 0.5);
+}
+
+/* 模态框样式 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.3s ease;
+}
+
+.modal-overlay.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+.modal {
+  background-color: white;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 1200px;
+  max-height: 90vh;
+  overflow-y: auto;
+  transform: translateY(-20px);
+  transition: all 0.3s ease;
+}
+
+.modal-overlay.active .modal {
+  transform: translateY(0);
+}
+
+.modal-header {
+  padding: 16px 24px;
+  border-bottom: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #94a3b8;
+  transition: color 0.2s ease;
+}
+
+.modal-close:hover {
+  color: #ef4444;
+}
+
+.modal-body {
+  padding: 24px;
+}
+
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.modal-btn {
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.modal-btn-primary {
+  background-color: #1a56db;
+  color: white;
+  border: none;
+}
+
+.modal-btn-primary:hover {
+  background-color: #1e40af;
+}
+
+.modal-btn-secondary {
+  background-color: #f1f5f9;
+  color: #1e293b;
+  border: none;
+}
+
+.modal-btn-secondary:hover {
+  background-color: #e2e8f0;
+}
+
+/* K线图容器 */
+.candlestick-container {
+  position: relative;
+  height: 400px;
+  width: 100%;
+  margin-bottom: 24px;
+}
+
+/* 持有周期信息 */
+.holding-period-info {
+  background-color: #f8fafc;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.holding-period-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 8px;
+}
+
+.holding-period-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.holding-period-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.holding-period-label {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.holding-period-value {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1e293b;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  .sidebar {
+      width: 0;
+      position: fixed;
+      z-index: 50;
+      overflow-x: hidden;
+      transition: 0.5s;
+  }
+  
+  .sidebar.open {
+      width: 250px;
+  }
+  
+  .main-content {
+      margin-left: 0;
+  }
+  
+  .candlestick-container {
+      height: 300px;
+  }
+}

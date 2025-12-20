@@ -1,0 +1,777 @@
+# backtest/optimized_backtest_engine.py
+"""
+优化的回测引擎
+
+CHANGED: 修复价格复权逻辑，使用全库最新因子作为基准
+
+主要功能：
+1. run_backtest_streaming: 流式回测生成器（支持实时输出）
+2. execute_trades: 执行交易逻辑（买入/卖出）
+3. _calculate_metrics_from_df: 计算回测指标
+
+性能优化：
+- 数据预加载机制（减少数据库 I/O）
+- 向量化价格映射生成
+- 优化的错误处理和重试机制
+- 【修复】正确的前复权计算逻辑：Raw * (CurrentFactor / GlobalLatestFactor)
+"""
+import pandas as pd
+try:
+    import cupy as np
+except ImportError:
+    import numpy as np
+from tqdm import tqdm
+from utils.config import Config
+import asyncio
+from typing import AsyncGenerator, Dict, Any, Generator, Tuple, List, Optional
+from threading import Event
+import time
+import os
+
+
+class OptimizedBacktestEngine:
+    def __init__(self, data_query, initial_capital=None):
+        self.data_query = data_query
+        self.initial_capital = initial_capital or Config.INITIAL_CAPITAL
+        self.commission_rate = Config.COMMISSION_RATE
+        self._portfolio_value_cache = {}
+        self.latest_factors = {}  # 存储回测结束时的最新复权因子
+        
+
+    def _validate_dates(self, start_date, end_date) -> Tuple[str, str]:
+        """(新) 辅助函数：确保日期是字符串"""
+        start_date_str = start_date
+        end_date_str = end_date
+        if isinstance(start_date, pd.Timestamp):
+            start_date_str = start_date.strftime('%Y-%m-%d')
+        if isinstance(end_date, pd.Timestamp):
+            end_date_str = end_date.strftime('%Y-%m-%d')
+        return start_date_str, end_date_str
+
+    def _apply_qfq(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        【修复核心】计算前复权价格
+        公式：前复权价 = 不复权价 * (当日因子 / 最新因子)
+        """
+        if df is None or df.empty:
+            return df
+        
+        # 必须包含 adj_factor 才能计算
+        if 'adj_factor' not in df.columns:
+            return df
+            
+        df = df.copy()
+        
+        # 1. 获取最新因子
+        # 如果没有 self.latest_factors (未初始化)，则无法进行标准 QFQ，回退到使用原始价格或 Post-adj?
+        # 这里的策略是：如果找不到最新因子，就假设 最新因子 = 当日因子 (即 Ratio = 1)，保持原始价格
+        if not self.latest_factors:
+            return df
+
+        # 2. 映射最新因子
+        # map 可能会产生 NaN (如果该股票在 latest_factors 中不存在，例如已退市)
+        latest_factor_series = df['stock_code'].map(self.latest_factors)
+        
+        # 3. 处理缺失的最新因子
+        # 如果缺失，用当日因子填充 -> Ratio = 1 -> 使用不复权价格
+        # 这比使用 1.0 填充更安全，因为因子大小不一
+        latest_factor_series.fillna(df['adj_factor'], inplace=True)
+        
+        # 4. 防止除以零
+        latest_factor_series.replace(0, 1.0, inplace=True)
+        
+        # 5. 计算前复权比率
+        qfq_ratio = df['adj_factor'] / latest_factor_series
+        
+        # 6. 应用比率到价格列
+        price_cols = ['open', 'high', 'low', 'close', 'prev_close']
+        for col in price_cols:
+            if col in df.columns:
+                df[col] = df[col] * qfq_ratio
+                
+        return df
+
+    def _load_latest_factors_robust(self):
+        """
+        ???????????????
+        ???????"???????????"??????????/?????????????
+        """
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        
+        try:
+            conn = getattr(self.data_query, "conn", None)
+            if conn is None:
+                logger.warning("?? ??????????????????")
+                return {}
+
+            # 1) ??????????????
+            latest_rows = conn.execute(
+                """
+                SELECT sd.stock_code, sd.adj_factor
+                FROM stock_daily sd
+                INNER JOIN (
+                    SELECT stock_code, MAX(trade_date) AS max_date
+                    FROM stock_daily
+                    GROUP BY stock_code
+                ) latest
+                ON sd.stock_code = latest.stock_code AND sd.trade_date = latest.max_date
+                WHERE sd.adj_factor IS NOT NULL
+                """
+            ).fetchall()
+
+            factors: Dict[str, float] = {}
+            for code, factor in latest_rows:
+                try:
+                    factors[str(code)] = float(factor)
+                except (TypeError, ValueError):
+                    continue
+
+            if factors:
+                logger.info(f"? ??? {len(factors)} ?????????????????")
+                return factors
+
+            # 2) ??????????????????????
+            latest_date_query = "SELECT MAX(trade_date) FROM stock_daily"
+            cursor = conn.execute(latest_date_query)
+            latest_date_row = cursor.fetchone()
+            latest_date = latest_date_row[0] if latest_date_row else None
+            
+            if not latest_date:
+                logger.warning("?? ????????????????????")
+                return {}
+            
+            logger.warning("?? ????????????????????????")
+            fallback_rows = conn.execute(
+                "SELECT stock_code, adj_factor FROM stock_daily WHERE trade_date = ?",
+                (latest_date,)
+            ).fetchall()
+            
+            for code, factor in fallback_rows:
+                if factor is not None:
+                    factors[str(code)] = float(factor)
+            
+            logger.info(f"? ?????? {len(factors)} ???????")
+            return factors
+            
+        except Exception as e:
+            logger.error(f"? ??????????: {e}")
+            return {}
+
+# --- 【【第2步 新增】】: 真·流式回测函数 ---
+    def run_backtest_streaming(self, start_date, end_date, strategy, stop_event: Optional[Event] = None) -> Generator[Dict[str, Any], None, None]:
+        """
+        CHANGED: 真·流式回测生成器（优化版本）
+        """
+        from utils.logger import get_logger
+        
+        logger = get_logger(__name__)
+        logger.info(f"开始【流式】回测: {start_date} 到 {end_date}")
+        
+        # CHANGED: 输入验证
+        start_date_str, end_date_str = self._validate_dates(start_date, end_date)
+        
+        # CHANGED: 验证日期顺序
+        if start_date_str > end_date_str:
+            error_msg = f"开始日期 ({start_date_str}) 不能晚于结束日期 ({end_date_str})"
+            logger.error(error_msg)
+            yield {"type": "error", "data": {"message": error_msg}}
+            return
+        
+        # 1. 获取数据库全局交易日范围，并根据需要调整起止日期
+        try:
+            all_dates = self.data_query.get_trading_dates()
+        except Exception as e:
+            logger.error(f"获取全局交易日期失败: {e}")
+            yield {"type": "error", "data": {"message": f"获取交易日期失败: {e}"}}
+            return
+
+        if not all_dates:
+            error_msg = "数据库中没有交易日数据。请先导入股票数据到数据库。"
+            logger.error(error_msg)
+            yield {"type": "error", "data": {"message": error_msg}}
+            return
+
+        db_start, db_end = all_dates[0], all_dates[-1]
+
+        # 情况 1：请求区间完全在数据库范围之外（晚于或早于全部数据），直接报错
+        if start_date_str > db_end:
+            error_msg = (
+                f"请求区间（{start_date_str} 到 {end_date_str}）晚于数据库最后日期 {db_end}，"
+                f"请先导入更新的数据，或选择不晚于 {db_end} 的时间段。"
+            )
+            logger.warning(error_msg)
+            yield {"type": "error", "data": {"message": error_msg}}
+            return
+        if end_date_str < db_start:
+            error_msg = (
+                f"请求区间（{start_date_str} 到 {end_date_str}）早于数据库最早日期 {db_start}，"
+                f"请先导入更早的数据，或选择不早于 {db_start} 的时间段。"
+            )
+            logger.warning(error_msg)
+            yield {"type": "error", "data": {"message": error_msg}}
+            return
+
+        # 情况 2：有交集，但一侧越界 -> 自动夹在数据库范围内
+        original_start, original_end = start_date_str, end_date_str
+        if start_date_str < db_start:
+            start_date_str = db_start
+        if end_date_str > db_end:
+            end_date_str = db_end
+
+        if (original_start, original_end) != (start_date_str, end_date_str):
+            logger.warning(
+                f"请求区间 {original_start}~{original_end} 超出数据库范围，"
+                f"已自动调整为 {start_date_str}~{end_date_str} 再进行回测。"
+            )
+
+        # 2. 获取实际用于回测的交易日期
+        try:
+            trading_dates = self.data_query.get_trading_dates(start_date_str, end_date_str)
+        except Exception as e:
+            logger.error(f"获取交易日期失败: {e}")
+            yield {"type": "error", "data": {"message": f"获取交易日期失败: {e}"}}
+            return
+
+        if not trading_dates:
+            error_msg = (
+                f"在自动调整后的区间（{start_date_str} 到 {end_date_str}）内仍未找到交易日数据，"
+                f"请检查数据库是否已正确导入行情。"
+            )
+            logger.error(error_msg)
+            yield {"type": "error", "data": {"message": error_msg}}
+            return
+        
+        logger.info(f"回测期间共 {len(trading_dates)} 个交易日")
+
+        # 【核心修复】使用鲁棒方法获取全库最新的复权因子
+        self.latest_factors = self._load_latest_factors_robust()
+        
+        if not self.latest_factors:
+            logger.warning("⚠️ 警告：未能加载基准因子，将回退到使用原始价格（不复权）")
+
+        # CHANGED: 预加载回测数据（可选优化）
+        max_preload_days = int(os.getenv("MAX_PRELOAD_DAYS", "600"))
+        use_preload = (
+            os.getenv("DISABLE_PRELOAD", "0") != "1"
+            and len(trading_dates) <= max_preload_days
+        )
+        if use_preload:
+            try:
+                logger.info("开始预加载回测数据...")
+                self.data_query.preload_backtest_data(start_date_str, end_date_str)
+                logger.info("数据预加载完成")
+            except Exception as e:
+                logger.warning(f"数据预加载失败，将使用逐日查询: {e}")
+                use_preload = False
+
+        # 2. 初始化账户
+        portfolio = {}
+        cash = self.initial_capital
+        results_list = []
+        all_trades_log = []
+        
+        # 3. 【产出】开始信号
+        yield {
+            "type": "backtest_start",
+            "data": {"initialCapital": self.initial_capital}
+        }
+        
+        # 4. 【【真·流式循环】】
+        for idx, current_date in enumerate(tqdm(trading_dates, desc="流式回测进度"), 1):
+            if stop_event and stop_event.is_set():
+                logger.warning("⚠️ 收到停止信号，结束流式回测。")
+                return
+            
+            try:
+                day_start = time.time()
+
+                # 4a. 获取当日股票池
+                t0 = time.time()
+                if use_preload:
+                    stock_pool = self.data_query.get_stock_pool_from_preloaded(current_date)
+                    if stock_pool is None:
+                        stock_pool = self.data_query.get_stock_pool(current_date)
+                else:
+                    stock_pool = self.data_query.get_stock_pool(current_date)
+                
+                if stock_pool is not None and not stock_pool.empty:
+                    # 验证 adj_factor
+                    if 'adj_factor' in stock_pool.columns:
+                        # 【核心修复】应用正确的前复权逻辑
+                        stock_pool = self._apply_qfq(stock_pool)
+                    else:
+                        logger.warning(f"{current_date}: stock_pool 中缺少 adj_factor 列，无法进行复权转换")
+                
+                t_db = time.time() - t0
+
+                # 设置策略运行时上下文
+                if hasattr(strategy, "set_runtime_context"):
+                    strategy.set_runtime_context(current_date, portfolio, cash)
+
+                # 4b. 生成信号
+                t1 = time.time()
+                try:
+                    signals = strategy.generate_signals(current_date, stock_pool, self.data_query)
+                except Exception as e:
+                    logger.error(f"策略信号生成失败 ({current_date}): {e}")
+                    signals = {}
+                t_sig = time.time() - t1
+
+                # 4c. 准备价格（向量化 + 避免逐行 iterrows）
+                # 注意：stock_pool 已经是前复权价格
+                t2 = time.time()
+                price_map: Dict[str, Dict[str, float]] = {}
+                stock_codes_needed = set(signals.keys()) | set(portfolio.keys())
+                if stock_codes_needed and stock_pool is not None and not stock_pool.empty:
+                    mask = stock_pool['stock_code'].isin(stock_codes_needed)
+                    if mask.any():
+                        cols = ['stock_code']
+                        if 'open' in stock_pool.columns:
+                            cols.append('open')
+                        if 'close' in stock_pool.columns:
+                            cols.append('close')
+                        
+                        price_df = stock_pool.loc[mask, cols].drop_duplicates(subset=['stock_code'])
+                        
+                        codes = price_df['stock_code'].to_numpy()
+                        opens = price_df['open'].to_numpy() if 'open' in price_df.columns else None
+                        closes = price_df['close'].to_numpy() if 'close' in price_df.columns else None
+
+                        for i, code in enumerate(codes):
+                            o = opens[i] if opens is not None else None
+                            c = closes[i] if closes is not None else None
+                            if o is None: o = c
+                            if c is None: c = o
+                            price_map[str(code)] = {
+                                'open': float(o) if o is not None else None,
+                                'close': float(c) if c is not None else None,
+                            }
+                t_price = time.time() - t2
+
+                # 4d. 执行交易
+                t3 = time.time()
+                try:
+                    portfolio, cash, daily_trades = self.execute_trades(
+                        current_date, signals, portfolio, cash, price_map, strategy
+                    )
+                except Exception as e:
+                    logger.error(f"执行交易失败 ({current_date}): {e}")
+                    daily_trades = []
+                t_exec = time.time() - t3
+
+                # 记录单日耗时拆分，方便分析瓶颈
+                day_total = time.time() - day_start
+                pool_rows = 0 if stock_pool is None else len(stock_pool)
+                logger.info(
+                    f"[BT][PROFILE] {current_date} "
+                    f"pool={pool_rows} rows, "
+                    f"db+qfq={t_db*1000:.1f}ms, "
+                    f"signal={t_sig*1000:.1f}ms, "
+                    f"price_map={t_price*1000:.1f}ms, "
+                    f"exec_trades={t_exec*1000:.1f}ms, "
+                    f"total={day_total*1000:.1f}ms"
+                )
+                
+                # 4e. 【产出】交易
+                if daily_trades:
+                    all_trades_log.extend(daily_trades)
+                    for trade in daily_trades:
+                        yield {"type": "new_trade_engine", "data": trade}
+                
+                # 4f. 计算当日市值
+                portfolio_value = 0
+                if portfolio:
+                    def get_position_price(code, action='sell'):
+                        price_data = price_map.get(code)
+                        if price_data is None:
+                            return position.get('entry_price')
+                        if isinstance(price_data, dict):
+                            # 简单策略：优先 close
+                            return price_data.get('close') or price_data.get('open')
+                        return price_data
+
+                    for stock_code, position in portfolio.items():
+                        current_price = get_position_price(stock_code, 'sell')
+                        if current_price is None:
+                            current_price = position.get('entry_price', 0)
+                        shares = position.get('shares', 0)
+                        try:
+                            portfolio_value += shares * current_price
+                        except TypeError:
+                            continue
+
+                total_value = portfolio_value + cash
+                
+                # 4g. 记录结果
+                results_list.append({
+                    'date': current_date,
+                    'total_value': total_value,
+                })
+
+                # 4h. 【产出】每日更新
+                yield {
+                    "type": "daily_equity_engine",
+                    "data": {
+                        "date": current_date,
+                        "strategyReturn": total_value
+                    }
+                }
+                
+            except Exception as e:
+                logger.error(f"流式回测日期 {current_date} 时出错: {e}", exc_info=True)
+                last_value = results_list[-1]['total_value'] if results_list else self.initial_capital
+                results_list.append({'date': current_date, 'total_value': last_value})
+                continue
+        
+        # 6. 【产出】最终指标
+        if not results_list:
+            yield {"type": "error", "data": {"message": "回测未产生任何结果"}}
+            return
+
+        results_df = pd.DataFrame(results_list)
+        final_metrics = self._calculate_metrics_from_df(results_df, all_trades_log)
+
+        yield {
+            "type": "final_metrics",
+            "data": final_metrics
+        }
+        
+        # 7. 【产出】完成信号
+        yield {"type": "stream_complete"}
+        
+        if use_preload:
+            self.data_query.clear_preloaded_data()
+    # --- 【【新增结束】】 ---
+
+    def _cached_calculate_portfolio_value(self, date, portfolio, stock_pool):
+        """(此函数也需要修复价格获取)"""
+        if not portfolio: return 0
+        cache_key = f"{date}_{hash(frozenset(portfolio.keys()))}"
+        if cache_key in self._portfolio_value_cache:
+            return self._portfolio_value_cache[cache_key]
+        
+        total_value = 0
+        price_cache = {}
+        
+        # 1. 尝试从 stock_pool 获取价格 (stock_pool 应该已经是前复权过的)
+        for stock_code, position in portfolio.items():
+            stock_data = stock_pool[stock_pool['stock_code'] == stock_code]
+            if not stock_data.empty:
+                current_price = stock_data.iloc[0]['close']
+                total_value += position['shares'] * current_price
+                price_cache[stock_code] = current_price
+        
+        # 2. 获取缺失股票的价格
+        missing_stocks = set(portfolio.keys()) - set(price_cache.keys())
+        if missing_stocks:
+            try:
+                # 批量查询
+                if hasattr(self.data_query, 'get_batch_stock_history'):
+                    missing_list = list(missing_stocks)
+                    # 获取原始数据
+                    batch_history = self.data_query.get_batch_stock_history(
+                        missing_list, date, date, columns=['stock_code', 'close', 'adj_factor']
+                    )
+                    if not batch_history.empty:
+                        # 【核心修复】应用前复权
+                        batch_history = self._apply_qfq(batch_history)
+                        
+                        for stock_code in missing_list:
+                            stock_data = batch_history[batch_history['stock_code'] == stock_code]
+                            if not stock_data.empty:
+                                current_price = stock_data.iloc[0]['close']
+                                total_value += portfolio[stock_code]['shares'] * current_price
+                                price_cache[stock_code] = current_price
+            except Exception as e:
+                from utils.logger import get_logger
+                logger = get_logger(__name__)
+                logger.error(f"批量查询股票历史数据失败: {e}")
+
+        self._portfolio_value_cache[cache_key] = total_value
+        return total_value
+    
+    def execute_trades(
+        self, 
+        date: str, 
+        signals: Dict[str, str], 
+        portfolio: Dict, 
+        cash: float, 
+        price_map: Dict[str, float],
+        strategy=None
+    ) -> Tuple[Dict, float, List[Dict]]:
+        """
+        执行交易
+        """
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        
+        if cash < 0: cash = 0.0
+        portfolio = portfolio.copy() if portfolio else {}
+        price_map = price_map if price_map else {}
+        
+        new_portfolio = portfolio.copy()
+        daily_trades = []
+        
+        # FIFO 队列构建
+        fifo_positions = {}
+        for stock_code, pos in portfolio.items():
+            if stock_code not in fifo_positions: fifo_positions[stock_code] = []
+            fifo_positions[stock_code].append({
+                'date': pos.get('entry_date', date),
+                'price': pos.get('entry_price', 0),
+                'quantity': pos.get('shares', 0),
+                'entry_date': pos.get('entry_date', date)
+            })
+
+        def resolve_price(stock_code: str, action: str) -> Optional[float]:
+            price_data = price_map.get(stock_code)
+            if price_data is None: return None
+            
+            # 简化价格选择逻辑
+            price = None
+            if isinstance(price_data, dict):
+                price = price_data.get("close") or price_data.get("open")
+            else:
+                price = price_data
+            return price
+
+        # === 1. 处理卖出 ===
+        for stock_code in list(new_portfolio.keys()):
+            if stock_code in signals and signals[stock_code] == 'sell' and stock_code in price_map:
+                try:
+                    position = new_portfolio[stock_code]
+                    current_price = resolve_price(stock_code, 'sell')
+                    if current_price is None or current_price <= 0: continue
+                    
+                    # T+1 检查
+                    entry_date = position.get('entry_date')
+                    if entry_date and entry_date >= date: continue
+
+                    shares = position.get('shares', 0)
+                    BOARD_LOT = getattr(Config, "BOARD_LOT", 100)
+                    shares = (shares // BOARD_LOT) * BOARD_LOT
+                    if shares < BOARD_LOT: continue
+                    
+                    commission_base = shares * current_price * self.commission_rate
+                    commission = max(commission_base, getattr(Config, 'MIN_COMMISSION', 5.0))
+                    sell_amount = shares * current_price - commission
+                    cash += sell_amount
+                    
+                    # FIFO 匹配
+                    entry_price = position.get('entry_price', 0)
+                    entry_date = position.get('entry_date', date)
+                    if stock_code in fifo_positions and fifo_positions[stock_code]:
+                        fifo_positions[stock_code].sort(key=lambda x: x['date'])
+                        matched = fifo_positions[stock_code].pop(0)
+                        entry_price = matched['price']
+                        entry_date = matched['entry_date']
+                    
+                    # 收益计算
+                    holding_days = 0
+                    if entry_date and entry_date != date:
+                        try:
+                            from datetime import datetime
+                            d1 = datetime.strptime(entry_date, '%Y-%m-%d')
+                            d2 = datetime.strptime(date, '%Y-%m-%d')
+                            holding_days = (d2 - d1).days
+                        except: pass
+                    
+                    profit_loss = (current_price - entry_price) * shares
+                    roi = (profit_loss / (entry_price * shares)) * 100 if entry_price > 0 else 0
+                    
+                    del new_portfolio[stock_code]
+                    
+                    daily_trades.append({
+                        "date": date,
+                        "symbol": stock_code,
+                        "symbol_code": stock_code,
+                        "action": "sell",
+                        "price": current_price,
+                        "quantity": shares,
+                        "commission": commission,
+                        "entry_date": entry_date,
+                        "exit_date": date,
+                        "entry_price": entry_price,
+                        "exit_price": current_price,
+                        "profit_loss": profit_loss,
+                        "roi": roi,
+                        "holding_days": holding_days,
+                        "position_id": position.get('position_id')
+                    })
+                except Exception as e:
+                    logger.error(f"卖出失败 {stock_code}: {e}")
+
+        # === 2. 处理买入 ===
+        buy_signals = [code for code, signal in signals.items() if signal == 'buy']
+        
+        # 简单仓位管理：最多持仓 3 只，每只 20%
+        max_positions = 3
+        position_ratio = 0.2
+        buy_allowance = max_positions - len(new_portfolio)
+        
+        if buy_allowance > 0 and buy_signals:
+            stocks_to_buy = buy_signals[:buy_allowance]
+            total_equity = sum(p['shares']*p['entry_price'] for p in portfolio.values()) + cash
+            target_per_stock = total_equity * position_ratio
+            available_cash = cash
+            BOARD_LOT = getattr(Config, "BOARD_LOT", 100)
+
+            for stock_code in stocks_to_buy:
+                if stock_code not in new_portfolio and stock_code in price_map:
+                    try:
+                        current_price = resolve_price(stock_code, 'buy')
+                        if current_price is None or current_price <= 0 or np.isnan(current_price):
+                            continue
+                        
+                        investment = min(target_per_stock, available_cash)
+                        if investment <= 0 or np.isnan(investment): continue
+                        
+                        min_comm = getattr(Config, 'MIN_COMMISSION', 5.0)
+                        est_rate = max(self.commission_rate, min_comm / (investment + 1))
+                        if np.isnan(est_rate):
+                            continue
+                        
+                        price_with_rate = current_price * (1 + est_rate)
+                        if price_with_rate <= 0 or np.isnan(price_with_rate):
+                            continue
+                        
+                        max_shares = int(investment / price_with_rate)
+                        if max_shares <= 0: continue
+                        shares = (max_shares // BOARD_LOT) * BOARD_LOT
+                        
+                        if shares < BOARD_LOT: continue
+                        
+                        comm = max(shares * current_price * self.commission_rate, min_comm)
+                        cost = shares * current_price + comm
+                        
+                        if cost > available_cash: continue
+                        
+                        available_cash -= cost
+                        position_id = f"{stock_code}_{date}"
+                        
+                        new_portfolio[stock_code] = {
+                            "shares": shares,
+                            "entry_price": current_price,
+                            "entry_date": date,
+                            "position_id": position_id,
+                        }
+                        
+                        daily_trades.append({
+                            "date": date,
+                            "symbol": stock_code,
+                            "symbol_code": stock_code,
+                            "action": "buy",
+                            "price": current_price,
+                            "quantity": shares,
+                            "commission": comm,
+                            "position_id": position_id,
+                            "entry_date": date,
+                        })
+                    except Exception as e:
+                        logger.error(f"买入失败 {stock_code}: {e}")
+            
+            cash = available_cash
+
+        return new_portfolio, cash, daily_trades
+
+    def generate_report(self, results_df):
+        pass
+        
+    def _calculate_metrics_from_df(self, results_df: pd.DataFrame, trades_log: List[Dict]) -> Dict:
+        """ 用于流式回测的最终指标计算 """
+        if results_df.empty: return {}
+        
+        initial_capital = self.initial_capital
+        final_value = results_df['total_value'].iloc[-1]
+        total_return = (final_value / initial_capital - 1) * 100
+
+        days = len(results_df)
+        years = days / 252.0
+        annualized_return = ((final_value / initial_capital) ** (1 / years) - 1) * 100 if years > 0 else total_return
+
+        results_df['cummax'] = results_df['total_value'].cummax()
+        results_df['drawdown'] = (results_df['total_value'] - results_df['cummax']) / results_df['cummax']
+        max_drawdown = results_df['drawdown'].min() * 100
+
+        daily_returns = results_df['total_value'].pct_change().dropna()
+        if len(daily_returns) > 1:
+            dr_mean = daily_returns.mean()
+            dr_std = daily_returns.std()
+            sharpe_ratio = (dr_mean / dr_std) * np.sqrt(252) if dr_std > 0 else 0
+            
+            downside = daily_returns[daily_returns < 0]
+            sortino = (dr_mean / downside.std()) * np.sqrt(252) if len(downside) > 0 and downside.std() > 0 else 0
+            volatility = dr_std * np.sqrt(252) * 100
+        else:
+            sharpe_ratio = 0
+            sortino = 0
+            volatility = 0
+
+        # 交易统计
+        win_trades = 0
+        total_profit = 0
+        total_loss = 0
+        sell_trades = [t for t in trades_log if t['action'] == 'sell']
+        
+        for t in sell_trades:
+            pnl = t.get('profit_loss', 0)
+            if pnl > 0:
+                win_trades += 1
+                total_profit += pnl
+            else:
+                total_loss += abs(pnl)
+                
+        trades_count = len(trades_log)
+        win_rate = (win_trades / len(sell_trades)) * 100 if sell_trades else 0
+        profit_factor = total_profit / total_loss if total_loss > 0 else 0
+
+        # 将可能是 ndarray/cupy 数组的数值安全转换为 Python float，避免 round(ndarray) 报错
+        def _to_scalar(x):
+            try:
+                if isinstance(x, (int, float)):
+                    return float(x)
+                arr = np.asarray(x)
+                # 0 维标量数组
+                if getattr(arr, "shape", None) == ():
+                    return float(arr)
+                # 高维数组，退化为平均值
+                return float(arr.mean())
+            except Exception:
+                return 0.0
+
+        total_return_v = _to_scalar(total_return)
+        annualized_return_v = _to_scalar(annualized_return)
+        max_drawdown_v = _to_scalar(max_drawdown)
+        sharpe_ratio_v = _to_scalar(sharpe_ratio)
+        sortino_v = _to_scalar(sortino)
+        volatility_v = _to_scalar(volatility)
+        win_rate_v = _to_scalar(win_rate)
+        profit_factor_v = _to_scalar(profit_factor)
+
+        # Calmar 比率 = 年化收益率 / |最大回撤|
+        calmar_ratio_v = 0.0
+        if abs(max_drawdown_v) > 1e-8:
+            calmar_ratio_v = annualized_return_v / abs(max_drawdown_v)
+
+        return {
+            "totalReturn": round(total_return_v, 2),
+            "annualizedReturn": round(annualized_return_v, 2),
+            "maxDrawdown": round(abs(max_drawdown_v), 2),
+            "sharpeRatio": round(sharpe_ratio_v, 2),
+            "calmarRatio": round(calmar_ratio_v, 3),
+            "sortinoRatio": round(sortino_v, 2),
+            "volatility": round(volatility_v, 2),
+            "winRate": round(win_rate_v, 1),
+            "profitFactor": round(profit_factor_v, 2),
+            "tradesCount": trades_count,
+            "avgTradeReturn": 0, # 简化
+            "maxWinningStreak": 0,
+            "maxLosingStreak": 0,
+        }
+
+        
+    async def run_backtest_realtime(
+        self, start_date: str, end_date: str, strategy
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        pass
