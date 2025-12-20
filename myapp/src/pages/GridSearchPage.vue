@@ -66,6 +66,50 @@ const PARAM_DISPLAY: Record<string, ParamDisplayConfig> = {
   },
 };
 
+// --- 核心配置：参数自定义覆盖表 ---
+// key: 参数名 (必须与后端返回的 key 一致)
+const CUSTOM_PARAM_CONFIG: Record<string, {
+  overrideMin?: number;     // 物理轨道下限 (后端单位)
+  overrideMax?: number;     // 物理轨道上限 (后端单位)
+  defaultStart?: number;    // 默认把手起始位置 (后端单位)
+  defaultEnd?: number;      // 默认把手结束位置 (后端单位)
+  step?: number;            // 滑块步长 (UI单位)
+  useSlider?: boolean;      // 是否强制使用双向滑块组件
+  useLogScale?: boolean;    // 是否使用对数轴 (适合跨度极大的数值)
+}> = {
+  // === 市值参数配置 ===
+  'market_cap_min': {
+    overrideMin: 0,
+    overrideMax: 50000000,    // 5000亿 (单位：万元)
+    defaultStart: 200000,     // 20亿
+    defaultEnd: 1000000,      // 100亿
+    step: 0.5,                // 0.5亿
+    useSlider: true,
+    useLogScale: true
+  },
+  'market_cap_max': {
+    overrideMin: 0,
+    overrideMax: 50000000,
+    defaultStart: 200000,
+    defaultEnd: 1000000,
+    step: 0.5,
+    useSlider: true,
+    useLogScale: true
+  },
+  
+  // === 举例：以后你想加个"成交量"或者"换手率"，直接在这写 ===
+  // 例如：换手率 (turnover)，后端可能给0-1，你想放宽到 0-100%
+  // 'turnover_min': {
+  //   overrideMin: 0,
+  //   overrideMax: 50,       // 允许最大拉到 50%
+  //   defaultStart: 1,       // 默认 1%
+  //   defaultEnd: 10,        // 默认 10%
+  //   step: 0.1,
+  //   useSlider: true,
+  //   useLogScale: false
+  // }
+};
+
 const normalizeParamKey = (key: string) => key?.trim().toLowerCase();
 const getParamDisplayConfig = (key: string) => {
   if (!key) return undefined;
@@ -249,6 +293,36 @@ const fetchStrategyParams = async () => {
       const params = await response.json();
       if (Array.isArray(params)) {
         availableParams.value = params;
+        
+        // 遍历所有参数
+        params.forEach((param: any) => {
+          // 1. 尝试从配置表中获取自定义配置
+          const config = CUSTOM_PARAM_CONFIG[param.key];
+          
+          if (config) {
+            // === 命中配置：应用覆盖逻辑 ===
+            
+            // 覆盖物理极限 (RangeSlider 的轨道长度)
+            if (config.overrideMin !== undefined) param.min = config.overrideMin;
+            if (config.overrideMax !== undefined) param.max = config.overrideMax;
+            
+            // 设置滑块初始选区 (把手位置)
+            // 如果配置了 defaultStart/End 就用配置的，否则用覆盖后的 min/max，再兜底用原值
+            const startVal = config.defaultStart ?? param.min;
+            const endVal = config.defaultEnd ?? param.max;
+            
+            paramRangeValues.value[param.key] = {
+              min: startVal,
+              max: endVal
+            };
+          } else {
+            // === 未命中配置：走默认后端逻辑 ===
+            paramRangeValues.value[param.key] = {
+              min: param.min,
+              max: param.max
+            };
+          }
+        });
       }
     }
   } catch (e) {
@@ -1588,30 +1662,38 @@ onUnmounted(() => {
                       </div>
                     </div>
 
-                    <!-- 市值参数使用对数轴双滑块 -->
-                    <div v-if="param.key === 'market_cap_min' || param.key === 'market_cap_max'" class="mt-4">
+                    <!-- 使用配置表控制的滑块参数 -->
+                    <div v-if="CUSTOM_PARAM_CONFIG[param.key]?.useSlider" class="mt-4">
                       <RangeSlider
                         :label="getParamLabel(param)"
-                        :unit="getParamUnit(param.key) || param.unit || '亿'"
-                        :absolute-min="Math.max(0.01, toUiValue(param.key, param.min) || 0.01)"
-                        :absolute-max="Math.min(10000, toUiValue(param.key, param.max) || 10000)"
-                        :min-value="Math.max(0.01, toUiValue(param.key, paramRangeValues[param.key]?.min ?? param.min) || 0.01)"
-                        :max-value="Math.min(10000, toUiValue(param.key, paramRangeValues[param.key]?.max ?? param.max) || 10000)"
-                        :step="0.01"
+                        :unit="getParamUnit(param.key) || param.unit || ''"
+                        
+                        :absolute-min="toUiValue(param.key, param.min) ?? 0"
+                        :absolute-max="toUiValue(param.key, param.max) ?? 100"
+                        
+                        :min-value="Math.max(toUiValue(param.key, param.min) ?? 0, toUiValue(param.key, paramRangeValues[param.key]?.min) ?? 0)"
+                        :max-value="Math.min(toUiValue(param.key, param.max) ?? 100, toUiValue(param.key, paramRangeValues[param.key]?.max) ?? 100)"
+                        
+                        :step="CUSTOM_PARAM_CONFIG[param.key]?.step ?? 0.01"
                         :locked="paramLocked[param.key]"
-                        :use-log-scale="true"
+                        :use-log-scale="CUSTOM_PARAM_CONFIG[param.key]?.useLogScale ?? false"
+                        
                         @update:min-value="(v) => { 
-                          const backendVal = toBackendValue(param.key, Math.max(0.01, v)) || 0;
+                          const backendVal = toBackendValue(param.key, v) || 0;
+                          const existing = paramRangeValues[param.key];
+                          const currentMax = existing?.max ?? param.max ?? 1000000;
                           paramRangeValues[param.key] = { 
-                            ...paramRangeValues[param.key], 
-                            min: Math.max(param.min || 0, Math.min(backendVal, (paramRangeValues[param.key]?.max ?? param.max) - 1))
+                            min: Math.max(param.min ?? 0, Math.min(backendVal, currentMax - 1)),
+                            max: currentMax
                           }; 
                         }"
                         @update:max-value="(v) => { 
-                          const backendVal = toBackendValue(param.key, Math.min(10000, v)) || 0;
+                          const backendVal = toBackendValue(param.key, v) || 0;
+                          const existing = paramRangeValues[param.key];
+                          const currentMin = existing?.min ?? param.min ?? 200000;
                           paramRangeValues[param.key] = { 
-                            ...paramRangeValues[param.key], 
-                            max: Math.min(param.max || 100000000, Math.max(backendVal, (paramRangeValues[param.key]?.min ?? param.min) + 1))
+                            min: currentMin,
+                            max: Math.min(param.max ?? 50000000, Math.max(backendVal, currentMin + 1))
                           }; 
                         }"
                       />
@@ -1626,9 +1708,14 @@ onUnmounted(() => {
                           type="number"
                           class="w-20 rounded border border-slate-700 bg-slate-900/80 px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                           :value="formatParamDisplayValue(param.key, paramRangeValues[param.key]?.min ?? param.min)"
-                          @change="paramRangeValues[param.key] = {
-                            ...paramRangeValues[param.key],
-                            min: Number(toBackendValue(param.key, Number(($event.target as HTMLInputElement).value || 0)) || 0),
+                          @change="(e) => {
+                            const backendVal = Number(toBackendValue(param.key, Number((e.target as HTMLInputElement).value || 0)) || 0);
+                            const existing = paramRangeValues[param.key];
+                            const currentMax = existing?.max ?? param.max ?? 1000000;
+                            paramRangeValues[param.key] = {
+                              min: Math.max(param.min || 0, Math.min(backendVal, currentMax - 1)),
+                              max: currentMax
+                            };
                           }"
                         />
                         <span class="text-slate-500">~</span>
@@ -1636,9 +1723,14 @@ onUnmounted(() => {
                           type="number"
                           class="w-20 rounded border border-slate-700 bg-slate-900/80 px-2 py-1 text-[11px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                           :value="formatParamDisplayValue(param.key, paramRangeValues[param.key]?.max ?? param.max)"
-                          @change="paramRangeValues[param.key] = {
-                            ...paramRangeValues[param.key],
-                            max: Number(toBackendValue(param.key, Number(($event.target as HTMLInputElement).value || 0)) || 0),
+                          @change="(e) => {
+                            const backendVal = Number(toBackendValue(param.key, Number((e.target as HTMLInputElement).value || 0)) || 0);
+                            const existing = paramRangeValues[param.key];
+                            const currentMin = existing?.min ?? param.min ?? 0;
+                            paramRangeValues[param.key] = {
+                              min: currentMin,
+                              max: Math.min(param.max || 1000000, Math.max(backendVal, currentMin + 1))
+                            };
                           }"
                         />
                       </div>
