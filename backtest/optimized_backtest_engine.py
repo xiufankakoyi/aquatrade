@@ -112,69 +112,102 @@ class OptimizedBacktestEngine:
 
     def _load_latest_factors_robust(self):
         """
-        ???????????????
-        ???????"???????????"??????????/?????????????
+        鲁棒方法加载最新复权因子
+        支持并行环境，使用数据查询方法而非直接访问连接
         """
         from utils.logger import get_logger
         logger = get_logger(__name__)
         
         try:
-            conn = getattr(self.data_query, "conn", None)
-            if conn is None:
-                logger.warning("?? ??????????????????")
-                return {}
-
-            # 1) ??????????????
-            latest_rows = conn.execute(
+            # 【关键修复】使用数据查询方法而非直接访问连接，支持并行环境
+            # 优先使用数据查询的 _query_df 方法，避免直接访问可能不稳定的连接
+            
+            # 方法1：尝试使用数据查询方法获取最新因子
+            try:
+                # 获取最新交易日
+                latest_date_query = "SELECT MAX(trade_date) AS max_date FROM stock_daily"
+                latest_date_df = self.data_query._query_df(latest_date_query, None)
+                
+                if latest_date_df.empty or latest_date_df.iloc[0]['max_date'] is None:
+                    logger.warning("⚠️ 警告：未能找到最新交易日")
+                    return {}
+                
+                latest_date = latest_date_df.iloc[0]['max_date']
+                
+                # 获取最新交易日的所有复权因子
+                factors_query = """
+                    SELECT stock_code, adj_factor 
+                    FROM stock_daily 
+                    WHERE trade_date = ? AND adj_factor IS NOT NULL
                 """
-                SELECT sd.stock_code, sd.adj_factor
-                FROM stock_daily sd
-                INNER JOIN (
-                    SELECT stock_code, MAX(trade_date) AS max_date
-                    FROM stock_daily
-                    GROUP BY stock_code
-                ) latest
-                ON sd.stock_code = latest.stock_code AND sd.trade_date = latest.max_date
-                WHERE sd.adj_factor IS NOT NULL
-                """
-            ).fetchall()
-
-            factors: Dict[str, float] = {}
-            for code, factor in latest_rows:
+                factors_df = self.data_query._query_df(factors_query, [latest_date])
+                
+                factors: Dict[str, float] = {}
+                for _, row in factors_df.iterrows():
+                    try:
+                        code = str(row['stock_code'])
+                        factor = float(row['adj_factor'])
+                        if factor > 0:  # 确保因子有效
+                            factors[code] = factor
+                    except (TypeError, ValueError, KeyError):
+                        continue
+                
+                if factors:
+                    logger.info(f"✅ 成功加载 {len(factors)} 个股票的复权因子（最新日期: {latest_date}）")
+                    return factors
+                else:
+                    logger.warning("⚠️ 警告：未能加载任何复权因子")
+                    return {}
+                    
+            except Exception as method1_err:
+                logger.warning(f"⚠️ 使用数据查询方法加载因子失败，尝试备用方法: {method1_err}")
+                
+                # 方法2：备用方法 - 直接访问连接（如果可用）
+                conn = getattr(self.data_query, "conn", None)
+                if conn is None:
+                    logger.warning("⚠️ 警告：数据查询对象没有可用连接")
+                    return {}
+                
                 try:
-                    factors[str(code)] = float(factor)
-                except (TypeError, ValueError):
-                    continue
-
-            if factors:
-                logger.info(f"? ??? {len(factors)} ?????????????????")
-                return factors
-
-            # 2) ??????????????????????
-            latest_date_query = "SELECT MAX(trade_date) FROM stock_daily"
-            cursor = conn.execute(latest_date_query)
-            latest_date_row = cursor.fetchone()
-            latest_date = latest_date_row[0] if latest_date_row else None
-            
-            if not latest_date:
-                logger.warning("?? ????????????????????")
-                return {}
-            
-            logger.warning("?? ????????????????????????")
-            fallback_rows = conn.execute(
-                "SELECT stock_code, adj_factor FROM stock_daily WHERE trade_date = ?",
-                (latest_date,)
-            ).fetchall()
-            
-            for code, factor in fallback_rows:
-                if factor is not None:
-                    factors[str(code)] = float(factor)
-            
-            logger.info(f"? ?????? {len(factors)} ???????")
-            return factors
+                    # 获取最新交易日
+                    latest_date_query = "SELECT MAX(trade_date) FROM stock_daily"
+                    cursor = conn.execute(latest_date_query)
+                    latest_date_row = cursor.fetchone()
+                    latest_date = latest_date_row[0] if latest_date_row else None
+                    
+                    if not latest_date:
+                        logger.warning("⚠️ 警告：未能找到最新交易日")
+                        return {}
+                    
+                    # 获取最新交易日的所有复权因子
+                    fallback_rows = conn.execute(
+                        "SELECT stock_code, adj_factor FROM stock_daily WHERE trade_date = ? AND adj_factor IS NOT NULL",
+                        (latest_date,)
+                    ).fetchall()
+                    
+                    factors: Dict[str, float] = {}
+                    for code, factor in fallback_rows:
+                        try:
+                            if factor is not None and float(factor) > 0:
+                                factors[str(code)] = float(factor)
+                        except (TypeError, ValueError):
+                            continue
+                    
+                    if factors:
+                        logger.info(f"✅ 使用备用方法加载 {len(factors)} 个股票的复权因子（最新日期: {latest_date}）")
+                        return factors
+                    else:
+                        logger.warning("⚠️ 警告：备用方法未能加载任何复权因子")
+                        return {}
+                        
+                except Exception as method2_err:
+                    logger.error(f"❌ 备用方法也失败: {method2_err}")
+                    return {}
             
         except Exception as e:
-            logger.error(f"? ??????????: {e}")
+            logger.error(f"❌ 加载复权因子时发生未知错误: {e}")
+            import traceback
+            traceback.print_exc()
             return {}
 
 # --- 【【第2步 新增】】: 真·流式回测函数 ---

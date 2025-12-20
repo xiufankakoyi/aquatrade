@@ -1,10 +1,10 @@
 """
 Strategy parameter optimization engine supporting Genetic Algorithm (GA) and
-Bayesian Optimization (BO).
+Bayesian Optimization (BO) using Optuna.
 
 Dependencies:
     - deap (pip install deap)
-    - bayesian-optimization (pip install bayesian-optimization)
+    - optuna (pip install optuna)
     - pandas, numpy
 """
 
@@ -30,7 +30,7 @@ except ImportError as exc:  # pragma: no cover - import guard
 try:
     import optuna
     from optuna.samplers import TPESampler
-    from optuna.storages import RDBStorage
+    from optuna.storages import JournalStorage, JournalFileStorage
 except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError(
         "StrategyOptimizer requires `optuna`. Install via `pip install optuna`."
@@ -214,9 +214,32 @@ def _evaluate_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     db_path: str = payload["db_path"]
     default_params: Optional[Dict[str, Any]] = payload.get("default_params")
 
-    local_query = OptimizedStockDataQuery(db_path=db_path, warmup=False)
-    optimizer = _EvaluationHelper(local_query)
+    # 【关键修复】在并行环境中，每个进程必须创建独立的数据库连接
+    # 禁用 warmup 避免重复初始化，在子进程中手动控制
+    local_query = None
     try:
+        import os
+        # 创建数据查询实例（每个子进程独立实例，禁用 warmup）
+        local_query = OptimizedStockDataQuery(db_path=db_path, warmup=False)
+        
+        # 【关键修复】在子进程中预加载数据，避免并行执行时数据未加载的问题
+        # 检查是否禁用预加载（某些场景可能不需要）
+        if os.getenv("DISABLE_PRELOAD", "0") != "1":
+            # 计算需要预加载的日期范围（包含预热期）
+            # 默认预热60天，覆盖MA60等指标
+            from datetime import timedelta
+            import pandas as pd
+            required_warmup = 60  # 默认60天预热期
+            load_start_date = pd.to_datetime(start_date) - timedelta(days=required_warmup)
+            load_start_date_str = load_start_date.strftime('%Y-%m-%d')
+            
+            try:
+                local_query.preload_backtest_data(load_start_date_str, end_date)
+            except Exception as preload_err:
+                # 预加载失败不影响执行，会回退到逐日查询
+                print(f"[WORKER {os.getpid()}] 预加载数据失败，将使用逐日查询: {preload_err}")
+        
+        optimizer = _EvaluationHelper(local_query)
         params = _build_strategy_params(genes, params_config)
         # 如果有默认参数，合并它们（优化参数优先）
         if default_params:
@@ -228,16 +251,29 @@ def _evaluate_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             "metrics": evaluation.get("metrics"),
             "params": params,
         }
+    except Exception as eval_err:
+        # 评估过程中的错误，返回最低分
+        import traceback
+        print(f"[WORKER {os.getpid()}] 评估过程出错: {eval_err}")
+        traceback.print_exc()
+        return {
+            "score": MIN_FITNESS_SCORE,
+            "metrics": None,
+            "params": {},
+        }
     finally:
-        # 确保清理资源，释放内存
-        try:
-            local_query.clear_preloaded_data()
-        except:
-            pass
-        try:
-            local_query.close()
-        except:
-            pass
+        # 【关键修复】确保清理资源，释放内存，避免内存泄漏
+        if local_query is not None:
+            try:
+                # 使用统一的 close() 方法清理所有资源
+                local_query.close()
+            except Exception as e:
+                # 即使关闭失败也不应该影响主流程
+                import os
+                print(f"[WORKER {os.getpid()}] 清理资源时出错（已忽略）: {e}")
+            finally:
+                # 清理引用，帮助垃圾回收
+                local_query = None
 
 
 class _EvaluationHelper:
@@ -624,7 +660,7 @@ class StrategyOptimizer:
         }
 
     # ---------------------------------------------------------------------- #
-    # Bayesian Optimization
+    # Bayesian Optimization (using Optuna with TPE sampler)
     # ---------------------------------------------------------------------- #
     def run_bayesian_optimization(
         self,
@@ -638,16 +674,14 @@ class StrategyOptimizer:
         init_points = options.get("init_points", 3)
         # 重要：严格使用前端传入的迭代次数
         iterations = options.get("iterations", 20)  # 从前端获取迭代次数
-        # 并行评估的批次大小（每次迭代并行评估的点数）
-        batch_size = options.get("batch_size", options.get("parallel_evaluations", 1))
         
         # 验证贝叶斯优化迭代次数设置
-        print(f"🎯 贝叶斯优化参数设置:")
+        print(f"🎯 Optuna 贝叶斯优化参数设置:")
         print(f"   前端传入 iterations: {options.get('iterations')}")
         print(f"   实际迭代次数: {iterations}")
-        print(f"   并行批次大小: {batch_size}")
+        print(f"   初始随机采样点数: {init_points}")
 
-        # 贝叶斯优化的参数范围验证
+        # 参数范围验证和修正
         validated_param_specs = []
         for spec in param_specs:
             name = spec["name"]
@@ -669,237 +703,253 @@ class StrategyOptimizer:
             validated_param_specs.append(spec)
         
         param_specs = validated_param_specs
-        pbounds = {spec["name"]: tuple(spec["bounds"]) for spec in param_specs}
-
         default_params = options.get("default_params", {})
-        evaluation_cache: Dict[Tuple[Tuple[str, Any], ...], Dict[str, Any]] = {}
         db_path = getattr(self.data_query, "db_path", Config.DB_PATH)
         
-        # 设置并行进程数（与遗传算法保持一致）
-        # 注意：虽然贝叶斯优化每次迭代只评估一个点，但初始随机采样可以并行执行
+        # 设置并行进程数
         import os
         cpu_count = os.cpu_count() or 4
-        # 不依赖 batch_size，始终使用合理的并行数（与遗传算法保持一致）
-        max_workers = min(max(2, cpu_count // 2), 6)
-        print(f"🎯 贝叶斯优化进程池配置: CPU核心数={cpu_count}, 最大并发进程数={max_workers}")
-        print(f"   注意：贝叶斯优化当前为顺序执行，max_workers={max_workers} 用于未来并行优化扩展")
+        # 使用所有 CPU 核心进行并行优化
+        n_jobs = -1  # -1 表示使用所有可用 CPU 核心
+        print(f"🎯 Optuna 并行配置: CPU核心数={cpu_count}, 并行任务数={n_jobs} (使用所有核心)")
         
-        def black_box_function(**kwargs):
+        # 配置 Optuna Storage（使用 JournalStorage 文件系统存储支持并行，避免 SQLite 性能问题）
+        import tempfile
+        import time
+        storage_dir = os.path.join(os.path.dirname(db_path) if db_path else tempfile.gettempdir(), "optuna_storage")
+        os.makedirs(storage_dir, exist_ok=True)
+        # 使用时间戳确保 study_name 唯一性
+        timestamp = int(time.time() * 1000)
+        # JournalStorage 使用 JSON Lines 格式文件，性能优于 SQLite
+        journal_path = os.path.join(storage_dir, f"optuna_{strategy_name}_{start_date}_{end_date}_{timestamp}.log")
+        
+        # 创建 study，使用 TPE 采样器（Tree-structured Parzen Estimator）
+        study_name = f"optuna_{strategy_name}_{start_date}_{end_date}_{timestamp}"
+        sampler = TPESampler(seed=options.get("random_state", 48))
+        
+        try:
+            # 使用 JournalStorage（基于文件系统，支持并行，性能优于 SQLite）
+            journal_storage = JournalStorage(JournalFileStorage(journal_path))
+            study = optuna.create_study(
+                study_name=study_name,
+                storage=journal_storage,
+                sampler=sampler,
+                direction="maximize",  # 最大化目标函数（如夏普比率）
+                load_if_exists=True,  # 如果 study 已存在则加载
+            )
+            print(f"✅ 使用 JournalStorage 文件存储: {journal_path}")
+        except Exception as e:
+            print(f"⚠️ 创建 Optuna JournalStorage 失败，尝试使用内存存储: {e}")
+            import traceback
+            traceback.print_exc()
+            # 如果文件存储失败，回退到内存存储（不支持并行）
+            study = optuna.create_study(
+                study_name=study_name,
+                sampler=sampler,
+                direction="maximize",
+            )
+            n_jobs = 1  # 内存存储不支持并行
+            print(f"⚠️ 回退到内存存储，并行已禁用 (n_jobs=1)")
+        
+        # 评估计数器（用于进度追踪）
+        evaluation_count = [0]  # 使用列表以便在闭包中修改
+        
+        # 定义目标函数（接收 trial 对象）
+        def objective(trial: optuna.Trial) -> float:
+            """Optuna 目标函数：根据 trial 对象建议参数并评估策略"""
+            # 检查停止事件（在每个 trial 开始时检查）
+            if self.stop_event and self.stop_event.is_set():
+                raise optuna.TrialPruned("优化被用户中断")
+            
+            # 根据参数规格使用 trial.suggest_* 方法定义参数空间
             params = {}
             for spec in param_specs:
                 name = spec["name"]
+                lower, upper = spec["bounds"]
                 ptype = spec.get("type", "float")
-                value = kwargs[name]
+                
                 if ptype == "int":
-                    params[name] = int(round(value))
+                    params[name] = trial.suggest_int(name, int(lower), int(upper))
                 elif ptype == "bool":
-                    params[name] = bool(round(value))
+                    params[name] = trial.suggest_categorical(name, [True, False])
                 else:
-                    params[name] = float(value)
+                    # float 类型，检查是否需要 log 尺度
+                    log = spec.get("log", False)
+                    params[name] = trial.suggest_float(name, float(lower), float(upper), log=log)
+            
             # 合并默认参数（优化参数优先）
             merged_params = {**default_params, **params}
-            evaluation = self._evaluate_strategy(strategy_name, merged_params, start_date, end_date, target_metric)
-            cache_key = tuple(sorted((k, merged_params[k]) for k in merged_params))
-            evaluation_cache[cache_key] = evaluation
-
-            # 细粒度：贝叶斯优化每评估一次黑盒函数就推送 evaluation 事件
+            
+            # 【关键修复】在并行环境中，每个 trial 需要创建独立的数据查询对象
+            # 不能使用 self._evaluate_strategy（它使用主进程的 data_query，可能包含不可序列化的连接）
+            # 使用 _EvaluationHelper 创建独立的评估实例
+            local_query = None
+            try:
+                # 创建独立的数据查询实例（每个 trial 独立，避免共享连接）
+                local_query = OptimizedStockDataQuery(db_path=db_path, warmup=False)
+                
+                # 预加载数据（如果需要）
+                import os
+                if os.getenv("DISABLE_PRELOAD", "0") != "1":
+                    try:
+                        from datetime import timedelta
+                        import pandas as pd
+                        required_warmup = 60
+                        load_start_date = pd.to_datetime(start_date) - timedelta(days=required_warmup)
+                        load_start_date_str = load_start_date.strftime('%Y-%m-%d')
+                        local_query.preload_backtest_data(load_start_date_str, end_date)
+                    except Exception:
+                        pass  # 预加载失败不影响执行
+                
+                # 创建独立的评估助手
+                optimizer = _EvaluationHelper(local_query)
+                evaluation = optimizer.evaluate(strategy_name, merged_params, start_date, end_date, target_metric)
+                score = evaluation.get("score", MIN_FITNESS_SCORE)
+            finally:
+                # 确保清理资源
+                if local_query is not None:
+                    try:
+                        local_query.close()
+                    except:
+                        pass
+                    local_query = None
+            
+            # 更新评估计数器
+            evaluation_count[0] += 1
+            current_count = evaluation_count[0]
+            total_trials = init_points + iterations
+            
+            # 细粒度：每评估一次就推送 evaluation 事件
             try:
                 self._emit_evaluation_event(
                     {
-                        "score": evaluation.get("score", MIN_FITNESS_SCORE),
+                        "score": score,
                         "metrics": evaluation.get("metrics"),
                         "params": merged_params,
                     },
                     {
                         "algorithm": "bayesian",
-                        # 具体的 iteration / total_iterations 在外层 progress 中计算，这里只提供占位，
-                        # 前端更关注 score + params 本身
+                        "trial": current_count,
+                        "total_trials": total_trials,
                     },
                 )
             except Exception as e:
-                print(f"⚠️ 贝叶斯 evaluation 事件发送失败: {e}")
-
-            return evaluation.get("score", MIN_FITNESS_SCORE)
-
-        optimizer = BayesianOptimization(
-            f=black_box_function,
-            pbounds=pbounds,
-            random_state=options.get("random_state", 48),
-            verbose=0,
-        )
-
-        # 正确的贝叶斯优化实现：
-        # 1. 先进行初始随机采样（探索阶段）- 并行执行以提高效率
-        if init_points > 0:
-            # 并行执行初始随机采样
-            print(f"🎯 开始并行初始随机采样（{init_points} 个点，使用 {max_workers} 个进程）...")
+                print(f"⚠️ Optuna evaluation 事件发送失败: {e}")
             
-            # 生成初始随机参数点
-            initial_points = []
-            for _ in range(init_points):
-                point = {}
-                for spec in param_specs:
-                    name = spec["name"]
-                    lower, upper = spec["bounds"]
-                    if spec.get("type") == "int":
-                        point[name] = random.randint(int(lower), int(upper))
+            # 向前端推送进度更新
+            if self.socketio:
+                try:
+                    progress_pct = int((current_count / total_trials) * 100) if total_trials > 0 else 0
+                    best_trial = study.best_trial if study.trials else None
+                    
+                    formatted_params = merged_params.copy()
+                    best_score = best_trial.value if best_trial else score
+                    
+                    emit_data = {
+                        "progress": progress_pct,
+                        "iteration": current_count,
+                        "total_iterations": total_trials,
+                        "current_best": best_score,
+                        "best_metric": best_score,
+                        "params": formatted_params,
+                        "best_params": formatted_params,
+                        "metrics": evaluation.get("metrics"),
+                    }
+                    if self.sid:
+                        self.socketio.emit("optimization_progress", emit_data, to=self.sid)
                     else:
-                        point[name] = random.uniform(float(lower), float(upper))
-                initial_points.append(point)
+                        self.socketio.emit("optimization_progress", emit_data)
+                except Exception as e:
+                    print(f"⚠️ 进度推送失败: {e}")
             
-            # 并行评估初始点
-            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-                futures = []
-                for point in initial_points:
-                    future = executor.submit(
-                        _evaluate_payload,
-                        {
-                            "strategy_name": strategy_name,
-                            "param_specs": param_specs,
-                            "genes": [point[spec["name"]] for spec in param_specs],
-                            "target_metric": target_metric,
-                            "start_date": start_date,
-                            "end_date": end_date,
-                            "db_path": db_path,
-                            "default_params": default_params,
-                        },
-                    )
-                    futures.append((future, point))
-                
-                # 收集结果并注册到优化器
-                for future, point in futures:
-                    try:
-                        result = future.result()
-                        score = result.get("score", MIN_FITNESS_SCORE)
-                        # 手动注册到优化器
-                        optimizer.register(params=point, target=score)
-                        
-                        # 发送评估事件
-                        self._emit_evaluation_event(
-                            result,
-                            {
-                                "algorithm": "bayesian",
-                                "phase": "initial",
-                            },
-                        )
-                    except Exception as e:
-                        print(f"⚠️ 初始点评估失败: {e}")
-                        # 注册一个低分以避免优化器卡住
-                        optimizer.register(params=point, target=MIN_FITNESS_SCORE)
+            # 打印日志
+            print(f"  Trial {current_count}/{total_trials}: score={score:.4f}, params={params}")
             
-            print(f"✅ 初始随机采样完成（并行评估了 {init_points} 个点）")
-            if self.socketio:
-                best = optimizer.max
-                formatted_params = {
-                    spec["name"]: (
-                        int(round(best["params"][spec["name"]]))
-                        if spec.get("type") == "int"
-                        else best["params"][spec["name"]]
-                    )
-                    for spec in param_specs
-                }
-                total_steps = init_points + iterations
-                progress_pct = int((init_points / total_steps) * 100) if total_steps > 0 else 0
-                merged_best = {**default_params, **formatted_params}
-                cache_key = tuple(sorted((k, merged_best[k]) for k in merged_best))
-                best_metrics = evaluation_cache.get(cache_key, {}).get("metrics")
-                emit_data = {
-                    "progress": progress_pct,
-                    "iteration": init_points,
-                    "total_iterations": total_steps,
-                    "current_best": best["target"],
-                    "best_metric": best["target"],
-                    "params": formatted_params,
-                    "best_params": formatted_params,
-                    "metrics": best_metrics,
-                }
-                if self.sid:
-                    self.socketio.emit("optimization_progress", emit_data, to=self.sid)
-                else:
-                    self.socketio.emit("optimization_progress", emit_data)
+            return score
         
-        # 2. 然后进行迭代优化（利用阶段）
-        # 注意：虽然每次调用 maximize 只迭代一次看起来像网格搜索，
-        # 但实际上每次调用都会更新高斯过程模型，并使用获取函数（acquisition function）
-        # 来选择下一个最有希望的点，这是真正的贝叶斯优化
-        for iteration in range(iterations):
-            # 检查停止事件
-            if self.stop_event and self.stop_event.is_set():
-                print(f"🛑 贝叶斯优化被用户中断 (sid: {self.sid})")
-                if self.socketio and self.sid:
-                    self.socketio.emit("optimization_cancelled", {"message": "优化已停止"}, to=self.sid)
-                return {
-                    "best_score": best_eval.get("score", best_result["target"]),
-                    "best_params": best_params,
-                    "best_metrics": best_eval.get("metrics"),
-                    "cancelled": True,
-                }
-            
-            # 每次迭代都会：
-            # - 使用当前的高斯过程模型和获取函数选择下一个评估点
-            # - 评估该点的目标函数值
-            # - 更新高斯过程模型
-            optimizer.maximize(init_points=0, n_iter=1)
-            best = optimizer.max
-            
-            if self.socketio:
-                formatted_params = {
-                    spec["name"]: (
-                        int(round(best["params"][spec["name"]]))
-                        if spec.get("type") == "int"
-                        else best["params"][spec["name"]]
-                    )
-                    for spec in param_specs
-                }
-                
-                # 确保 formatted_params 是字典类型
-                if not isinstance(formatted_params, dict):
-                    print(f"⚠️  警告: formatted_params 不是字典类型: {type(formatted_params)}, 值: {formatted_params}")
-                    formatted_params = {}
-                
-                total_steps = init_points + iterations
-                completed_steps = init_points + iteration + 1
-                progress_pct = int((completed_steps / total_steps) * 100) if total_steps > 0 else 0
-                merged_best = {**default_params, **formatted_params}
-                cache_key = tuple(sorted((k, merged_best[k]) for k in merged_best))
-                best_metrics = evaluation_cache.get(cache_key, {}).get("metrics")
-                
-                emit_data = {
-                    "progress": progress_pct,
-                    "iteration": completed_steps,
-                    "total_iterations": total_steps,
-                    "current_best": best["target"],
-                    "best_metric": best["target"],
-                    "params": formatted_params,
-                    "best_params": formatted_params,
-                    "metrics": best_metrics,
-                }
-                if self.sid:
-                    self.socketio.emit("optimization_progress", emit_data, to=self.sid)
-                else:
-                    self.socketio.emit("optimization_progress", emit_data)
-
-        best_result = optimizer.max
+        # 执行优化（并行）
+        print(f"🚀 开始 Optuna 优化（TPE 采样器，并行执行）...")
+        try:
+            # 使用 study.optimize() 执行优化，n_jobs=-1 启用并行
+            study.optimize(
+                objective,
+                n_trials=init_points + iterations,  # 总试验次数 = 初始点数 + 迭代次数
+                n_jobs=n_jobs,  # 并行任务数（-1 表示使用所有 CPU 核心）
+                show_progress_bar=False,  # 我们使用自定义的进度推送
+            )
+        except KeyboardInterrupt:
+            print(f"🛑 Optuna 优化被用户中断")
+            if self.socketio and self.sid:
+                self.socketio.emit("optimization_cancelled", {"message": "优化已停止"}, to=self.sid)
+            # 即使中断，也返回当前最佳结果
+        except optuna.TrialPruned:
+            # Trial 被中断（通过 stop_event）
+            print(f"🛑 Optuna 优化被用户中断（通过 stop_event）")
+            if self.socketio and self.sid:
+                self.socketio.emit("optimization_cancelled", {"message": "优化已停止"}, to=self.sid)
+        except Exception as e:
+            print(f"⚠️ Optuna 优化出错: {e}")
+            import traceback
+            traceback.print_exc()
+            if self.socketio and self.sid:
+                self.socketio.emit("optimization_error", {"message": str(e)}, to=self.sid)
+        
+        # 检查停止事件
+        cancelled = False
+        if self.stop_event and self.stop_event.is_set():
+            cancelled = True
+            print(f"🛑 Optuna 优化被用户中断 (sid: {self.sid})")
+            if self.socketio and self.sid:
+                self.socketio.emit("optimization_cancelled", {"message": "优化已停止"}, to=self.sid)
+        
+        # 获取最佳结果
+        if not study.trials:
+            print("⚠️ 没有完成任何 trial，返回默认结果")
+            return {
+                "best_score": MIN_FITNESS_SCORE,
+                "best_params": {},
+                "best_metrics": None,
+                "cancelled": cancelled,
+            }
+        
+        best_trial = study.best_trial
+        best_params_raw = best_trial.params.copy()
+        best_score = best_trial.value
+        
+        # 确保参数类型与原始 spec 一致
         best_params = {}
         for spec in param_specs:
             name = spec["name"]
-            if spec.get("type") == "int":
-                best_params[name] = int(round(best_result["params"][name]))
-            elif spec.get("type") == "bool":
-                best_params[name] = bool(round(best_result["params"][name]))
+            if name not in best_params_raw:
+                continue
+            ptype = spec.get("type", "float")
+            value = best_params_raw[name]
+            
+            if ptype == "int":
+                best_params[name] = int(value)
+            elif ptype == "bool":
+                best_params[name] = bool(value)
             else:
-                best_params[name] = float(best_result["params"][name])
-
+                best_params[name] = float(value)
+        
+        # 合并默认参数
         merged_best = {**default_params, **best_params}
-        cache_key = tuple(sorted((k, merged_best[k]) for k in merged_best))
-        best_eval = evaluation_cache.get(cache_key)
-        if not best_eval:
-            best_eval = self._evaluate_strategy(strategy_name, merged_best, start_date, end_date, target_metric)
-
+        
+        # 获取最佳结果的完整评估（包含 metrics）
+        best_eval = self._evaluate_strategy(strategy_name, merged_best, start_date, end_date, target_metric)
+        
+        print(f"✅ Optuna 优化完成:")
+        print(f"   最佳得分: {best_score:.4f}")
+        print(f"   最佳参数: {best_params}")
+        print(f"   总试验次数: {len(study.trials)}")
+        if cancelled:
+            print(f"   状态: 已中断")
+        
         return {
-            "best_score": best_eval.get("score", best_result["target"]),
+            "best_score": best_eval.get("score", best_score),
             "best_params": best_params,
             "best_metrics": best_eval.get("metrics"),
+            "cancelled": cancelled,
         }
 
     # ---------------------------------------------------------------------- #

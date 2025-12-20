@@ -484,9 +484,8 @@ class OptimizedStockDataQuery:
             "s.stock_code", "s.trade_date", "s.open", "s.high", "s.low", "s.close",
             "s.prev_close", "s.volume", "s.amount", "s.total_mv", "s.float_mv",
             "s.turnover_rate", "s.turnover_free", "s.volume_ratio",
-            "s.ma5", "s.ma10", "s.ma20", "s.ma60", "s.volume_ma5",
-            "s.adj_factor", "s.is_limit_up", "s.is_limit_down",
-            "i.is_st", "i.is_kc", "i.is_cy", "i.list_date"
+            "s.ma5", "s.ma10", "s.ma20", "s.volume_ma5",
+            "s.adj_factor", "i.is_kc", "i.is_cy", "i.list_date"
         ]
         columns = self._filter_existing_columns(columns)
         column_str = ", ".join(columns)
@@ -521,6 +520,22 @@ class OptimizedStockDataQuery:
         try:
             result = self._query_df(query, params)
             print(f"向量化加载完成: {len(result)} 行数据")
+            
+            # 进行默认值填充（Mock Data）
+            if 'is_limit_up' not in result.columns:
+                result['is_limit_up'] = False  # 假定未涨停，允许买入
+            else:
+                result['is_limit_up'] = result['is_limit_up'].fillna(False)
+            
+            if 'is_limit_down' not in result.columns:
+                result['is_limit_down'] = False  # 假定未跌停，允许卖出
+            else:
+                result['is_limit_down'] = result['is_limit_down'].fillna(False)
+            
+            if 'is_st' not in result.columns:
+                result['is_st'] = False  # 假定非ST
+            else:
+                result['is_st'] = result['is_st'].fillna(False)
             
             # 缓存结果
             self._add_to_cache(cache_key, result)
@@ -621,6 +636,22 @@ class OptimizedStockDataQuery:
                         logger.debug(f"[DB PLAN] get_stock_pool {date_str} failed: {plan_err}")
 
                 with self._profile("get_stock_pool", "post_process"):
+                    # 进行默认值填充（Mock Data）
+                    if 'is_limit_up' not in result.columns:
+                        result['is_limit_up'] = False  # 假定未涨停，允许买入
+                    else:
+                        result['is_limit_up'] = result['is_limit_up'].fillna(False)
+                    
+                    if 'is_limit_down' not in result.columns:
+                        result['is_limit_down'] = False  # 假定未跌停，允许卖出
+                    else:
+                        result['is_limit_down'] = result['is_limit_down'].fillna(False)
+                    
+                    if 'is_st' not in result.columns:
+                        result['is_st'] = False  # 假定非ST
+                    else:
+                        result['is_st'] = result['is_st'].fillna(False)
+                    
                     if use_cache:
                         self._add_to_cache(cache_key, result)
 
@@ -654,6 +685,23 @@ class OptimizedStockDataQuery:
         """
         try:
             filtered = df.copy()
+            
+            # 进行默认值填充（Mock Data）
+            if 'is_limit_up' not in filtered.columns:
+                filtered['is_limit_up'] = False  # 假定未涨停，允许买入
+            else:
+                filtered['is_limit_up'] = filtered['is_limit_up'].fillna(False)
+            
+            if 'is_limit_down' not in filtered.columns:
+                filtered['is_limit_down'] = False  # 假定未跌停，允许卖出
+            else:
+                filtered['is_limit_down'] = filtered['is_limit_down'].fillna(False)
+            
+            if 'is_st' not in filtered.columns:
+                filtered['is_st'] = False  # 假定非ST
+            else:
+                filtered['is_st'] = filtered['is_st'].fillna(False)
+            
             filtered = filtered[
                 filtered["total_mv"].notna()
                 & filtered["close"].notna()
@@ -923,5 +971,15 @@ class OptimizedStockDataQuery:
     
     def close(self):
         """关闭数据库连接并清理资源"""
-        self.clear_cache()
-        self.conn.close()
+        try:
+            self.clear_cache()
+        except Exception as e:
+            self._logger.warning(f"清理缓存时出错: {e}")
+        
+        try:
+            if hasattr(self, 'conn') and self.conn is not None:
+                # DuckDB 和 SQLite 都需要显式关闭
+                self.conn.close()
+                self.conn = None
+        except Exception as e:
+            self._logger.warning(f"关闭数据库连接时出错: {e}")
