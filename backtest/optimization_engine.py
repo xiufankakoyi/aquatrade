@@ -28,10 +28,12 @@ except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError("StrategyOptimizer requires `deap`. Install via `pip install deap`.") from exc
 
 try:
-    from bayes_opt import BayesianOptimization
+    import optuna
+    from optuna.samplers import TPESampler
+    from optuna.storages import RDBStorage
 except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError(
-        "StrategyOptimizer requires `bayesian-optimization`. Install via `pip install bayesian-optimization`."
+        "StrategyOptimizer requires `optuna`. Install via `pip install optuna`."
     ) from exc
 
 from utils.config import Config
@@ -636,11 +638,14 @@ class StrategyOptimizer:
         init_points = options.get("init_points", 3)
         # 重要：严格使用前端传入的迭代次数
         iterations = options.get("iterations", 20)  # 从前端获取迭代次数
+        # 并行评估的批次大小（每次迭代并行评估的点数）
+        batch_size = options.get("batch_size", options.get("parallel_evaluations", 1))
         
         # 验证贝叶斯优化迭代次数设置
         print(f"🎯 贝叶斯优化参数设置:")
         print(f"   前端传入 iterations: {options.get('iterations')}")
         print(f"   实际迭代次数: {iterations}")
+        print(f"   并行批次大小: {batch_size}")
 
         # 贝叶斯优化的参数范围验证
         validated_param_specs = []
@@ -668,6 +673,16 @@ class StrategyOptimizer:
 
         default_params = options.get("default_params", {})
         evaluation_cache: Dict[Tuple[Tuple[str, Any], ...], Dict[str, Any]] = {}
+        db_path = getattr(self.data_query, "db_path", Config.DB_PATH)
+        
+        # 设置并行进程数（与遗传算法保持一致）
+        # 注意：虽然贝叶斯优化每次迭代只评估一个点，但初始随机采样可以并行执行
+        import os
+        cpu_count = os.cpu_count() or 4
+        # 不依赖 batch_size，始终使用合理的并行数（与遗传算法保持一致）
+        max_workers = min(max(2, cpu_count // 2), 6)
+        print(f"🎯 贝叶斯优化进程池配置: CPU核心数={cpu_count}, 最大并发进程数={max_workers}")
+        print(f"   注意：贝叶斯优化当前为顺序执行，max_workers={max_workers} 用于未来并行优化扩展")
         
         def black_box_function(**kwargs):
             params = {}
@@ -714,9 +729,65 @@ class StrategyOptimizer:
         )
 
         # 正确的贝叶斯优化实现：
-        # 1. 先进行初始随机采样（探索阶段）
+        # 1. 先进行初始随机采样（探索阶段）- 并行执行以提高效率
         if init_points > 0:
-            optimizer.maximize(init_points=init_points, n_iter=0)
+            # 并行执行初始随机采样
+            print(f"🎯 开始并行初始随机采样（{init_points} 个点，使用 {max_workers} 个进程）...")
+            
+            # 生成初始随机参数点
+            initial_points = []
+            for _ in range(init_points):
+                point = {}
+                for spec in param_specs:
+                    name = spec["name"]
+                    lower, upper = spec["bounds"]
+                    if spec.get("type") == "int":
+                        point[name] = random.randint(int(lower), int(upper))
+                    else:
+                        point[name] = random.uniform(float(lower), float(upper))
+                initial_points.append(point)
+            
+            # 并行评估初始点
+            with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = []
+                for point in initial_points:
+                    future = executor.submit(
+                        _evaluate_payload,
+                        {
+                            "strategy_name": strategy_name,
+                            "param_specs": param_specs,
+                            "genes": [point[spec["name"]] for spec in param_specs],
+                            "target_metric": target_metric,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "db_path": db_path,
+                            "default_params": default_params,
+                        },
+                    )
+                    futures.append((future, point))
+                
+                # 收集结果并注册到优化器
+                for future, point in futures:
+                    try:
+                        result = future.result()
+                        score = result.get("score", MIN_FITNESS_SCORE)
+                        # 手动注册到优化器
+                        optimizer.register(params=point, target=score)
+                        
+                        # 发送评估事件
+                        self._emit_evaluation_event(
+                            result,
+                            {
+                                "algorithm": "bayesian",
+                                "phase": "initial",
+                            },
+                        )
+                    except Exception as e:
+                        print(f"⚠️ 初始点评估失败: {e}")
+                        # 注册一个低分以避免优化器卡住
+                        optimizer.register(params=point, target=MIN_FITNESS_SCORE)
+            
+            print(f"✅ 初始随机采样完成（并行评估了 {init_points} 个点）")
             if self.socketio:
                 best = optimizer.max
                 formatted_params = {

@@ -319,6 +319,150 @@ class OptimizedStockDataQuery:
             logger = get_logger(__name__)
             logger.error(f"获取交易日失败: {e}")
             return []
+    
+    def get_prev_trade_date(self, date: str) -> Optional[str]:
+        """
+        获取指定日期的前一个交易日
+        
+        Args:
+            date: 日期字符串或 Timestamp
+            
+        Returns:
+            前一个交易日的字符串，如果不存在则返回 None
+        """
+        date_str = self._convert_date(date)
+        cache_key = f"prev_trade_date_{date_str}"
+        
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        try:
+            # 获取该日期之前的所有交易日，取最后一个
+            query = """
+                SELECT DISTINCT trade_date 
+                FROM stock_daily 
+                WHERE trade_date < ?
+                ORDER BY trade_date DESC 
+                LIMIT 1
+            """
+            df = self._query_df(query, [date_str])
+            
+            if df.empty or df["trade_date"].empty:
+                result = None
+            else:
+                result = str(df["trade_date"].iloc[0])
+            
+            self._add_to_cache(cache_key, result)
+            return result
+        except Exception as e:
+            self._logger.error(f"获取前一个交易日失败 ({date_str}): {e}")
+            return None
+    
+    def get_previous_trading_date(self, date: str) -> Optional[str]:
+        """
+        获取指定日期的前一个交易日（别名方法，兼容策略代码）
+        
+        Args:
+            date: 日期字符串或 Timestamp
+            
+        Returns:
+            前一个交易日的字符串，如果不存在则返回 None
+        """
+        return self.get_prev_trade_date(date)
+    
+    def get_next_trade_date(self, date: str) -> Optional[str]:
+        """
+        获取指定日期的下一个交易日
+        
+        Args:
+            date: 日期字符串或 Timestamp
+            
+        Returns:
+            下一个交易日的字符串，如果不存在则返回 None
+        """
+        date_str = self._convert_date(date)
+        cache_key = f"next_trade_date_{date_str}"
+        
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        try:
+            # 获取该日期之后的所有交易日，取第一个
+            query = """
+                SELECT DISTINCT trade_date 
+                FROM stock_daily 
+                WHERE trade_date > ?
+                ORDER BY trade_date ASC 
+                LIMIT 1
+            """
+            df = self._query_df(query, [date_str])
+            
+            if df.empty or df["trade_date"].empty:
+                result = None
+            else:
+                result = str(df["trade_date"].iloc[0])
+            
+            self._add_to_cache(cache_key, result)
+            return result
+        except Exception as e:
+            self._logger.error(f"获取下一个交易日失败 ({date_str}): {e}")
+            return None
+    
+    def get_trading_calendar(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[str]:
+        """
+        获取交易日历（交易日列表）
+        
+        Args:
+            start_date: 开始日期（可选），如果不提供则从数据库最早日期开始
+            end_date: 结束日期（可选），如果不提供则到数据库最晚日期结束
+            
+        Returns:
+            交易日列表（字符串格式，按日期升序排列）
+        """
+        # 如果没有指定日期范围，获取全库交易日
+        if start_date is None and end_date is None:
+            cache_key = "trading_calendar_all"
+            if cache_key in self._cache:
+                return self._cache[cache_key].copy()
+            
+            try:
+                query = "SELECT DISTINCT trade_date FROM stock_daily ORDER BY trade_date"
+                df = self._query_df(query)
+                dates = df["trade_date"].tolist()
+                self._add_to_cache(cache_key, dates)
+                return dates.copy()
+            except Exception as e:
+                self._logger.error(f"获取交易日历失败: {e}")
+                return []
+        else:
+            # 使用现有的 get_trading_dates 方法
+            return self.get_trading_dates(start_date, end_date)
+    
+    def is_trading_day(self, date: str) -> bool:
+        """
+        判断指定日期是否为交易日
+        
+        Args:
+            date: 日期字符串或 Timestamp
+            
+        Returns:
+            True 如果是交易日，False 否则
+        """
+        date_str = self._convert_date(date)
+        cache_key = f"is_trading_day_{date_str}"
+        
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        try:
+            query = "SELECT COUNT(*) as cnt FROM stock_daily WHERE trade_date = ?"
+            df = self._query_df(query, [date_str])
+            result = df["cnt"].iloc[0] > 0 if not df.empty else False
+            self._add_to_cache(cache_key, result)
+            return result
+        except Exception as e:
+            self._logger.error(f"判断交易日失败 ({date_str}): {e}")
+            return False
             
     # --- 【【最终修复：KeyError: 'is_limit_up'】】 ---
     def get_all_daily_data_for_period(self, start_date: str, end_date: str, filters: Optional[Dict] = None) -> pd.DataFrame:

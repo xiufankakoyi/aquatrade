@@ -135,19 +135,13 @@ class BacktestVisualizationAPI:
         """获取策略列表（不需要数据库连接）"""
         strategies = []
         try:
-            print("[DEBUG] 开始获取策略列表...")
-            
             # 直接导入并使用get_factory函数
             from strategies.strategy_factory import get_factory
-            print("[DEBUG] 导入策略工厂的get_factory函数")
             
             factory = get_factory()
-            print(f"[DEBUG] 获取到策略工厂实例: {factory}")
             
             # 使用list_strategies方法获取更详细的策略信息
             strategy_info_list = factory.list_strategies()
-            print(f"[DEBUG] 从策略工厂获取到 {len(strategy_info_list)} 个策略")
-            print(f"[DEBUG] 策略工厂返回的策略信息: {strategy_info_list}")
             
             # 确保strategy_info_list是列表类型
             if not isinstance(strategy_info_list, list):
@@ -155,7 +149,7 @@ class BacktestVisualizationAPI:
                 return []
             
             for idx, strategy_info in enumerate(strategy_info_list):
-                print(f"[DEBUG] 处理策略 {idx+1}: {strategy_info}")
+                # 移除 DEBUG 日志
                 
                 # 安全地获取策略信息
                 strategy_id = strategy_info.get('name', '')
@@ -164,10 +158,10 @@ class BacktestVisualizationAPI:
                 # 如果name为空，尝试使用class_name
                 if not strategy_id and class_name:
                     strategy_id = class_name
-                    print(f"[DEBUG] 使用class_name作为strategy_id: {class_name}")
+                    # 移除 DEBUG 日志
                 
                 if not strategy_id:
-                    print(f"[DEBUG] 跳过没有名称的策略: {strategy_info}")
+                    # 移除 DEBUG 日志
                     continue
                 
                 strategy_name = strategy_id  # 使用名称作为ID和名称
@@ -183,9 +177,9 @@ class BacktestVisualizationAPI:
                     "status": "active"
                 }
                 strategies.append(strategy_dict)
-                print(f"[DEBUG] 添加策略到结果列表: {strategy_dict}")
+                # 移除 DEBUG 日志
             
-            print(f"[DEBUG] 最终返回 {len(strategies)} 个策略")
+            # 移除 DEBUG 日志
             return strategies
         except Exception as e:
             print(f"[ERROR] 获取策略列表失败: {e}")
@@ -253,40 +247,77 @@ class BacktestVisualizationAPI:
                     for item in spec
                 ]
 
-        # 3. 退回 dataclass 自动推断 (旧式策略)
+        # 3. 退回 dataclass 自动推断（支持 field metadata）
         strategy = StrategyFactory.get_factory().create_strategy(strategy_id)
         if hasattr(strategy, "config"):
-            from dataclasses import is_dataclass, asdict
+            from dataclasses import is_dataclass, asdict, fields
 
             config = strategy.config
             if is_dataclass(config):
+                # 使用 fields() 获取 field metadata
+                config_fields = fields(config)
                 config_dict = asdict(config)
+                
+                params = []
+                
+                for field_obj in config_fields:
+                    field_name = field_obj.name
+                    field_value = config_dict[field_name]
+                    
+                    # 跳过非优化参数
+                    if isinstance(field_value, (list, dict)) or field_name.startswith('_'):
+                        continue
+                    
+                    # 从 metadata 中提取参数信息
+                    metadata = field_obj.metadata if hasattr(field_obj, 'metadata') else {}
+                    
+                    # 如果 metadata 中明确标记了 optimize=False，跳过
+                    if metadata.get("optimize", True) is False:
+                        continue
+                    
+                    # 从 metadata 中获取类型，否则根据默认值推断
+                    param_type = metadata.get("type") or ('int' if isinstance(field_value, int) else 'float')
+                    
+                    # 从 metadata 中获取 min/max，如果没有则返回 None（让前端决定）
+                    param_min = metadata.get("min")
+                    param_max = metadata.get("max")
+                    
+                    # 如果 metadata 中没有 min/max，返回 None（让前端决定）
+                    # 前端可以通过 CUSTOM_PARAM_CONFIG 覆盖，或使用默认范围生成器
+                    
+                    params.append({
+                        "key": field_name,
+                        "label": metadata.get("label", field_name),
+                        "group": metadata.get("group", "其它"),
+                        "type": param_type,
+                        "min": param_min,
+                        "max": param_max,
+                        "step": metadata.get("step"),
+                        "default": field_value,
+                        "description": metadata.get("description", ""),
+                        "optimize": metadata.get("optimize", True),
+                    })
+                
+                return params
             elif isinstance(config, dict):
-                config_dict = config
+                # 兼容旧式字典配置（无 metadata）
+                params = []
+                for field_name, field_value in config.items():
+                    if isinstance(field_value, (list, dict)) or field_name.startswith('_'):
+                        continue
+                    param_type = 'int' if isinstance(field_value, int) else 'float'
+                    params.append({
+                        "key": field_name,
+                        "label": field_name,
+                        "type": param_type,
+                        "min": None,
+                        "max": None,
+                        "default": field_value,
+                        "description": ""
+                    })
+                return params
             else:
                 return []
-
-            params = []
-            
-            for field_name, field_value in config_dict.items():
-                # 跳过非优化参数
-                if isinstance(field_value, (list, dict)) or field_name.startswith('_'):
-                    continue
-                
-                param_type = 'int' if isinstance(field_value, int) else 'float'
-                
-                # 【核心修改】不再去查 metadata_map，也不再去猜 min/max
-                # 直接告诉前端：我有这个参数，默认值是多少，剩下的你看着办
-                params.append({
-                    "key": field_name,
-                    "label": field_name, # 没有label就直接用key
-                    "type": param_type,
-                    "min": None, 
-                    "max": None,
-                    "default": field_value,
-                    "description": ""
-                })
-            return params
 
         # 4. 实在啥都没有，就返回空
         return []

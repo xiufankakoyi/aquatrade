@@ -65,14 +65,16 @@ def _init_api():
     """初始化 API 并预热数据库连接"""
     global api
     if api is None:
-        print("🔧 正在初始化数据库连接...")
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        
+        logger.info("正在初始化数据库连接...")
         
         # 确保策略工厂被初始化
         from strategies.strategy_factory import StrategyFactory, get_factory
-        print("初始化策略工厂...")
         factory = get_factory()
         strategies = factory.list_strategies()
-        print(f"策略工厂初始化完成，发现 {len(strategies)} 个策略")
+        logger.info(f"策略工厂初始化完成，发现 {len(strategies)} 个策略")
         
         api = BacktestVisualizationAPI()
         # 执行一次简单的预热查询，让数据库连接和缓存就绪
@@ -82,11 +84,11 @@ def _init_api():
             # 获取最近的交易日，触发数据库查询初始化
             dates = api.data_query.get_trading_dates()
             if dates:
-                print(f"✅ 数据库预热完成，最近交易日: {dates[-1] if dates else 'N/A'}")
+                logger.info(f"数据库预热完成，最近交易日: {dates[-1] if dates else 'N/A'}")
             else:
-                print("⚠️ 数据库预热完成，但未找到交易日数据")
+                logger.warning("数据库预热完成，但未找到交易日数据")
         except Exception as e:
-            print(f"⚠️ 数据库预热时出现警告: {e}")
+            logger.warning(f"数据库预热时出现警告: {e}", exc_info=True)
 
  # 在导入时立即初始化（同步初始化，确保 API 可用）
  # （已改为懒加载，由 before_first_request 钩子触发 _init_api）
@@ -136,7 +138,7 @@ def _schedule_restart(delay: float = 1.0) -> None:
 @app.route('/')
 def index():
     """根路径路由"""
-    print("[DEBUG] 根路径被访问")
+    # 移除 DEBUG 日志
     response = jsonify({"success": True, "message": "服务器正在运行"})
     response.headers.add('Content-Type', 'application/json')
     return response
@@ -182,7 +184,7 @@ def get_strategies():
 def test_get_strategies():
     """测试用策略列表端点 - 完全独立实现"""
     try:
-        print("[DEBUG] 调用测试端点 /api/test_strategies")
+        # 移除 DEBUG 日志
         
         # 硬编码策略列表
         test_strategies = [
@@ -192,7 +194,7 @@ def test_get_strategies():
         
         # 直接返回测试数据
         response = jsonify({"success": True, "data": test_strategies})
-        print(f"[DEBUG] 测试端点返回数据: {test_strategies}")
+        # 移除 DEBUG 日志
         return response
     except Exception as e:
         print(f"[ERROR] 测试端点失败: {e}")
@@ -265,7 +267,7 @@ def direct_test():
     """全新的、完全独立的测试端点，用于调试路由和响应处理"""
     # 这个端点不使用任何外部依赖，直接返回硬编码数据
     test_data = {"success": True, "data": [{"id": "test1", "name": "测试数据1"}]}
-    print("[DEBUG] 直接测试端点被调用，返回数据:", test_data)
+    # 移除 DEBUG 日志
     return jsonify(test_data)
 
 @app.route('/api/restart-backend', methods=['POST'])
@@ -796,12 +798,21 @@ def get_strategy_detail(version_id):
 
 @socketio.on('connect')
 def handle_connect():
-    print(f"✅ Socket.IO 客户端已连接: {request.sid}")
-    print(f"📝 请求头: {dict(request.headers)}")
+    # 只在 DEBUG 模式下输出连接信息
+    debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
+    if debug_mode:
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.debug(f"Socket.IO 客户端已连接: {request.sid}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print(f"❎ Socket.IO 客户端已断开: {request.sid}")
+    # 只在 DEBUG 模式下输出断开信息
+    debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
+    if debug_mode:
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.debug(f"Socket.IO 客户端已断开: {request.sid}")
 
 # ---------------- 真正的后台回测任务（不要加装饰器！） ---------------- #
 
@@ -809,7 +820,10 @@ def run_backtest_background(sid, strategy_name, start_date, end_date, benchmark_
     """
     在后台线程/协程里跑流式回测，并不断通过 socketio.emit 推送给前端
     """
-    print(f"🔁 后台线程开始流式回测 {strategy_name} | 基准: {benchmark_code or 'None'}")
+    # 使用 logger 记录重要信息（INFO 级别）
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
+    logger.info(f"开始流式回测: {strategy_name} | 基准: {benchmark_code or 'None'}")
 
     try:
         # 调用 API 层的 stream_backtest（它会包含 daily_equity_engine -> daily_equity 等）
@@ -834,7 +848,7 @@ def run_backtest_background(sid, strategy_name, start_date, end_date, benchmark_
 
             if t == 'error':
                 socketio.emit('backtest_error', data, to=sid)
-                print("❌ 后台回测错误:", data)
+                logger.error(f"后台回测错误: {data}")
                 return
 
             elif t == 'cancelled':
@@ -868,11 +882,11 @@ def run_backtest_background(sid, strategy_name, start_date, end_date, benchmark_
 
             elif t == 'stream_complete':
                 socketio.emit('stream_complete', {"message": "回测完成"}, to=sid)
-                print("✅ 后台线程回测完成")
+                logger.info("后台线程回测完成")
                 return
 
     except Exception as e:
-        print("❌ 后台流式回测失败:", e)
+        logger.error(f"后台流式回测失败: {e}", exc_info=True)
         socketio.emit('backtest_error', {"message": str(e)}, to=sid)
     finally:
         active_backtests.pop(sid, None)
@@ -944,15 +958,17 @@ def handle_cancel_backtest(data=None):
     处理取消回测请求
     CHANGED: 接受 data 参数（即使不使用），避免 Socket.IO 参数不匹配错误
     """
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
     sid = request.sid
     stop_event = active_backtests.get(sid)
     if stop_event:
         stop_event.set()
         emit('backtest_cancel_ack', {"message": "正在停止回测..."})
-        print(f"🛑 收到取消回测请求，已设置停止标志 (sid: {sid})")
+        logger.info(f"收到取消回测请求，已设置停止标志 (sid: {sid})")
     else:
         emit('backtest_cancel_ack', {"message": "当前没有正在运行的回测"})
-        print(f"⚠️ 收到取消回测请求，但当前没有运行的回测 (sid: {sid})")
+        logger.warning(f"收到取消回测请求，但当前没有运行的回测 (sid: {sid})")
 
 @socketio.on('request_kline')
 def handle_request_kline(data):
@@ -978,6 +994,8 @@ def handle_request_kline(data):
 
 def run_optimization_background(sid, config):
     """在后台线程中运行参数优化"""
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
     try:
         from backtest.optimization_engine import StrategyOptimizer
         from threading import Event
@@ -1002,10 +1020,10 @@ def run_optimization_background(sid, config):
         # 运行优化
         result = optimizer.run_optimization(config)
         
-        print(f"✅ 参数优化完成 (sid: {sid})")
+        logger.info(f"参数优化完成 (sid: {sid})")
         
     except Exception as e:
-        print(f"❌ 参数优化失败 (sid: {sid}): {e}")
+        logger.error(f"参数优化失败 (sid: {sid}): {e}", exc_info=True)
         import traceback
         traceback.print_exc()
         socketio.emit('optimization_error', {
@@ -1020,6 +1038,8 @@ def run_optimization_background(sid, config):
 @socketio.on('stop_optimization')
 def handle_stop_optimization(data):
     """处理停止优化请求"""
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
     request_sid = request.sid
     # 优先使用前端显式传来的 sid（表示真正运行优化的会话）
     target_sid = None
@@ -1035,10 +1055,10 @@ def handle_stop_optimization(data):
         # 设置停止事件
         active_optimizations[target_sid].set()
         emit('optimization_cancel_ack', {"message": "正在停止优化..."})
-        print(f"🛑 收到取消优化请求，已设置停止标志 (sid: {target_sid})")
+        logger.info(f"收到取消优化请求，已设置停止标志 (sid: {target_sid})")
     else:
         emit('optimization_cancel_ack', {"message": "当前没有正在运行的优化"})
-        print(f"⚠️ 收到取消优化请求，但当前没有运行的优化 (请求来自 sid: {request_sid}, 目标 sid: {target_sid})")
+        logger.warning(f"收到取消优化请求，但当前没有运行的优化 (请求来自 sid: {request_sid}, 目标 sid: {target_sid})")
 
 @socketio.on('run_optimization')
 def handle_run_optimization(data):
@@ -1085,14 +1105,14 @@ def handle_run_optimization(data):
                 param_max = param_spec.get('max')
                 
                 if not all([param_name, param_min is not None, param_max is not None]):
-                    print(f"⚠️ 跳过无效参数: {param_spec}")
+                    logger.warning(f"跳过无效参数: {param_spec}")
                     continue
                 
                 lower, upper = float(param_min), float(param_max)
                 
                 # 验证参数范围
                 if lower >= upper:
-                    print(f"⚠️ 参数范围验证失败: {param_name} 范围 [{lower}, {upper}] 无效，将使用安全范围")
+                    logger.warning(f"参数范围验证失败: {param_name} 范围 [{lower}, {upper}] 无效，将使用安全范围")
                     lower, upper = min(lower, upper - 1), max(upper, lower + 1)
                 
                 param_range = {
@@ -1232,9 +1252,13 @@ def handle_run_optimization(data):
                 emit('optimization_error', {"message": "缺少必要参数: strategy_name, start_date, end_date"})
                 return
             
-            print(f"🔍 收到参数优化请求（旧格式）: {strategy_name} | {start_date}~{end_date}")
-            print(f"   算法: {config_data.get('method', 'genetic')} | 迭代: {config_data.get('iterations', 50)}")
-            print(f"   选中参数: {list(selected_params.keys())}")
+            from utils.logger import get_logger
+            logger = get_logger(__name__)
+            debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
+            if debug_mode:
+                logger.debug(f"收到参数优化请求（旧格式）: {strategy_name} | {start_date}~{end_date}")
+                logger.debug(f"   算法: {config_data.get('method', 'genetic')} | 迭代: {config_data.get('iterations', 50)}")
+                logger.debug(f"   选中参数: {list(selected_params.keys())}")
             
             # 构建 param_ranges
             param_ranges = []
@@ -1244,7 +1268,7 @@ def handle_run_optimization(data):
                     
                     # 验证参数范围
                     if lower >= upper:
-                        print(f"⚠️ 参数范围验证失败: {param_name} 范围 [{lower}, {upper}] 无效，将使用安全范围")
+                        logger.warning(f"参数范围验证失败: {param_name} 范围 [{lower}, {upper}] 无效，将使用安全范围")
                         if lower > 1000:
                             lower, upper = 0, lower + 100
                         else:
@@ -1299,7 +1323,9 @@ def handle_run_optimization(data):
         emit('optimization_request_received', {"message": "优化请求已收到，正在启动..."})
         
     except Exception as e:
-        print(f"❌ 参数优化启动失败: {e}")
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"参数优化启动失败: {e}", exc_info=True)
         import traceback
         traceback.print_exc()
         emit('optimization_error', {"message": str(e)})
@@ -1311,6 +1337,8 @@ def ga_worker(task_id: str, args: dict):
     GA优化工作线程
     在后台执行GA优化并更新任务状态
     """
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
     ga_tasks[task_id]["status"] = "running"
     try:
         # 导入run_ga_optimization函数
@@ -1322,13 +1350,13 @@ def ga_worker(task_id: str, args: dict):
         # 更新任务状态和结果
         ga_tasks[task_id]["status"] = "finished"
         ga_tasks[task_id]["result"] = result
-        print(f"✅ GA优化任务完成 (task_id: {task_id})")
+        logger.info(f"GA优化任务完成 (task_id: {task_id})")
         
     except Exception as e:
         # 捕获错误并更新任务状态
         ga_tasks[task_id]["status"] = "error"
         ga_tasks[task_id]["error"] = str(e)
-        print(f"❌ GA优化任务失败 (task_id: {task_id}): {e}")
+        logger.error(f"GA优化任务失败 (task_id: {task_id}): {e}", exc_info=True)
         import traceback
         traceback.print_exc()
 
@@ -1375,7 +1403,9 @@ def api_ga_start():
     t = threading.Thread(target=ga_worker, args=(task_id, args), daemon=True)
     t.start()
     
-    print(f"🚀 启动GA优化任务 (task_id: {task_id}, strategy: {strategy_id})")
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
+    logger.info(f"启动GA优化任务 (task_id: {task_id}, strategy: {strategy_id})")
     
     # 返回任务ID给前端
     return jsonify({"ok": True, "task_id": task_id})
@@ -1619,11 +1649,15 @@ def get_scatter_data():
                 })
             except Exception as e:
                 # 如果 Parquet / DuckDB 出现问题，为避免接口过慢，直接返回空数据
-                print(f"使用 Parquet 生成散点图数据失败，将返回空数据: {e}")
+                from utils.logger import get_logger
+                logger = get_logger(__name__)
+                logger.warning(f"使用 Parquet 生成散点图数据失败，将返回空数据: {e}")
                 return jsonify({'success': True, 'data': []})
 
         # 如果 DuckDB / Parquet 或基础股票信息不可用，同样快速返回空数据，避免慢查询
-        print("散点图 Parquet 数据或股票基础信息不可用，返回空数据")
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.warning("散点图 Parquet 数据或股票基础信息不可用，返回空数据")
         return jsonify({'success': True, 'data': []})
     except Exception as e:
         return jsonify({

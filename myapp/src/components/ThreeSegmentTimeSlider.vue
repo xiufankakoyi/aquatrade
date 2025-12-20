@@ -157,13 +157,35 @@ watch(
   () => {
     if (dragging.value) return; 
     
+    // 如果主日期范围改变，需要重新计算分割点
+    if (!props.startDate || !props.endDate) return;
+    
     // 重新计算分割点位置
-    const s1 = getPercentByDate(props.trainEndDate);
-    const s2 = getPercentByDate(props.valEndDate);
+    const s1 = props.trainEndDate ? getPercentByDate(props.trainEndDate) : split1.value;
+    const s2 = props.valEndDate ? getPercentByDate(props.valEndDate) : split2.value;
     
     // 简单的防抖，防止微小浮点数差异导致 UI 闪烁
     if (Math.abs(s1 - split1.value) > 0.01) split1.value = s1;
     if (Math.abs(s2 - split2.value) > 0.01) split2.value = s2;
+  },
+  { immediate: true }
+);
+
+// 监听主日期范围变化，确保滑块边界同步更新
+watch(
+  () => [props.startDate, props.endDate],
+  () => {
+    if (dragging.value) return;
+    
+    // 当主日期范围改变时，重新计算分割点位置
+    // 这会触发上面的 watch，确保 UI 更新
+    if (props.startDate && props.endDate && props.trainEndDate && props.valEndDate) {
+      const s1 = getPercentByDate(props.trainEndDate);
+      const s2 = getPercentByDate(props.valEndDate);
+      
+      split1.value = s1;
+      split2.value = s2;
+    }
   },
   { immediate: true }
 );

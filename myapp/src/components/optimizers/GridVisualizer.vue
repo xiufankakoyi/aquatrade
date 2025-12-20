@@ -188,7 +188,7 @@ onUnmounted(() => {
       </span>
       <span class="text-slate-400">
         已评估 {{ Math.floor((props.progress / 100) * 100) }} / 100 个网格点
-      </span>
+    </span>
     </div>
   </div>
 </template>

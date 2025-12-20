@@ -24,6 +24,7 @@ class Config:
     INITIAL_CAPITAL = 1_000_000  # 初始资金（元）
     COMMISSION_RATE = 0.0005  # CHANGED: 佣金费率（万分之五）
     MIN_COMMISSION = 5.0  # CHANGED: 最低手续费（元）
+    SELL_TAX = 0.001  # CHANGED: 卖出印花税（千分之一，0.1%）
     BOARD_LOT = 100  # 每手股数
     
     # GPU 加速配置

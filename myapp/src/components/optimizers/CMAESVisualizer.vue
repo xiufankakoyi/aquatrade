@@ -208,7 +208,7 @@ onUnmounted(() => {
 <template>
   <div class="relative h-full w-full overflow-hidden bg-slate-950/40">
     <div ref="chartContainer" class="w-full h-full"></div>
-    
+
     <div class="absolute inset-x-0 bottom-2 px-3 text-[11px] text-slate-300 flex justify-between pointer-events-none">
       <span>
         CMA-ES · 第 {{ props.iteration || 1 }} 次迭代

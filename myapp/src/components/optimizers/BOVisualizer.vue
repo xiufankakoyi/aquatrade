@@ -14,9 +14,14 @@ const props = defineProps<{
 const chartContainer = ref<HTMLElement | null>(null);
 let chartInstance: echarts.ECharts | null = null;
 
+// 检查分数是否为有效值（非惩罚值）
+const isValidScore = (score: number): boolean => {
+  return score > -10000; // 惩罚值通常是-1e9
+};
+
 // 生成置信区间数据（呼吸感效果）
 const confidenceData = computed(() => {
-  const historyData = props.history || [];
+  const historyData = (props.history || []).filter(h => isValidScore(h.metric)); // 过滤惩罚值
   const iterations = historyData.map(h => h.iteration);
   const scores = historyData.map(h => h.metric);
   
@@ -112,8 +117,27 @@ function handleResize() {
 
 function updateChart() {
   if (!chartInstance) return;
-  
+
   const { iterations, means, upper, lower, samples } = confidenceData.value;
+  
+  // 如果所有数据都是惩罚值，显示空状态
+  if (iterations.length === 0) {
+    const hasAnyData = props.history && props.history.length > 0;
+    const allInvalid = hasAnyData && props.history!.every(item => !isValidScore(item.metric));
+    
+    chartInstance.setOption({
+      title: {
+        text: allInvalid ? '策略在训练集中无交易' : '等待数据...',
+        left: 'center',
+        top: 'middle',
+        textStyle: {
+          color: allInvalid ? '#ef4444' : '#94a3b8',
+          fontSize: 14
+        }
+      }
+    });
+    return;
+  }
   
   // 呼吸感：置信区间宽度动态变化
   const breathPhase = (Date.now() / 2000) % (2 * Math.PI);
@@ -130,7 +154,7 @@ function updateChart() {
     const baseUncertainty = mean - l;
     return mean - baseUncertainty * breathFactor;
   });
-  
+
   const option: EChartsOption = {
     backgroundColor: 'transparent',
     grid: {
@@ -270,13 +294,13 @@ function updateChart() {
     animationDuration: 2000,
     animationEasing: 'sineOut'
   };
-  
+
   chartInstance.setOption(option, { notMerge: true, lazyUpdate: false });
 }
 
 watch(() => [props.history, props.progress], () => {
   if (chartInstance) {
-    updateChart();
+  updateChart();
   }
 }, { deep: true });
 
@@ -308,7 +332,7 @@ onUnmounted(() => {
         次采样
       </span>
       <span class="text-slate-400">
-        最佳 {{ props.bestScore !== null && props.bestScore !== undefined ? props.bestScore.toFixed(4) : '—' }} · 置信区间收缩中
+        最佳 {{ props.bestScore !== null && props.bestScore !== undefined && isValidScore(props.bestScore) ? props.bestScore.toFixed(4) : '无效' }} · 置信区间收缩中
       </span>
     </div>
   </div>

@@ -1,7 +1,7 @@
 # strategies/jq_volume_strategy.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List
 import time
 
@@ -14,18 +14,151 @@ from utils.config import Config
 @dataclass(frozen=True)
 class JQVolumeConfig:
     """集中管理策略阈值，便于调参或复用。"""
-
-    market_cap_min: float = 60 * 10_000
-    market_cap_max: float = 70 * 10_000
-    volume_ratio_threshold: float = 2.0
-    turnover_rate_threshold: float = 1.5
-    momentum_lookback: int = 3
-    momentum_threshold: float = 0.04
-    ma_days: int = 5
-    min_list_days: int = 60
-    max_candidates: int = 1500
-    position_ratio: float = 0.2
-    max_stocks_per_day: int = 5
+    
+    # 使用 field(metadata={...}) 定义前端参数元数据
+    market_cap_min: float = field(
+        default=60 * 10_000,
+        metadata={
+            "label": "最小市值",
+            "group": "市值筛选",
+            "type": "float",
+            "min": 0,
+            "max": 50000000,  # 5000亿（单位：万元）
+            "step": 10000,
+            "description": "股票最小市值（万元）",
+            "optimize": True,
+        }
+    )
+    market_cap_max: float = field(
+        default=70 * 10_000,
+        metadata={
+            "label": "最大市值",
+            "group": "市值筛选",
+            "type": "float",
+            "min": 0,
+            "max": 50000000,  # 5000亿（单位：万元）
+            "step": 10000,
+            "description": "股票最大市值（万元）",
+            "optimize": True,
+        }
+    )
+    volume_ratio_threshold: float = field(
+        default=2.0,
+        metadata={
+            "label": "量比阈值",
+            "group": "量能筛选",
+            "type": "float",
+            "min": 0.5,
+            "max": 10.0,
+            "step": 0.1,
+            "description": "量比最低要求",
+            "optimize": True,
+        }
+    )
+    turnover_rate_threshold: float = field(
+        default=1.5,
+        metadata={
+            "label": "换手率阈值",
+            "group": "量能筛选",
+            "type": "float",
+            "min": 0.1,
+            "max": 20.0,
+            "step": 0.1,
+            "description": "换手率最低要求（%）",
+            "optimize": True,
+        }
+    )
+    momentum_lookback: int = field(
+        default=3,
+        metadata={
+            "label": "动量回看天数",
+            "group": "动量筛选",
+            "type": "int",
+            "min": 1,
+            "max": 30,
+            "step": 1,
+            "description": "计算动量的回看天数",
+            "optimize": False,  # 通常不优化此参数
+        }
+    )
+    momentum_threshold: float = field(
+        default=0.04,
+        metadata={
+            "label": "动量阈值",
+            "group": "动量筛选",
+            "type": "float",
+            "min": 0.01,
+            "max": 0.2,
+            "step": 0.01,
+            "description": "动量最低要求（4% = 0.04）",
+            "optimize": True,
+        }
+    )
+    ma_days: int = field(
+        default=5,
+        metadata={
+            "label": "均线天数",
+            "group": "技术指标",
+            "type": "int",
+            "min": 3,
+            "max": 60,
+            "step": 1,
+            "description": "移动平均线天数（MA5/MA10等）",
+            "optimize": True,
+        }
+    )
+    min_list_days: int = field(
+        default=60,
+        metadata={
+            "label": "最小上市天数",
+            "group": "股票筛选",
+            "type": "int",
+            "min": 30,
+            "max": 365,
+            "step": 10,
+            "description": "股票最小上市天数",
+            "optimize": False,  # 通常不优化此参数
+        }
+    )
+    max_candidates: int = field(
+        default=1500,
+        metadata={
+            "label": "最大候选数",
+            "group": "股票筛选",
+            "type": "int",
+            "min": 100,
+            "max": 5000,
+            "step": 100,
+            "description": "预筛选后的最大候选股票数",
+            "optimize": False,  # 通常不优化此参数
+        }
+    )
+    position_ratio: float = field(
+        default=0.2,
+        metadata={
+            "label": "仓位比例",
+            "group": "仓位管理",
+            "type": "float",
+            "min": 0.05,
+            "max": 1.0,
+            "step": 0.05,
+            "description": "单只股票仓位比例",
+            "optimize": True,
+        }
+    )
+    max_stocks_per_day: int = field(
+        default=5,
+        metadata={
+            "label": "每日最大买入数",
+            "group": "仓位管理",
+            "type": "int",
+            "min": 1,
+            "max": 20,
+            "step": 1,
+            "description": "每日最多买入的股票数量",
+            "optimize": False,  # 通常不优化此参数
+        }
+    )
 
 
 class JQVolumeStrategy(StrategyBase):

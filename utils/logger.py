@@ -6,6 +6,7 @@
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -35,7 +36,7 @@ class ColoredFormatter(logging.Formatter):
 
 def setup_logger(
     name: str = "aquatrade",
-    level: int = logging.INFO,
+    level: Optional[int] = None,
     log_file: Optional[Path] = None,
     format_string: Optional[str] = None,
     use_color: bool = True,
@@ -58,6 +59,18 @@ def setup_logger(
     # 避免重复添加 handler
     if logger.handlers:
         return logger
+    
+    # 默认级别：从环境变量读取，如果没有则使用 WARNING（只显示警告和错误）
+    if level is None:
+        log_level_str = os.getenv('LOG_LEVEL', 'WARNING').upper()
+        level_map = {
+            'DEBUG': logging.DEBUG,
+            'INFO': logging.INFO,
+            'WARNING': logging.WARNING,
+            'ERROR': logging.ERROR,
+            'CRITICAL': logging.CRITICAL,
+        }
+        level = level_map.get(log_level_str, logging.WARNING)
     
     logger.setLevel(level)
     
@@ -109,6 +122,6 @@ def get_logger(name: Optional[str] = None) -> logging.Logger:
     return logger
 
 
-# 创建默认 logger
-default_logger = setup_logger("aquatrade", level=logging.INFO)
+# 创建默认 logger（默认级别为 WARNING，只显示警告和错误）
+default_logger = setup_logger("aquatrade")
 

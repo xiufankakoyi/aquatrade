@@ -15,20 +15,31 @@ const props = defineProps<{
 const chartContainer = ref<HTMLElement | null>(null);
 let chartInstance: echarts.ECharts | null = null;
 
+// 检查分数是否为有效值（非惩罚值）
+const isValidScore = (score: number): boolean => {
+  return score > -10000; // 惩罚值通常是-1e9
+};
+
 // 按代数分组数据，用于箱线图
 const boxplotData = computed(() => {
   if (!props.history || props.history.length === 0) {
     return { generations: [], data: [] };
   }
   
-  // 按iteration分组
+  // 按iteration分组，并过滤惩罚值
   const byGeneration = new Map<number, number[]>();
   props.history.forEach(item => {
+    if (!isValidScore(item.metric)) return; // 跳过惩罚值
     if (!byGeneration.has(item.iteration)) {
       byGeneration.set(item.iteration, []);
     }
     byGeneration.get(item.iteration)!.push(item.metric);
   });
+  
+  // 如果所有数据都是惩罚值，返回空
+  if (byGeneration.size === 0) {
+    return { generations: [], data: [] };
+  }
   
   // 转换为箱线图数据格式：[min, Q1, median, Q3, max]
   const generations = Array.from(byGeneration.keys()).sort((a, b) => a - b);
@@ -76,13 +87,17 @@ function updateChart() {
   const { generations, data } = boxplotData.value;
   
   if (data.length === 0) {
+    // 检查是否所有数据都是惩罚值
+    const hasAnyData = props.history && props.history.length > 0;
+    const allInvalid = hasAnyData && props.history!.every(item => !isValidScore(item.metric));
+    
     chartInstance.setOption({
       title: {
-        text: '等待数据...',
+        text: allInvalid ? '策略在训练集中无交易' : '等待数据...',
         left: 'center',
         top: 'middle',
         textStyle: {
-          color: '#94a3b8',
+          color: allInvalid ? '#ef4444' : '#94a3b8',
           fontSize: 14
         }
       }

@@ -6,13 +6,27 @@
         <span v-if="locked" class="text-xs text-slate-500">🔒</span>
       </div>
       <div class="flex items-center gap-2 text-xs font-mono">
-        <span class="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-semibold shadow-sm">
-          {{ formatValue(displayMinValue) }}{{ unit }}
-        </span>
+        <input
+          type="text"
+          :value="editingMin ? minInputValue : formatValue(displayMinValue)"
+          @input="handleMinInput"
+          @blur="handleMinBlur"
+          @keydown.enter="handleMinBlur"
+          @focus="() => { editingMin = true; minInputValue = formatValue(displayMinValue); }"
+          class="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-semibold shadow-sm w-20 text-center focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="locked"
+        />
         <span class="text-slate-500 font-bold">——</span>
-        <span class="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-semibold shadow-sm">
-          {{ formatValue(displayMaxValue) }}{{ unit }}
-        </span>
+        <input
+          type="text"
+          :value="editingMax ? maxInputValue : formatValue(displayMaxValue)"
+          @input="handleMaxInput"
+          @blur="handleMaxBlur"
+          @keydown.enter="handleMaxBlur"
+          @focus="() => { editingMax = true; maxInputValue = formatValue(displayMaxValue); }"
+          class="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-semibold shadow-sm w-20 text-center focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          :disabled="locked"
+        />
       </div>
     </div>
     
@@ -89,6 +103,12 @@ const emit = defineEmits<{
 
 const dragging = ref<'min' | 'max' | null>(null);
 const sliderTrack = ref<HTMLElement | null>(null);
+
+// 输入框编辑状态
+const editingMin = ref(false);
+const editingMax = ref(false);
+const minInputValue = ref<string>('');
+const maxInputValue = ref<string>('');
 
 // === 核心：本地视觉状态（UI层，0-100%线性） ===
 // 拖动时，滑块位置完全由这个本地状态控制，不受 props 影响
@@ -216,7 +236,7 @@ const startDrag = (handle: 'min' | 'max', event: MouseEvent | TouchEvent) => {
   event.preventDefault();
   
   // 立即更新本地视觉状态（0延迟）
-  const clientX = ('touches' in event && event.touches && event.touches.length > 0)
+  const clientX = ('touches' in event && event.touches && event.touches.length > 0 && event.touches[0])
     ? event.touches[0].clientX 
     : (event as MouseEvent).clientX;
   const percent = getPercentFromPosition(clientX);
@@ -242,9 +262,12 @@ const handleTrackClick = (event: MouseEvent | TouchEvent) => {
     return;
   }
   
-  const clientX = ('touches' in event && event.touches && event.touches.length > 0)
-    ? event.touches[0].clientX 
-    : (event as MouseEvent).clientX;
+  let clientX: number;
+  if ('touches' in event && event.touches && event.touches.length > 0 && event.touches[0]) {
+    clientX = event.touches[0].clientX;
+  } else {
+    clientX = (event as MouseEvent).clientX;
+  }
   const percent = getPercentFromPosition(clientX);
   
   // 判断点击位置更接近哪个滑块
@@ -264,9 +287,12 @@ const handleMouseMove = (event: MouseEvent | TouchEvent) => {
   if (!dragging.value) return;
   
   // === 拖动中：直接更新本地视觉状态（0延迟，60fps丝滑） ===
-  const clientX = ('touches' in event && event.touches && event.touches.length > 0)
-    ? event.touches[0].clientX 
-    : (event as MouseEvent).clientX;
+  let clientX: number;
+  if ('touches' in event && event.touches && event.touches.length > 0 && event.touches[0]) {
+    clientX = event.touches[0].clientX;
+  } else {
+    clientX = (event as MouseEvent).clientX;
+  }
   const percent = getPercentFromPosition(clientX);
   
   if (dragging.value === 'min') {
@@ -307,6 +333,89 @@ const handleMouseUp = () => {
     dragging.value = null;
     // 此时 computed 会自动从 props 同步最新值到本地状态
   }
+};
+
+// === 输入框处理函数 ===
+const handleMinInput = (event: Event) => {
+  const target = event.target as HTMLInputElement | null;
+  if (!target) return;
+  minInputValue.value = target.value;
+  editingMin.value = true;
+};
+
+const handleMinBlur = () => {
+  editingMin.value = false;
+  const inputValue = minInputValue.value.trim();
+  
+  // 如果输入为空，直接清空，让 computed 显示当前值
+  if (!inputValue) {
+    minInputValue.value = '';
+    return;
+  }
+  
+  // 移除单位（如果有）
+  const numericStr = inputValue.replace(/[^\d.-]/g, '');
+  const numericValue = parseFloat(numericStr);
+  
+  // 如果解析失败，清空输入，让 computed 显示当前值
+  if (isNaN(numericValue)) {
+    minInputValue.value = '';
+    return;
+  }
+  
+  // 验证范围
+  const clampedValue = Math.max(props.absoluteMin, Math.min(numericValue, props.maxValue - props.step));
+  // 对齐步长
+  const alignedValue = Math.round(clampedValue / props.step) * props.step;
+  
+  // 更新本地百分比状态
+  const percent = valueToPercent(alignedValue, props.absoluteMin, props.absoluteMax);
+  localMinPercent.value = Math.min(percent, localMaxPercent.value - 0.1);
+  
+  // 同步到父组件
+  syncToParent('min');
+  minInputValue.value = '';
+};
+
+const handleMaxInput = (event: Event) => {
+  const target = event.target as HTMLInputElement | null;
+  if (!target) return;
+  maxInputValue.value = target.value;
+  editingMax.value = true;
+};
+
+const handleMaxBlur = () => {
+  editingMax.value = false;
+  const inputValue = maxInputValue.value.trim();
+  
+  // 如果输入为空，直接清空，让 computed 显示当前值
+  if (!inputValue) {
+    maxInputValue.value = '';
+    return;
+  }
+  
+  // 移除单位（如果有）
+  const numericStr = inputValue.replace(/[^\d.-]/g, '');
+  const numericValue = parseFloat(numericStr);
+  
+  // 如果解析失败，清空输入，让 computed 显示当前值
+  if (isNaN(numericValue)) {
+    maxInputValue.value = '';
+    return;
+  }
+  
+  // 验证范围
+  const clampedValue = Math.min(props.absoluteMax, Math.max(numericValue, props.minValue + props.step));
+  // 对齐步长
+  const alignedValue = Math.round(clampedValue / props.step) * props.step;
+  
+  // 更新本地百分比状态
+  const percent = valueToPercent(alignedValue, props.absoluteMin, props.absoluteMax);
+  localMaxPercent.value = Math.max(percent, localMinPercent.value + 0.1);
+  
+  // 同步到父组件
+  syncToParent('max');
+  maxInputValue.value = '';
 };
 
 onMounted(() => {

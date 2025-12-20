@@ -21,19 +21,38 @@ try:
 except ImportError:
     import numpy as np
 from tqdm import tqdm
-from utils.config import Config
 import asyncio
 from typing import AsyncGenerator, Dict, Any, Generator, Tuple, List, Optional
 from threading import Event
+from datetime import timedelta
 import time
 import os
 
 
 class OptimizedBacktestEngine:
-    def __init__(self, data_query, initial_capital=None):
+    # 默认配置常量（不再依赖 Config）
+    DEFAULT_INITIAL_CAPITAL = 1_000_000  # 默认初始资金（元）
+    DEFAULT_COMMISSION_RATE = 0.0005  # 默认佣金费率（万分之五）
+    DEFAULT_MIN_COMMISSION = 5.0  # 默认最低手续费（元）
+    DEFAULT_SELL_TAX = 0.001  # 默认卖出印花税（千分之一，0.1%）
+    DEFAULT_BOARD_LOT = 100  # 默认每手股数
+    DEFAULT_MAX_POSITIONS = 3  # 默认最大持仓数量
+    DEFAULT_POSITION_RATIO = 0.2  # 默认单只股票仓位比例（20%）
+    
+    def __init__(self, data_query, initial_capital=None, commission_rate=None):
         self.data_query = data_query
-        self.initial_capital = initial_capital or Config.INITIAL_CAPITAL
-        self.commission_rate = Config.COMMISSION_RATE
+        # 从参数或环境变量获取初始资金，否则使用默认值
+        if initial_capital is None:
+            env_capital = os.getenv('INITIAL_CAPITAL')
+            self.initial_capital = float(env_capital) if env_capital else self.DEFAULT_INITIAL_CAPITAL
+        else:
+            self.initial_capital = initial_capital
+        # 从参数或环境变量获取佣金费率，否则使用默认值
+        if commission_rate is None:
+            env_rate = os.getenv('COMMISSION_RATE')
+            self.commission_rate = float(env_rate) if env_rate else self.DEFAULT_COMMISSION_RATE
+        else:
+            self.commission_rate = commission_rate
         self._portfolio_value_cache = {}
         self.latest_factors = {}  # 存储回测结束时的最新复权因子
         
@@ -259,7 +278,15 @@ class OptimizedBacktestEngine:
         if use_preload:
             try:
                 logger.info("开始预加载回测数据...")
-                self.data_query.preload_backtest_data(start_date_str, end_date_str)
+                # 【修复4】从策略获取预热期，避免硬编码
+                # 如果策略需要 MA60/MA120 等指标，需要更多预热数据
+                required_warmup = getattr(strategy, 'warmup_days', 60)  # 默认60天，覆盖MA60
+                if required_warmup < 30:
+                    required_warmup = 30  # 至少30天，覆盖MA20/MA30
+                load_start_date = pd.to_datetime(start_date_str) - timedelta(days=required_warmup)
+                load_start_date_str = load_start_date.strftime('%Y-%m-%d')
+                logger.info(f"数据加载开始日期提前 {required_warmup} 天: {load_start_date_str} (回测仍从 {start_date_str} 开始)")
+                self.data_query.preload_backtest_data(load_start_date_str, end_date_str)
                 logger.info("数据预加载完成")
             except Exception as e:
                 logger.warning(f"数据预加载失败，将使用逐日查询: {e}")
@@ -270,6 +297,9 @@ class OptimizedBacktestEngine:
         cash = self.initial_capital
         results_list = []
         all_trades_log = []
+        
+        # 【修复3】待执行的信号队列（解决未来函数问题：今日出信号，明日开盘买入）
+        pending_signals: Dict[str, str] = {}  # {stock_code: signal}
         
         # 3. 【产出】开始信号
         yield {
@@ -309,7 +339,7 @@ class OptimizedBacktestEngine:
                 if hasattr(strategy, "set_runtime_context"):
                     strategy.set_runtime_context(current_date, portfolio, cash)
 
-                # 4b. 生成信号
+                # 4b. 生成当日信号
                 t1 = time.time()
                 try:
                     signals = strategy.generate_signals(current_date, stock_pool, self.data_query)
@@ -318,11 +348,100 @@ class OptimizedBacktestEngine:
                     signals = {}
                 t_sig = time.time() - t1
 
-                # 4c. 准备价格（向量化 + 避免逐行 iterrows）
-                # 注意：stock_pool 已经是前复权价格
+                # 【修复逻辑】检查策略是否需要延迟执行信号
+                # 如果策略明确标记 delay_signal_execution=True，则延迟到下一交易日
+                # 否则默认当日执行（因为大多数策略基于昨日或更早的数据）
+                delay_execution = getattr(strategy, 'delay_signal_execution', False)
+                
+                t_exec = time.time()
+                daily_trades = []
+                
+                if delay_execution:
+                    # 延迟执行模式：今日出信号，明日开盘买入（适用于基于当日收盘数据的策略）
+                    pending_signals = signals.copy()
+                    # 执行上一交易日产生的信号
+                    if pending_signals:
+                        price_map_exec: Dict[str, Dict[str, float]] = {}
+                        stock_codes_needed_exec = set(pending_signals.keys()) | set(portfolio.keys())
+                        if stock_codes_needed_exec and stock_pool is not None and not stock_pool.empty:
+                            mask = stock_pool['stock_code'].isin(stock_codes_needed_exec)
+                            if mask.any():
+                                cols = ['stock_code']
+                                if 'open' in stock_pool.columns:
+                                    cols.append('open')
+                                if 'close' in stock_pool.columns:
+                                    cols.append('close')
+                                
+                                price_df = stock_pool.loc[mask, cols].drop_duplicates(subset=['stock_code'])
+                                
+                                codes = price_df['stock_code'].to_numpy()
+                                opens = price_df['open'].to_numpy() if 'open' in price_df.columns else None
+                                closes = price_df['close'].to_numpy() if 'close' in price_df.columns else None
+
+                                for i, code in enumerate(codes):
+                                    o = opens[i] if opens is not None else None
+                                    c = closes[i] if closes is not None else None
+                                    if o is None: o = c
+                                    if c is None: c = o
+                                    price_map_exec[str(code)] = {
+                                        'open': float(o) if o is not None else None,
+                                        'close': float(c) if c is not None else None,
+                                    }
+                        
+                        try:
+                            portfolio, cash, daily_trades = self.execute_trades(
+                                current_date, pending_signals, portfolio, cash, price_map_exec, strategy
+                            )
+                        except Exception as e:
+                            logger.error(f"执行上一交易日信号失败 ({current_date}): {e}")
+                            daily_trades = []
+                        pending_signals = {}
+                else:
+                    # 默认模式：当日执行信号（适用于基于昨日或更早数据的策略）
+                    # 例如：1.2日基于12.31的数据生成信号，立即在1.2日执行买入
+                    if signals:
+                        # 准备价格映射（使用当日开盘价执行交易）
+                        price_map_exec: Dict[str, Dict[str, float]] = {}
+                        stock_codes_needed_exec = set(signals.keys()) | set(portfolio.keys())
+                        if stock_codes_needed_exec and stock_pool is not None and not stock_pool.empty:
+                            mask = stock_pool['stock_code'].isin(stock_codes_needed_exec)
+                            if mask.any():
+                                cols = ['stock_code']
+                                if 'open' in stock_pool.columns:
+                                    cols.append('open')
+                                if 'close' in stock_pool.columns:
+                                    cols.append('close')
+                                
+                                price_df = stock_pool.loc[mask, cols].drop_duplicates(subset=['stock_code'])
+                                
+                                codes = price_df['stock_code'].to_numpy()
+                                opens = price_df['open'].to_numpy() if 'open' in price_df.columns else None
+                                closes = price_df['close'].to_numpy() if 'close' in price_df.columns else None
+
+                                for i, code in enumerate(codes):
+                                    o = opens[i] if opens is not None else None
+                                    c = closes[i] if closes is not None else None
+                                    if o is None: o = c
+                                    if c is None: c = o
+                                    # 使用开盘价执行交易（避免偷价）
+                                    price_map_exec[str(code)] = {
+                                        'open': float(o) if o is not None else None,
+                                        'close': float(c) if c is not None else None,
+                                    }
+                        
+                        try:
+                            portfolio, cash, daily_trades = self.execute_trades(
+                                current_date, signals, portfolio, cash, price_map_exec, strategy
+                            )
+                        except Exception as e:
+                            logger.error(f"执行当日信号失败 ({current_date}): {e}")
+                            daily_trades = []
+                t_exec_duration = time.time() - t_exec
+
+                # 4d. 准备价格映射（用于市值计算，使用收盘价）
                 t2 = time.time()
                 price_map: Dict[str, Dict[str, float]] = {}
-                stock_codes_needed = set(signals.keys()) | set(portfolio.keys())
+                stock_codes_needed = set(portfolio.keys())  # 只需要持仓股票的价格用于市值计算
                 if stock_codes_needed and stock_pool is not None and not stock_pool.empty:
                     mask = stock_pool['stock_code'].isin(stock_codes_needed)
                     if mask.any():
@@ -349,17 +468,6 @@ class OptimizedBacktestEngine:
                             }
                 t_price = time.time() - t2
 
-                # 4d. 执行交易
-                t3 = time.time()
-                try:
-                    portfolio, cash, daily_trades = self.execute_trades(
-                        current_date, signals, portfolio, cash, price_map, strategy
-                    )
-                except Exception as e:
-                    logger.error(f"执行交易失败 ({current_date}): {e}")
-                    daily_trades = []
-                t_exec = time.time() - t3
-
                 # 记录单日耗时拆分，方便分析瓶颈
                 day_total = time.time() - day_start
                 pool_rows = 0 if stock_pool is None else len(stock_pool)
@@ -369,7 +477,7 @@ class OptimizedBacktestEngine:
                     f"db+qfq={t_db*1000:.1f}ms, "
                     f"signal={t_sig*1000:.1f}ms, "
                     f"price_map={t_price*1000:.1f}ms, "
-                    f"exec_trades={t_exec*1000:.1f}ms, "
+                    f"exec_trades={t_exec_duration*1000:.1f}ms, "
                     f"total={day_total*1000:.1f}ms"
                 )
                 
@@ -525,13 +633,17 @@ class OptimizedBacktestEngine:
             })
 
         def resolve_price(stock_code: str, action: str) -> Optional[float]:
+            """
+            【修复3】价格解析：买入使用开盘价，卖出使用开盘价（避免偷价）
+            """
             price_data = price_map.get(stock_code)
             if price_data is None: return None
             
-            # 简化价格选择逻辑
             price = None
             if isinstance(price_data, dict):
-                price = price_data.get("close") or price_data.get("open")
+                # 【修复3】买入和卖出都优先使用开盘价（避免使用收盘价偷价）
+                # 这符合"今日出信号，明日开盘买入"的逻辑
+                price = price_data.get("open") or price_data.get("close")
             else:
                 price = price_data
             return price
@@ -549,13 +661,19 @@ class OptimizedBacktestEngine:
                     if entry_date and entry_date >= date: continue
 
                     shares = position.get('shares', 0)
-                    BOARD_LOT = getattr(Config, "BOARD_LOT", 100)
+                    BOARD_LOT = int(os.getenv('BOARD_LOT', self.DEFAULT_BOARD_LOT))
                     shares = (shares // BOARD_LOT) * BOARD_LOT
                     if shares < BOARD_LOT: continue
                     
+                    # 【修复1】计算佣金
                     commission_base = shares * current_price * self.commission_rate
-                    commission = max(commission_base, getattr(Config, 'MIN_COMMISSION', 5.0))
-                    sell_amount = shares * current_price - commission
+                    min_commission = float(os.getenv('MIN_COMMISSION', self.DEFAULT_MIN_COMMISSION))
+                    commission = max(commission_base, min_commission)
+                    # 【修复1】计算印花税（卖出时收取，A股规则）
+                    sell_tax_rate = float(os.getenv('SELL_TAX', self.DEFAULT_SELL_TAX))  # 默认千分之一
+                    tax = shares * current_price * sell_tax_rate
+                    # 【修复1】卖出获得的现金要减去佣金和印花税
+                    sell_amount = shares * current_price - commission - tax
                     cash += sell_amount
                     
                     # FIFO 匹配
@@ -590,6 +708,7 @@ class OptimizedBacktestEngine:
                         "price": current_price,
                         "quantity": shares,
                         "commission": commission,
+                        "tax": tax,  # 【修复1】记录印花税
                         "entry_date": entry_date,
                         "exit_date": date,
                         "entry_price": entry_price,
@@ -605,17 +724,43 @@ class OptimizedBacktestEngine:
         # === 2. 处理买入 ===
         buy_signals = [code for code, signal in signals.items() if signal == 'buy']
         
-        # 简单仓位管理：最多持仓 3 只，每只 20%
-        max_positions = 3
-        position_ratio = 0.2
-        buy_allowance = max_positions - len(new_portfolio)
+        # 【修复2+用户需求】仓位管理：策略参数优先，未提供则全仓买入所有信号
+        # 检查策略是否提供了仓位管理参数
+        strategy_has_max_positions = strategy and hasattr(strategy, 'max_positions')
+        strategy_has_position_ratio = strategy and hasattr(strategy, 'position_ratio')
         
-        if buy_allowance > 0 and buy_signals:
-            stocks_to_buy = buy_signals[:buy_allowance]
+        if strategy_has_max_positions:
+            max_positions = strategy.max_positions
+        else:
+            max_positions = None  # None 表示不限制持仓数量
+        
+        if strategy_has_position_ratio:
+            position_ratio = strategy.position_ratio
+        else:
+            position_ratio = None  # None 表示不限制单只股票仓位比例
+        
+        # 如果策略提供了参数，使用策略参数；否则全仓买入所有信号
+        if max_positions is not None:
+            # 策略提供了 max_positions，限制持仓数量
+            buy_allowance = max_positions - len(new_portfolio)
+            stocks_to_buy = buy_signals[:buy_allowance] if buy_allowance > 0 else []
+        else:
+            # 策略未提供 max_positions，买入所有信号
+            stocks_to_buy = buy_signals
+        
+        if stocks_to_buy:
             total_equity = sum(p['shares']*p['entry_price'] for p in portfolio.values()) + cash
-            target_per_stock = total_equity * position_ratio
             available_cash = cash
-            BOARD_LOT = getattr(Config, "BOARD_LOT", 100)
+            BOARD_LOT = int(os.getenv('BOARD_LOT', self.DEFAULT_BOARD_LOT))
+            
+            # 计算每只股票的目标投资金额
+            if position_ratio is not None:
+                # 策略提供了 position_ratio，使用固定比例（基于总资产）
+                target_per_stock = total_equity * position_ratio
+            else:
+                # 策略未提供 position_ratio，平均分配初始可用资金
+                # 在循环开始前计算，确保每只股票分配金额固定
+                target_per_stock = cash / len(stocks_to_buy) if stocks_to_buy else 0
 
             for stock_code in stocks_to_buy:
                 if stock_code not in new_portfolio and stock_code in price_map:
@@ -627,7 +772,7 @@ class OptimizedBacktestEngine:
                         investment = min(target_per_stock, available_cash)
                         if investment <= 0 or np.isnan(investment): continue
                         
-                        min_comm = getattr(Config, 'MIN_COMMISSION', 5.0)
+                        min_comm = float(os.getenv('MIN_COMMISSION', self.DEFAULT_MIN_COMMISSION))
                         est_rate = max(self.commission_rate, min_comm / (investment + 1))
                         if np.isnan(est_rate):
                             continue

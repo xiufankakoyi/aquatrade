@@ -2,187 +2,121 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useStrategyStore, type ParameterSearchResult } from "@/store/strategyStore";
-import { useHistoryStore, type HistoryRecord } from "@/store/historyStore";
-import { useSocketIO } from '../composables/useSocketIO';
-import { useTimingLogger, formatDuration } from '../composables/useTimingLogger';
+import { useOptimization } from '@/composables/useOptimization';
+import { useAlgorithmParams } from '@/composables/useAlgorithmParams';
+import { useDateRange } from '@/composables/useDateRange';
+import { useStrategyParams } from '@/composables/useStrategyParams';
 import OptimizationVisualizer from '@/components/OptimizationVisualizer.vue';
 import RangeSlider from '@/components/RangeSlider.vue';
 import ThreeSegmentTimeSlider from '@/components/ThreeSegmentTimeSlider.vue';
-import { createStrategyProfile } from '../api/backtestApi';
 import * as echarts from 'echarts';
 import type { EChartsOption } from 'echarts';
+import { 
+  CUSTOM_PARAM_CONFIG, 
+  ALGO_CONFIGS, 
+  type AlgorithmKey 
+} from '@/config/strategyConfig';
+import {
+  getParamUnit,
+  toUiValue,
+  toBackendValue,
+  formatParamDisplayValue,
+  getParamLabel
+} from '@/utils/paramUtils';
 
-type ParamValue = { start?: number; step?: number };
-type ParamValidity = { start?: boolean; step?: boolean };
 type SearchResult = ParameterSearchResult;
-type AlgorithmKey = 'ga' | 'pso' | 'cmaes' | 'simulatedAnnealing' | 'bayesian' | 'grid';
-type FieldType = 'int' | 'float' | 'select';
-
-type AlgorithmField = {
-  key: string;
-  label: string;
-  type: FieldType;
-  default: number | string;
-  step?: number;
-  min?: number;
-  max?: number;
-  options?: Array<{ value: string; label: string }>;
-  hint?: string;
-};
-
-type AlgorithmConfig = {
-  label: string;
-  method: string;
-  fields: AlgorithmField[];
-  description?: string;
-};
 
 const API_BASE_URL = 'http://localhost:5000/api';
-const DATE_STORAGE_KEY = 'grid_opt_dates_v1';
-const DEFAULT_DATES = {
-  startDate: '2024-05-20',
-  endDate: '2025-01-20',
-  trainStartDate: '2024-05-20',
-  trainEndDate: '2025-01-20',
-  valStartDate: '2025-02-01',
-  valEndDate: '2025-05-30',
-  testStartDate: '2025-06-01',
-  testEndDate: '2025-11-04',
-};
 
-interface ParamDisplayConfig {
-  unit?: string;
-  scale?: number;
-}
+// ==================== Composables ====================
+// 优化状态管理
+const {
+  isOptimizing,
+  progress,
+  optimizationStatus,
+  evaluatedCount,
+  totalIterations,
+  bestMetric,
+  bestParams,
+  evaluationResults,
+  optimizationHistory,
+  candidates,
+  finalSelected,
+  startOptimization: startOpt,
+  stopOptimization: stopOpt,
+  setupSocketListeners,
+  cleanup: cleanupOptimization,
+} = useOptimization();
 
-const PARAM_DISPLAY: Record<string, ParamDisplayConfig> = {
-  market_cap_min: {
-    unit: '亿',
-    scale: 10000,
-  },
-  market_cap_max: {
-    unit: '亿',
-    scale: 10000,
-  },
-};
+// 策略参数管理
+const selectedStrategy = ref('');
+const {
+  availableParams,
+  selectedParamKeys,
+  paramLocked,
+  paramRangeValues,
+  isLoadingParams,
+  fetchStrategyParams,
+} = useStrategyParams(selectedStrategy);
 
-// --- 核心配置：参数自定义覆盖表 ---
-// key: 参数名 (必须与后端返回的 key 一致)
-const CUSTOM_PARAM_CONFIG: Record<string, {
-  overrideMin?: number;     // 物理轨道下限 (后端单位)
-  overrideMax?: number;     // 物理轨道上限 (后端单位)
-  defaultStart?: number;    // 默认把手起始位置 (后端单位)
-  defaultEnd?: number;      // 默认把手结束位置 (后端单位)
-  step?: number;            // 滑块步长 (UI单位)
-  useSlider?: boolean;      // 是否强制使用双向滑块组件
-  useLogScale?: boolean;    // 是否使用对数轴 (适合跨度极大的数值)
-}> = {
-  // === 市值参数配置 ===
-  'market_cap_min': {
-    overrideMin: 100,
-    overrideMax: 50000000,    // 5000亿 (单位：万元)
-    defaultStart: 200000,     // 20亿
-    defaultEnd: 1000000,      // 100亿
-    step: 0.1,                // 0.5亿
-    useSlider: true,
-    useLogScale: true
-  },
-  'market_cap_max': {
-    overrideMin: 100,
-    overrideMax: 50000000,
-    defaultStart: 200000,
-    defaultEnd: 1000000,
-    step: 0.1,
-    useSlider: true,
-    useLogScale: true
-  },
+// 算法参数管理
+const selectedAlgorithm = ref<AlgorithmKey>('ga');
+const {
+  algorithmParams,
+  currentAlgoConfig,
+  currentAlgoParams,
+  loadAlgorithmParams,
+} = useAlgorithmParams(selectedAlgorithm);
 
-};
+// 日期范围管理
+const {
+  startDate,
+  endDate,
+  trainStartDate,
+  trainEndDate,
+  valStartDate,
+  valEndDate,
+  testStartDate,
+  testEndDate,
+  applyInitialDates,
+} = useDateRange();
 
-const normalizeParamKey = (key: string) => key?.trim().toLowerCase();
-const getParamDisplayConfig = (key: string) => {
-  if (!key) return undefined;
-  return PARAM_DISPLAY[normalizeParamKey(key)];
-};
+// Store
+const strategyStore = useStrategyStore();
+const { parameterSearchResults } = storeToRefs(strategyStore);
+const searchResults = parameterSearchResults;
 
-// --- 通用默认范围生成器（当后端不返回 min/max 时使用）---
-const getDefaultRange = (param: any): { min: number; max: number } => {
-  // 1. 优先使用配置表中的值
-  const config = CUSTOM_PARAM_CONFIG[param.key];
-  if (config && config.overrideMin !== undefined && config.overrideMax !== undefined) {
-    return {
-      min: config.overrideMin,
-      max: config.overrideMax
-    };
-  }
-  
-  // 2. 根据参数类型和名称推断通用超大范围
-  const paramType = param.type || 'float';
-  const key = param.key?.toLowerCase() || '';
-  
-  if (paramType === 'int') {
-    // 整数类型：根据字段名推断
-    if (key.includes('days') || key.includes('ma')) {
-      return { min: 1, max: 1000 };  // 天数类：1-1000
-    } else if (key.includes('candidates') || key.includes('stocks')) {
-      return { min: 1, max: 1000 };  // 数量类：1-1000
-    } else if (key.includes('cap')) {
-      return { min: 0, max: 50000000 };  // 市值类：0-5000亿（万元）
-    } else {
-      return { min: 1, max: 10000 };  // 其他整数：1-10000
-    }
-  } else {
-    // 浮点数类型
-    if (key.includes('ratio') || key.includes('position')) {
-      return { min: 0, max: 10 };  // 比例类：0-10
-    } else if (key.includes('threshold')) {
-      return { min: 0, max: 100 };  // 阈值类：0-100
-    } else if (key.includes('cap')) {
-      return { min: 0, max: 50000000 };  // 市值类：0-5000亿（万元）
-    } else {
-      return { min: 0, max: 1000 };  // 其他浮点数：0-1000
-    }
-  }
-};
+// ==================== UI State ====================
+const availableStrategies = ref<Array<{id: string, name: string}>>([]);
+const isLoadingStrategies = ref(false);
+const maxIterations = ref(100);
+const populationSize = ref(50);
+const selectedMetric = ref('sharpeRatio');
+const optimizationMode = ref<'quick_explore' | 'robust' | 'aggressive'>('robust');
+const optimizationObjective = ref<'robust_trend_score' | 'rr_risk_score' | 'multi_period_robust' | 'calmar' | 'sharpe'>('robust_trend_score');
+const selectedResult = ref<SearchResult | null>(null);
+const candidateDetail = ref<any | null>(null);
+const showSensitivity = ref(false);
+const sensitivityParamKey = ref('');
+const sensitivityPoints = ref<Array<{ value: number; score: number }>>([]);
+const sensitivityChartContainer = ref<HTMLElement | null>(null);
+let sensitivityChartInstance: echarts.ECharts | null = null;
+const showEvaluationDetails = ref(false);
+const isSavingProfile = ref(false);
+const enableDiversity = ref(true);
+const diversityThreshold = ref(0.15);
+const maxDiverseResults = ref(10);
+const errorMessage = ref('');
+const successMessage = ref('');
+const confirmationDialog = ref({
+  visible: false,
+  title: '',
+  message: '',
+  confirmAction: () => {},
+  cancelAction: () => {}
+});
 
-const getParamUnit = (key: string): string => {
-  return getParamDisplayConfig(key)?.unit ?? '';
-};
-
-const toUiValue = (key: string, backendValue: number | undefined | null): number | null => {
-  if (backendValue === undefined || backendValue === null) return null;
-  const cfg = getParamDisplayConfig(key);
-  if (!cfg?.scale) return backendValue;
-  const result = backendValue / cfg.scale;
-  // 确保返回值合理，避免显示0.00，但也要处理真正的0值
-  if (result === 0) return 0;
-  return result < 0.01 && result > 0 ? 0.01 : result;
-};
-
-const toBackendValue = (key: string, uiValue: number | undefined | null): number | null => {
-  if (uiValue === undefined || uiValue === null) return null;
-  const cfg = getParamDisplayConfig(key);
-  if (!cfg?.scale) return uiValue;
-  return uiValue * cfg.scale;
-};
-
-const formatParamDisplayValue = (key: string, value: any, digits = 2): string => {
-  const numericValue = typeof value === 'number' ? value : Number(value);
-  if (Number.isNaN(numericValue)) return String(value ?? '');
-  const cfg = getParamDisplayConfig(key);
-  const displayValue = cfg?.scale ? numericValue / cfg.scale : numericValue;
-  return displayValue.toFixed(digits);
-};
-
-const getParamLabel = (param: any): string => {
-  const base = String(param?.label || param?.key || '');
-  const cfg = getParamDisplayConfig(param?.key);
-  if (!cfg?.unit) return base;
-  if (base.includes('万元')) return base.replace('万元', '亿元');
-  if (base.includes('万')) return base.replace('万', cfg.unit);
-  return `${base}(${cfg.unit})`;
-};
-
+// ==================== Utility Functions ====================
 const toNumeric = (value: any): number => {
   if (typeof value === 'number') return value;
   if (value === null || value === undefined || value === '') return NaN;
@@ -205,90 +139,19 @@ const formatPercent = (value: any, digits = 2): string => {
 const formatScore = (value: any, digits = 4): string => {
   const n = toNumeric(value);
   if (Number.isNaN(n)) return '—';
+  // 检查是否为惩罚值（-1e9或更小）
+  if (n < -10000) return '无效';
   return n.toFixed(digits);
 };
 
-const ALGO_CONFIGS: Record<AlgorithmKey, AlgorithmConfig> = {
-  ga: {
-    label: '遗传算法 (GA)',
-    method: 'ga',
-    description: '最常用的全局优化器，适合离散与连续混合空间',
-    fields: [
-      { key: 'pop_size', label: '种群大小', default: 50, type: 'int', min: 5 },
-      { key: 'generations', label: '最大代数', default: 100, type: 'int', min: 10 },
-      { key: 'mutation_rate', label: '变异率', default: 0.1, type: 'float', step: 0.01, min: 0, max: 1 },
-      { key: 'crossover_rate', label: '交叉率', default: 0.8, type: 'float', step: 0.01, min: 0, max: 1 },
-    ],
-  },
-  pso: {
-    label: '粒子群优化 (PSO)',
-    method: 'pso',
-    description: '模拟鸟群觅食，收敛速度快',
-    fields: [
-      { key: 'particle_count', label: '粒子数量', default: 40, type: 'int', min: 10, max: 200, hint: '推荐 30-50' },
-      { key: 'iterations', label: '最大迭代次数', default: 100, type: 'int', min: 10, max: 500 },
-      { key: 'w', label: '惯性权重 (w)', default: 0.7, type: 'float', step: 0.01, min: 0.1, max: 1.2 },
-      { key: 'c1', label: '自我学习因子 (c1)', default: 1.5, type: 'float', step: 0.1, min: 0.5, max: 3 },
-      { key: 'c2', label: '社会学习因子 (c2)', default: 1.5, type: 'float', step: 0.1, min: 0.5, max: 3 },
-    ],
-  },
-  cmaes: {
-    label: 'CMA-ES',
-    method: 'cma_es',
-    description: '连续变量优化利器，参数很少',
-    fields: [
-      { key: 'population', label: '种群大小 (λ)', default: 30, type: 'int', min: 5, max: 200, hint: '推荐 20-50' },
-      { key: 'sigma', label: '初始步长 (Sigma)', default: 0.5, type: 'float', step: 0.05, min: 0.01 },
-      { key: 'max_evaluations', label: '最大评估次数', default: 200, type: 'int', min: 10 },
-    ],
-  },
-  simulatedAnnealing: {
-    label: '模拟退火 (SA)',
-    method: 'sa',
-    description: '防止陷入局部最优，探索性强',
-    fields: [
-      { key: 'initial_temp', label: '初始温度', default: 100, type: 'float', step: 1 },
-      { key: 'min_temp', label: '最低温度', default: 0.01, type: 'float', step: 0.01, min: 0 },
-      { key: 'cooling_rate', label: '冷却速率', default: 0.95, type: 'float', step: 0.01, min: 0, max: 1 },
-      { key: 'steps_per_temp', label: '每温迭代次数', default: 10, type: 'int', min: 1 },
-    ],
-  },
-  bayesian: {
-    label: '贝叶斯优化',
-    method: 'bayesian',
-    description: '昂贵但聪明，适合昂贵评估函数',
-    fields: [
-      { key: 'random_init_points', label: '随机初始点', default: 10, type: 'int', min: 1 },
-      { key: 'iterations', label: '迭代次数', default: 50, type: 'int', min: 5 },
-      {
-        key: 'acquisition_function',
-        label: '采集函数',
-        default: 'EI',
-        type: 'select',
-        options: [
-          { value: 'EI', label: 'EI (期望提升)' },
-          { value: 'PI', label: 'PI (概率提升)' },
-          { value: 'UCB', label: 'UCB (置信上界)' },
-        ],
-      },
-    ],
-  },
-  grid: {
-    label: '网格搜索',
-    method: 'grid',
-    description: '无引擎参数，使用下方参数空间的步长/密度构造网格',
-    fields: [],
-  },
+// 检查分数是否为有效值（非惩罚值）
+const isValidScore = (value: any): boolean => {
+  const n = toNumeric(value);
+  if (Number.isNaN(n)) return false;
+  return n > -10000; // 惩罚值通常是-1e9
 };
 
-const strategyStore = useStrategyStore();
-const historyStore = useHistoryStore();
-const socket = useSocketIO();
-const { start: startTiming, end: endTiming, stats: timingStats } = useTimingLogger();
-
-const { parameterSearchResults } = storeToRefs(strategyStore);
-const searchResults = parameterSearchResults;
-
+// ==================== API Functions ====================
 const fetchStrategies = async () => {
   isLoadingStrategies.value = true;
   try {
@@ -313,203 +176,9 @@ const fetchStrategies = async () => {
   }
 };
 
-const fetchStrategyParams = async () => {
-  if (!selectedStrategy.value) return;
-  isLoadingParams.value = true;
-  try {
-    const response = await fetch(`${API_BASE_URL}/strategies/${encodeURIComponent(selectedStrategy.value)}/params`);
-    if (response.ok) {
-      const params = await response.json();
-      if (Array.isArray(params)) {
-        availableParams.value = params;
-        
-        // 遍历所有参数
-        params.forEach((param: any) => {
-          // 1. 尝试从配置表中获取自定义配置
-          const config = CUSTOM_PARAM_CONFIG[param.key];
-          
-          // 2. 处理 min/max：如果后端返回 null，使用默认范围生成器
-          if (param.min === null || param.min === undefined) {
-            const defaultRange = getDefaultRange(param);
-            param.min = defaultRange.min;
-          }
-          if (param.max === null || param.max === undefined) {
-            const defaultRange = getDefaultRange(param);
-            param.max = defaultRange.max;
-          }
-          
-          if (config) {
-            // === 命中配置：应用覆盖逻辑 ===
-            
-            // 覆盖物理极限 ( 的轨道长度)
-            if (config.overrideMin !== undefined) param.min = config.overrideMin;
-            if (config.overrideMax !== undefined) param.max = config.overrideMax;
-            
-            // 设置滑块初始选区 (把手位置)
-            // 如果配置了 defaultStart/End 就用配置的，否则用覆盖后的 min/max
-            const startVal = config.defaultStart ?? param.min;
-            const endVal = config.defaultEnd ?? param.max;
-            
-            paramRangeValues.value[param.key] = {
-              min: startVal,
-              max: endVal
-            };
-          } else {
-            // === 未命中配置：使用默认范围或后端值 ===
-            // 如果后端返回了值就用后端的，否则用默认范围生成器
-            const defaultRange = getDefaultRange(param);
-            paramRangeValues.value[param.key] = {
-              min: param.min ?? defaultRange.min,
-              max: param.max ?? defaultRange.max
-            };
-          }
-        });
-      }
-    }
-  } catch (e) {
-    showError('获取策略参数失败');
-  } finally {
-    isLoadingParams.value = false;
-  }
-};
-
-// 优化相关状态
-const isOptimizing = ref(false);
-const progress = ref(0);
-const optimizationStatus = ref('idle');
-const evaluatedCount = ref(0);
-const totalIterations = ref(0); // 总迭代次数
-const maxIterations = ref(100);
-const populationSize = ref(50);
-// 每次评估的结果列表
-const evaluationResults = ref<Array<{
-  iteration: number;
-  metric: number;
-  params: Record<string, any>;
-  timestamp: number;
-}>>([]);
-const selectedAlgorithm = ref('ga');
-const selectedMetric = ref('sharpeRatio');
-const bestMetric = ref<number | null>(null);
-const bestParams = ref<Record<string, any>>({});
-const selectedResult = ref<SearchResult | null>(null);
-const candidates = ref<Array<any>>([]);
-const finalSelected = ref<any | null>(null);
-const candidateDetail = ref<any | null>(null);
-const showSensitivity = ref(false);
-const sensitivityParamKey = ref('');
-const sensitivityPoints = ref<Array<{ value: number; score: number }>>([]);
-const sensitivityChartContainer = ref<HTMLElement | null>(null);
-let sensitivityChartInstance: echarts.ECharts | null = null;
-const showEvaluationDetails = ref(false);
-const isSavingProfile = ref(false);
-
-const buildDefaultAlgoParams = (): Record<AlgorithmKey, Record<string, any>> => {
-  const defaults: Partial<Record<AlgorithmKey, Record<string, any>>> = {};
-  (Object.keys(ALGO_CONFIGS) as AlgorithmKey[]).forEach((key) => {
-    const cfg = ALGO_CONFIGS[key];
-    defaults[key] = {};
-    cfg.fields.forEach((field) => {
-      defaults[key]![field.key] = field.default;
-    });
-    if (key === 'grid') {
-      defaults[key]!.grid_density = 10; // UI 提示使用参数步长/密度
-    }
-  });
-  return defaults as Record<AlgorithmKey, Record<string, any>>;
-};
-
-const algorithmParams = ref<Record<AlgorithmKey, Record<string, any>>>(buildDefaultAlgoParams());
-
-const currentAlgoConfig = computed(() => {
-  const key = selectedAlgorithm.value as AlgorithmKey;
-  const config = ALGO_CONFIGS[key];
-  if (!config) {
-    console.warn(`算法配置未找到: ${key}`, '可用配置:', Object.keys(ALGO_CONFIGS));
-  }
-  return config;
-});
-const currentAlgoParams = computed<Record<string, any>>(() => {
-  const key = selectedAlgorithm.value as AlgorithmKey;
-  return algorithmParams.value[key] || {};
-});
-
-// 防抖保存函数
-let saveTimer: NodeJS.Timeout | null = null;
-
-const saveAlgorithmParams = () => {
-  // 清除之前的定时器
-  if (saveTimer) {
-    clearTimeout(saveTimer);
-  }
-  
-  // 防抖：延迟 500ms 保存
-  saveTimer = setTimeout(() => {
-    try {
-      const dataStr = JSON.stringify(algorithmParams.value);
-      const dataSize = new Blob([dataStr]).size;
-      
-      // 检查数据大小（localStorage 通常限制在 5-10MB）
-      if (dataSize > 4 * 1024 * 1024) { // 4MB 警告
-        console.warn('算法参数数据较大，可能无法保存到 localStorage:', dataSize, 'bytes');
-      }
-      
-      localStorage.setItem('algorithmParams', dataStr);
-    } catch (error: any) {
-      if (error.name === 'QuotaExceededError') {
-        console.warn('localStorage 配额已满，无法保存算法参数。尝试清理旧数据...');
-        // 尝试清理其他可能占用空间的数据
-        try {
-          // 只保留必要的键
-          const keysToKeep = ['algorithmParams'];
-          const allKeys = Object.keys(localStorage);
-          allKeys.forEach(key => {
-            if (!keysToKeep.includes(key)) {
-              localStorage.removeItem(key);
-            }
-          });
-          // 再次尝试保存
-          localStorage.setItem('algorithmParams', JSON.stringify(algorithmParams.value));
-          console.log('清理后成功保存算法参数');
-        } catch (retryError) {
-          console.error('清理后仍无法保存算法参数:', retryError);
-          // 如果还是失败，只保存当前算法的参数
-          try {
-            const currentKey = selectedAlgorithm.value as AlgorithmKey;
-            const minimalData = {
-              [currentKey]: algorithmParams.value[currentKey] || {}
-            };
-            localStorage.setItem('algorithmParams', JSON.stringify(minimalData));
-            console.log('已保存最小化的算法参数');
-          } catch (minimalError) {
-            console.error('无法保存算法参数，将跳过持久化:', minimalError);
-          }
-        }
-      } else {
-        console.error('保存算法参数时出错:', error);
-      }
-    }
-  }, 500);
-};
-
-const loadAlgorithmParams = () => {
-  const saved = localStorage.getItem('algorithmParams');
-  if (!saved) return;
-  try {
-    const parsed = JSON.parse(saved);
-    const merged = buildDefaultAlgoParams();
-    (Object.keys(ALGO_CONFIGS) as AlgorithmKey[]).forEach((key) => {
-      merged[key] = { ...merged[key], ...(parsed?.[key] || {}) };
-    });
-    algorithmParams.value = merged;
-  } catch (e) {
-    console.warn('Failed to load saved algorithm params:', e);
-  }
-};
-
 const syncCommonControls = (algo?: AlgorithmKey) => {
-  const key = algo || (selectedAlgorithm.value as AlgorithmKey);
-  const params = algorithmParams.value[key] || {};
+  const key = algo || selectedAlgorithm.value;
+  const params = currentAlgoParams.value;
   if (key === 'ga') {
     populationSize.value = params.pop_size ?? 50;
     maxIterations.value = params.generations ?? 100;
@@ -531,60 +200,7 @@ const syncCommonControls = (algo?: AlgorithmKey) => {
   }
 };
 
-// 使用防抖保存，避免频繁写入 localStorage
-watch(
-  algorithmParams,
-  () => {
-    saveAlgorithmParams();
-  },
-  { deep: true }
-);
-
-// 确认对话框状态
-const confirmationDialog = ref({
-  visible: false,
-  title: '',
-  message: '',
-  confirmAction: () => {},
-  cancelAction: () => {}
-});
-
-// 错误和消息处理
-const errorMessage = ref('');
-const successMessage = ref('');
-
-// 多样性控制参数
-const enableDiversity = ref(true);
-const diversityThreshold = ref(0.15);
-const maxDiverseResults = ref(10);
-
-const availableStrategies = ref<Array<{id: string, name: string}>>([]);
-const selectedStrategy = ref('');
-const isLoadingStrategies = ref(false);
-const isLoadingParams = ref(false);
-const startDate = ref('');
-const endDate = ref('');
-
-const trainStartDate = ref('');
-const trainEndDate = ref('');
-const valStartDate = ref('');
-const valEndDate = ref('');
-const testStartDate = ref('');
-const testEndDate = ref('');
-
-const optimizationMode = ref<'quick_explore' | 'robust' | 'aggressive'>('robust');
-const optimizationObjective = ref<'robust_trend_score' | 'rr_risk_score' | 'multi_period_robust' | 'calmar' | 'sharpe'>('robust_trend_score');
-
-const availableParams = ref<any[]>([]);
-const selectedParamKeys = ref<string[]>([]);
-
-const paramValues = ref<Record<string, ParamValue>>({});
-const paramValidity = ref<Record<string, ParamValidity>>({}); // 存储参数值有效性
-const paramLocked = ref<Record<string, boolean>>({}); // 参数锁定状态
-const paramRangeValues = ref<Record<string, { min: number; max: number }>>({}); // 范围滑块的值（UI显示用）
-const draggingHandle = ref<{ paramKey: string; handle: 'min' | 'max' } | null>(null); // 当前拖动的滑块
-
-const unsubscribers: Array<() => void> = [];
+// ==================== Computed Properties ====================
 
 const isAllSelected = computed(() => selectedParamKeys.value.length === availableParams.value.length);
 const MAX_OPTIMIZABLE_PARAMS = 4;
@@ -628,67 +244,9 @@ const algorithmSummary = computed(() => {
   return '';
 });
 
-const loadSavedDates = () => {
-  try {
-    const raw = localStorage.getItem(DATE_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<typeof DEFAULT_DATES>;
-    return parsed || null;
-  } catch {
-    return null;
-  }
-};
+// 日期管理已移到 useDateRange composable
 
-const applyInitialDates = () => {
-  const saved = loadSavedDates();
-  const src = saved && saved.startDate && saved.endDate ? { ...DEFAULT_DATES, ...saved } : DEFAULT_DATES;
-  if (!startDate.value) startDate.value = src.startDate;
-  if (!endDate.value) endDate.value = src.endDate;
-  if (!trainStartDate.value) trainStartDate.value = src.trainStartDate;
-  if (!trainEndDate.value) trainEndDate.value = src.trainEndDate;
-  if (!valStartDate.value) valStartDate.value = src.valStartDate;
-  if (!valEndDate.value) valEndDate.value = src.valEndDate;
-  if (!testStartDate.value) testStartDate.value = src.testStartDate;
-  if (!testEndDate.value) testEndDate.value = src.testEndDate;
-};
-
-const persistDates = () => {
-  const payload = {
-    startDate: startDate.value,
-    endDate: endDate.value,
-    trainStartDate: trainStartDate.value,
-    trainEndDate: trainEndDate.value,
-    valStartDate: valStartDate.value,
-    valEndDate: valEndDate.value,
-    testStartDate: testStartDate.value,
-    testEndDate: testEndDate.value,
-  };
-  try {
-    localStorage.setItem(DATE_STORAGE_KEY, JSON.stringify(payload));
-  } catch {
-  }
-};
-
-watch(
-  [startDate, endDate, trainStartDate, trainEndDate, valStartDate, valEndDate, testStartDate, testEndDate],
-  () => {
-    persistDates();
-  },
-);
-
-// 优化历史记录
-const MAX_HISTORY_POINTS = 20;
-const optimizationHistory = ref<Array<{
-  iteration: number;
-  metric: number;
-  params: Record<string, any>;
-}>>([]);
-
-let timer: NodeJS.Timeout | null = null;
-
-// 计时相关状态
-const optimizationStartTime = ref<number | null>(null);
-const currentPhase = ref<string>('idle');
+// 优化历史记录已移到 useOptimization composable
 
 // 按分组组织参数
 const paramGroups = computed(() => {
@@ -783,18 +341,27 @@ const parseNumericInput = (value: any): number => {
 
 // 监听算法变化
 watch(selectedAlgorithm, (newAlgorithm) => {
-  const key = newAlgorithm as AlgorithmKey;
+  const key = newAlgorithm;
   if (!algorithmParams.value[key]) {
-    const defaults = buildDefaultAlgoParams();
-    algorithmParams.value[key] = defaults[key];
+    // 使用 ALGO_CONFIGS 构建默认值
+    const cfg = ALGO_CONFIGS[key];
+    if (cfg) {
+      const defaults: Record<string, any> = {};
+      cfg.fields.forEach((field) => {
+        defaults[field.key] = field.default;
+      });
+      if (key === 'grid') {
+        defaults.grid_density = 10;
+      }
+      algorithmParams.value[key] = defaults;
+    }
   }
   syncCommonControls(key);
-  saveAlgorithmParams();
 });
 
-// 监听通用参数变化并同步到对应算法配置
+// 监听通用参数变化并同步到对应算法配置（自动保存已在 composable 中处理）
 watch(populationSize, (newValue) => {
-  const key = selectedAlgorithm.value as AlgorithmKey;
+  const key = selectedAlgorithm.value;
   const params = { ...(algorithmParams.value[key] || {}) };
   if (key === 'ga') params.pop_size = newValue;
   else if (key === 'pso') params.particle_count = newValue;
@@ -802,7 +369,6 @@ watch(populationSize, (newValue) => {
   else if (key === 'bayesian') params.random_init_points = newValue;
   else if (key === 'grid') params.grid_density = newValue;
   algorithmParams.value[key] = params;
-  saveAlgorithmParams();
 });
 
 watch(selectedStrategy, () => {
@@ -810,7 +376,7 @@ watch(selectedStrategy, () => {
 });
 
 watch(maxIterations, (newValue) => {
-  const key = selectedAlgorithm.value as AlgorithmKey;
+  const key = selectedAlgorithm.value;
   const params = { ...(algorithmParams.value[key] || {}) };
   if (key === 'ga') params.generations = newValue;
   else if (key === 'pso') params.iterations = newValue;
@@ -819,11 +385,10 @@ watch(maxIterations, (newValue) => {
   else if (key === 'bayesian') params.iterations = newValue;
   else if (key === 'grid') params.grid_density = newValue;
   algorithmParams.value[key] = params;
-  saveAlgorithmParams();
 });
 
 const updateAlgoField = (fieldKey: string, rawValue: any) => {
-  const algoKey = selectedAlgorithm.value as AlgorithmKey;
+  const algoKey = selectedAlgorithm.value;
   const params = { ...(algorithmParams.value[algoKey] || {}) };
   const field = currentAlgoConfig.value?.fields.find(f => f.key === fieldKey);
 
@@ -835,7 +400,7 @@ const updateAlgoField = (fieldKey: string, rawValue: any) => {
   }
 
   algorithmParams.value[algoKey] = params;
-  saveAlgorithmParams();
+  // 自动保存已在 composable 中处理
 };
 
 const robustnessLevel = (c: any): 'good' | 'medium' | 'bad' => {
@@ -926,6 +491,7 @@ function updateSensitivityChart() {
         if (!p) return '';
         const index = p.dataIndex;
         const point = sensitivityPoints.value[index];
+        if (!point) return '';
         return `
           <div style="padding: 8px;">
             <div style="font-weight: bold; margin-bottom: 4px;">${p.name}</div>
@@ -1055,18 +621,38 @@ const isDateRangeValid = computed(() => {
   return true;
 });
 
+// 计算总日期范围（用于90天验证）
+const totalDateRangeDays = computed(() => {
+  if (!startDate.value || !endDate.value) return 0;
+  const start = new Date(startDate.value);
+  const end = new Date(endDate.value);
+  const diffTime = end.getTime() - start.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  return diffDays;
+});
+
+// 检查日期范围是否满足90天最小要求
+const isDateRangeSufficient = computed(() => {
+  return totalDateRangeDays.value >= 90;
+});
+
+const dateRangeWarning = computed(() => {
+  if (totalDateRangeDays.value === 0) return '';
+  if (totalDateRangeDays.value < 90) {
+    return '优化需要至少3个月（90天）的数据才能产生有效结果。';
+  }
+  return '';
+});
+
 const canStartOptimization = computed(() => {
   if (!isDateRangeValid.value) return false;
+  if (!isDateRangeSufficient.value) return false; // 添加90天验证
   return (
     selectedParamKeys.value.length > 0 &&
     !isOptimizing.value &&
     selectedStrategy.value &&
     startDate.value &&
-    endDate.value &&
-    selectedParamKeys.value.every((key) => {
-      const validity = paramValidity.value[key];
-      return !validity || (validity.start !== false && validity.step !== false);
-    })
+    endDate.value
   );
 });
 
@@ -1129,20 +715,8 @@ const startOptimization = () => {
     '确认开始优化',
     `将对 ${selectedParamKeys.value.length} 个参数进行优化（模式：${optimizationMode.value}）。`,
     () => {
-      isOptimizing.value = true;
-      optimizationStatus.value = 'starting';
-      progress.value = 0;
-      evaluatedCount.value = 0;
-      totalIterations.value = 0;
-      bestMetric.value = null;
-      bestParams.value = {};
-      candidates.value = [];
-      finalSelected.value = null;
-      evaluationResults.value = [];
-      optimizationHistory.value = [];
-
       const method = currentAlgoConfig.value?.method || 'ga';
-      const algoParamPayload = algorithmParams.value[selectedAlgorithm.value as AlgorithmKey] || {};
+      const algoParamPayload = algorithmParams.value[selectedAlgorithm.value] || {};
 
       const searchSpace = availableParams.value
         .filter((p: any) => selectedParamKeys.value.includes(p.key))
@@ -1194,7 +768,7 @@ const startOptimization = () => {
         enabled_params: [...selectedParamKeys.value],
       };
 
-      socket.emitEvent('run_optimization', optimizationPayload);
+      startOpt(optimizationPayload);
       showSuccess('优化已开始');
     },
   );
@@ -1206,17 +780,12 @@ const stopOptimization = () => {
     '确认停止优化',
     '正在进行的优化将会被中止，是否继续？',
     () => {
-      socket.emitEvent('stop_optimization', {});
-      isOptimizing.value = false;
-      optimizationStatus.value = 'cancelled';
+      stopOpt();
     },
   );
 };
 
-const unsubscribeSocketEvents = () => {
-  unsubscribers.forEach((fn) => fn());
-  unsubscribers.length = 0;
-};
+// Socket 监听已移到 useOptimization composable
 
 onMounted(() => {
   // 初始化敏感度图表
@@ -1230,87 +799,14 @@ onMounted(() => {
   loadAlgorithmParams();
   syncCommonControls();
 
-  const unsubProgress = socket.onEvent('optimization_progress', (data: any) => {
-    progress.value = Number(data.progress || 0);
-    const iter = data.generation || data.iteration || evaluatedCount.value;
-    evaluatedCount.value = iter;
-    totalIterations.value = data.total_generations || data.total_iterations || totalIterations.value;
-    const currentBest =
-      typeof data.current_best === 'number'
-        ? data.current_best
-        : typeof data.best_metric === 'number'
-          ? data.best_metric
-          : null;
-    const currentParams = data.best_params || data.params || {};
-    if (currentBest !== null) {
-      bestMetric.value = currentBest;
-      bestParams.value = currentParams;
-      const point = {
-        iteration: iter || 0,
-        metric: currentBest,
-        params: currentParams,
-        timestamp: Date.now(),
-      };
-      evaluationResults.value.push(point);
-      if (evaluationResults.value.length > MAX_HISTORY_POINTS) {
-        evaluationResults.value.shift();
-      }
-      optimizationHistory.value.push({
-        iteration: iter || 0,
-        metric: currentBest,
-        params: currentParams,
-      });
-      if (optimizationHistory.value.length > MAX_HISTORY_POINTS) {
-        optimizationHistory.value.shift();
-      }
-    }
+  setupSocketListeners({
+    onComplete: () => {
+      buildSensitivityPoints();
+    },
+    onError: (data: any) => {
+      showError(data?.message || '优化过程中出现错误');
+    },
   });
-
-  const unsubComplete = socket.onEvent('optimization_complete', (data: any) => {
-    isOptimizing.value = false;
-    optimizationStatus.value = 'finished';
-    progress.value = 100;
-    const bestScoreFromEvent =
-      typeof data.best_score === 'number'
-        ? data.best_score
-        : typeof data.best_metric === 'number'
-          ? data.best_metric
-          : null;
-    const bestParamsFromEvent = data.best_params || bestParams.value;
-    if (bestScoreFromEvent !== null) {
-      bestMetric.value = bestScoreFromEvent;
-      bestParams.value = bestParamsFromEvent;
-      const point = {
-        iteration: evaluatedCount.value || (data.total_iterations || data.total_generations || 0),
-        metric: bestScoreFromEvent,
-        params: bestParamsFromEvent,
-        timestamp: Date.now(),
-      };
-      evaluationResults.value.push(point);
-      if (evaluationResults.value.length > MAX_HISTORY_POINTS) {
-        evaluationResults.value.shift();
-      }
-      optimizationHistory.value.push({
-        iteration: point.iteration,
-        metric: bestScoreFromEvent,
-        params: bestParamsFromEvent,
-      });
-      if (optimizationHistory.value.length > MAX_HISTORY_POINTS) {
-        optimizationHistory.value.shift();
-      }
-    }
-    candidates.value = Array.isArray(data.candidates) ? data.candidates : [];
-    finalSelected.value = data.final_selected || null;
-    buildSensitivityPoints();
-  });
-
-  const unsubError = socket.onEvent('optimization_error', (data: any) => {
-    isOptimizing.value = false;
-    optimizationStatus.value = 'error';
-    showError(data?.message || '优化过程中出现错误');
-  });
-
-  unsubscribers.push(unsubProgress, unsubComplete, unsubError);
 });
 
 onUnmounted(() => {
@@ -1318,7 +814,7 @@ onUnmounted(() => {
     sensitivityChartInstance.dispose();
     sensitivityChartInstance = null;
   }
-  unsubscribeSocketEvents();
+  cleanupOptimization();
 });
 
 </script>
@@ -1343,13 +839,18 @@ onUnmounted(() => {
         >
           停止优化
         </button>
-        <button
-          class="rounded-2xl bg-gradient-to-r from-indigo-500 to-purple-600 px-5 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/30 disabled:opacity-60 disabled:cursor-not-allowed"
-          @click="startOptimization"
-          :disabled="!canStartOptimization"
-        >
-          {{ isOptimizing ? '优化进行中...' : '开始优化' }}
-        </button>
+        <div class="flex flex-col items-end gap-2">
+          <button
+            class="rounded-2xl bg-gradient-to-r from-indigo-500 to-purple-600 px-5 py-2 text-sm font-medium text-white shadow-lg shadow-indigo-500/30 disabled:opacity-60 disabled:cursor-not-allowed"
+            @click="startOptimization"
+            :disabled="!canStartOptimization"
+          >
+            {{ isOptimizing ? '优化进行中...' : '开始优化' }}
+          </button>
+          <p v-if="dateRangeWarning" class="text-xs text-amber-400 max-w-xs text-right">
+            {{ dateRangeWarning }}
+          </p>
+        </div>
       </div>
     </div>
 
@@ -1859,8 +1360,14 @@ onUnmounted(() => {
           <div class="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
             <div class="rounded-2xl border border-slate-800/60 bg-slate-950/40 p-4 flex flex-col justify-between hover:border-indigo-500/30 transition-colors">
               <div class="text-xs text-slate-500 font-medium uppercase tracking-wider">综合得分</div>
-              <div class="mt-2 text-xl font-bold text-indigo-400 font-mono">
-                 {{ bestMetric !== null ? formatScore(bestMetric) : '—' }}
+              <div class="mt-2 text-xl font-bold font-mono">
+                <span v-if="bestMetric !== null && isValidScore(bestMetric)" class="text-indigo-400">
+                  {{ formatScore(bestMetric) }}
+                </span>
+                <span v-else-if="bestMetric !== null" class="px-2 py-1 rounded text-sm bg-rose-500/20 text-rose-400 border border-rose-500/50">
+                  无效
+                </span>
+                <span v-else class="text-slate-500">—</span>
               </div>
             </div>
             <div class="rounded-2xl border border-slate-800/60 bg-slate-950/40 p-4 flex flex-col justify-between hover:border-red-500/30 transition-colors">
@@ -2023,14 +1530,23 @@ onUnmounted(() => {
                     </tr>
                     <tr class="bg-slate-800/30 font-semibold">
                       <td class="py-3 px-4 text-indigo-200">综合得分</td>
-                      <td class="py-3 px-4 text-right font-mono text-indigo-300">
-                        {{ finalSelected?.train_metrics?.composite_score ? formatScore(finalSelected.train_metrics.composite_score) : (finalSelected ? formatScore(finalSelected.score_train) : '—') }}
+                      <td class="py-3 px-4 text-right font-mono">
+                        <span v-if="isValidScore(finalSelected?.train_metrics?.composite_score ?? finalSelected?.score_train)" class="text-indigo-300">
+                          {{ finalSelected?.train_metrics?.composite_score ? formatScore(finalSelected.train_metrics.composite_score) : (finalSelected ? formatScore(finalSelected.score_train) : '—') }}
+                        </span>
+                        <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
                       </td>
-                      <td class="py-3 px-4 text-right font-mono text-indigo-300 border-l border-slate-800/50">
-                        {{ finalSelected?.val_metrics?.composite_score ? formatScore(finalSelected.val_metrics.composite_score) : (finalSelected ? formatScore(finalSelected.score_val) : '—') }}
+                      <td class="py-3 px-4 text-right font-mono border-l border-slate-800/50">
+                        <span v-if="isValidScore(finalSelected?.val_metrics?.composite_score ?? finalSelected?.score_val)" class="text-indigo-300">
+                          {{ finalSelected?.val_metrics?.composite_score ? formatScore(finalSelected.val_metrics.composite_score) : (finalSelected ? formatScore(finalSelected.score_val) : '—') }}
+                        </span>
+                        <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
                       </td>
-                      <td class="py-3 px-4 text-right font-mono text-indigo-300 border-l border-slate-800/50">
-                        {{ finalSelected?.test_metrics?.composite_score ? formatScore(finalSelected.test_metrics.composite_score) : (finalSelected ? formatScore(finalSelected.score_test) : '—') }}
+                      <td class="py-3 px-4 text-right font-mono border-l border-slate-800/50">
+                        <span v-if="isValidScore(finalSelected?.test_metrics?.composite_score ?? finalSelected?.score_test)" class="text-indigo-300">
+                          {{ finalSelected?.test_metrics?.composite_score ? formatScore(finalSelected.test_metrics.composite_score) : (finalSelected ? formatScore(finalSelected.score_test) : '—') }}
+                        </span>
+                        <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
                       </td>
                     </tr>
                   </tbody>
@@ -2063,30 +1579,33 @@ onUnmounted(() => {
                <tbody class="divide-y divide-slate-800/60">
                  <tr v-for="(c, idx) in candidates" :key="idx" class="hover:bg-slate-800/40 transition-colors group">
                    <td class="py-3 pl-4 text-slate-500 font-mono group-hover:text-slate-300">#{{ idx + 1 }}</td>
-                   <td class="py-3 px-2 text-right font-mono">
-                     <div class="flex flex-col items-end gap-1">
-                       <span class="font-medium">{{ formatScore(c.score_train) }}</span>
-                       <div class="h-1 w-16 rounded-full bg-slate-800/80 overflow-hidden">
-                         <div class="h-full bg-emerald-500" :style="{ width: `${Math.min(Math.max(c.score_train * 20, 0), 100)}%` }"></div>
-                       </div>
-                     </div>
-                   </td>
-                   <td class="py-3 px-2 text-right font-mono">
-                     <div class="flex flex-col items-end gap-1">
-                       <span class="text-slate-300">{{ c.score_val > -100 ? formatScore(c.score_val) : '—' }}</span>
-                       <div v-if="c.score_val > -100" class="h-1 w-16 rounded-full bg-slate-800/80 overflow-hidden">
-                         <div class="h-full bg-indigo-500" :style="{ width: `${Math.min(Math.max(c.score_val * 20, 0), 100)}%` }"></div>
-                       </div>
-                     </div>
-                   </td>
-                   <td class="py-3 px-2 text-right font-mono">
-                     <div class="flex flex-col items-end gap-1">
-                       <span class="text-slate-300">{{ c.score_test > -100 ? formatScore(c.score_test) : '—' }}</span>
-                       <div v-if="c.score_test > -100" class="h-1 w-16 rounded-full bg-slate-800/80 overflow-hidden">
-                         <div class="h-full bg-purple-500" :style="{ width: `${Math.min(Math.max(c.score_test * 20, 0), 100)}%` }"></div>
-                       </div>
-                     </div>
-                   </td>
+                  <td class="py-3 px-2 text-right font-mono">
+                    <div class="flex flex-col items-end gap-1">
+                      <span v-if="isValidScore(c.score_train)" class="font-medium">{{ formatScore(c.score_train) }}</span>
+                      <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
+                      <div v-if="isValidScore(c.score_train)" class="h-1 w-16 rounded-full bg-slate-800/80 overflow-hidden">
+                        <div class="h-full bg-emerald-500" :style="{ width: `${Math.min(Math.max(c.score_train * 20, 0), 100)}%` }"></div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="py-3 px-2 text-right font-mono">
+                    <div class="flex flex-col items-end gap-1">
+                      <span v-if="isValidScore(c.score_val)" class="text-slate-300">{{ formatScore(c.score_val) }}</span>
+                      <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
+                      <div v-if="isValidScore(c.score_val)" class="h-1 w-16 rounded-full bg-slate-800/80 overflow-hidden">
+                        <div class="h-full bg-indigo-500" :style="{ width: `${Math.min(Math.max(c.score_val * 20, 0), 100)}%` }"></div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="py-3 px-2 text-right font-mono">
+                    <div class="flex flex-col items-end gap-1">
+                      <span v-if="isValidScore(c.score_test)" class="text-slate-300">{{ formatScore(c.score_test) }}</span>
+                      <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
+                      <div v-if="isValidScore(c.score_test)" class="h-1 w-16 rounded-full bg-slate-800/80 overflow-hidden">
+                        <div class="h-full bg-purple-500" :style="{ width: `${Math.min(Math.max(c.score_test * 20, 0), 100)}%` }"></div>
+                      </div>
+                    </div>
+                  </td>
                    <td class="py-3 px-2 text-center">
                      <span class="text-[10px] px-2 py-1 rounded-full border font-medium" :class="[
                        robustnessLevel(c) === 'good' ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10' :
@@ -2240,13 +1759,13 @@ onUnmounted(() => {
                 <tbody class="divide-y divide-slate-800/40">
                   <tr class="hover:bg-slate-800/20">
                     <td class="py-2.5 px-4 text-slate-400">年化收益</td>
-                    <td class="py-2.5 px-4 text-right font-mono text-emerald-300">
+                    <td class="py-2.5 px-4 text-right font-mono font-medium" :class="(candidateDetail.train_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
                       {{ candidateDetail.train_metrics?.annual_return ? formatPercent(candidateDetail.train_metrics.annual_return) : '—' }}
                     </td>
-                    <td class="py-2.5 px-4 text-right font-mono text-emerald-300 border-l border-slate-800/50">
+                    <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="(candidateDetail.val_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
                       {{ candidateDetail.val_metrics?.annual_return ? formatPercent(candidateDetail.val_metrics.annual_return) : '—' }}
                     </td>
-                    <td class="py-2.5 px-4 text-right font-mono text-emerald-300 border-l border-slate-800/50">
+                    <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="(candidateDetail.test_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
                       {{ candidateDetail.test_metrics?.annual_return ? formatPercent(candidateDetail.test_metrics.annual_return) : '—' }}
                     </td>
                   </tr>
@@ -2276,14 +1795,23 @@ onUnmounted(() => {
                   </tr>
                   <tr class="bg-slate-800/30 font-semibold">
                     <td class="py-3 px-4 text-indigo-200">综合得分</td>
-                    <td class="py-3 px-4 text-right font-mono text-indigo-300">
-                      {{ candidateDetail.train_metrics?.composite_score ? formatScore(candidateDetail.train_metrics.composite_score) : formatScore(candidateDetail.score_train) }}
+                    <td class="py-3 px-4 text-right font-mono">
+                      <span v-if="isValidScore(candidateDetail.train_metrics?.composite_score ?? candidateDetail.score_train)" class="text-indigo-300">
+                        {{ candidateDetail.train_metrics?.composite_score ? formatScore(candidateDetail.train_metrics.composite_score) : formatScore(candidateDetail.score_train) }}
+                      </span>
+                      <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
                     </td>
-                    <td class="py-3 px-4 text-right font-mono text-indigo-300 border-l border-slate-800/50">
-                      {{ candidateDetail.val_metrics?.composite_score ? formatScore(candidateDetail.val_metrics.composite_score) : (candidateDetail.score_val > -100 ? formatScore(candidateDetail.score_val) : '—') }}
+                    <td class="py-3 px-4 text-right font-mono border-l border-slate-800/50">
+                      <span v-if="isValidScore(candidateDetail.val_metrics?.composite_score ?? candidateDetail.score_val)" class="text-indigo-300">
+                        {{ candidateDetail.val_metrics?.composite_score ? formatScore(candidateDetail.val_metrics.composite_score) : formatScore(candidateDetail.score_val) }}
+                      </span>
+                      <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
                     </td>
-                    <td class="py-3 px-4 text-right font-mono text-indigo-300 border-l border-slate-800/50">
-                      {{ candidateDetail.test_metrics?.composite_score ? formatScore(candidateDetail.test_metrics.composite_score) : (candidateDetail.score_test > -100 ? formatScore(candidateDetail.score_test) : '—') }}
+                    <td class="py-3 px-4 text-right font-mono border-l border-slate-800/50">
+                      <span v-if="isValidScore(candidateDetail.test_metrics?.composite_score ?? candidateDetail.score_test)" class="text-indigo-300">
+                        {{ candidateDetail.test_metrics?.composite_score ? formatScore(candidateDetail.test_metrics.composite_score) : formatScore(candidateDetail.score_test) }}
+                      </span>
+                      <span v-else class="px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-400 border border-rose-500/50">无效</span>
                     </td>
                   </tr>
                 </tbody>

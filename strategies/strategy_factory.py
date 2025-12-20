@@ -32,7 +32,12 @@ class StrategyFactory:
     
     def _discover_strategies(self, force_reload: bool = False) -> None:
         """自动发现所有继承自 StrategyBase 的策略类。"""
-        print(f"[DEBUG] 开始扫描策略目录: {self._strategies_path}")
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
+        
+        if debug_mode:
+            logger.debug(f"开始扫描策略目录: {self._strategies_path}")
 
         self.registry.clear()
         self._id_to_name.clear()
@@ -42,7 +47,8 @@ class StrategyFactory:
         current_strategy_base = StrategyBase
         
         if force_reload and "strategies.strategy_framework" in sys.modules:
-            print("[DEBUG] 重新加载 strategy_framework 模块以保持类身份一致")
+            if debug_mode:
+                logger.debug("重新加载 strategy_framework 模块以保持类身份一致")
             importlib.reload(sys.modules["strategies.strategy_framework"])
             # 重新加载后，更新 StrategyBase 引用
             from strategies.strategy_framework import StrategyBase as ReloadedStrategyBase
@@ -50,31 +56,29 @@ class StrategyFactory:
 
         modules = list(pkgutil.iter_modules([self._strategies_path]))
         modules.sort(key=lambda item: item[1])  # 稳定顺序
-        print(f"[DEBUG] 找到 {len(modules)} 个模块候选")
+        if debug_mode:
+            logger.debug(f"找到 {len(modules)} 个模块候选")
 
         for loader, module_name, is_pkg in modules:
             if is_pkg or module_name.startswith("_"):
-                print(f"[DEBUG] 跳过: {module_name} (是包或以下划线开头)")
+                if debug_mode:
+                    logger.debug(f"跳过: {module_name} (是包或以下划线开头)")
                 continue
 
             module_full_name = f"strategies.{module_name}"
-            tag = "[PREF]" if module_name.endswith("_strategy") else "[COMP]"
 
             try:
-                print(f"[DEBUG]{tag} 尝试导入模块: {module_full_name}")
                 if force_reload and module_full_name in sys.modules:
                     module = importlib.reload(sys.modules[module_full_name])
                 else:
                     module = importlib.import_module(module_full_name)
             except Exception as e:
-                print(f"[ERROR] 导入模块 {module_full_name} 时出错: {e}")
-                import traceback
-
-                traceback.print_exc()
+                logger.error(f"导入模块 {module_full_name} 时出错: {e}", exc_info=True)
                 continue
 
             classes = list(inspect.getmembers(module, inspect.isclass))
-            print(f"[DEBUG] 在模块 {module_name} 中找到 {len(classes)} 个类")
+            if debug_mode:
+                logger.debug(f"在模块 {module_name} 中找到 {len(classes)} 个类")
 
             for name, obj in classes:
                 # 只检查模块内定义的类
@@ -92,12 +96,13 @@ class StrategyFactory:
                 if is_subclass:
                     self._register_strategy_instance(obj)
 
-        print(f"[DEBUG] 策略扫描完成，共注册 {len(self.registry)} 个策略")
-        for sid, cls in self.registry.items():
-            print(
-                f"[DEBUG] 已注册策略: {sid} "
-                f"({self._id_to_name.get(sid, sid)}) -> {cls.__module__}.{cls.__name__}"
-            )
+        if debug_mode:
+            logger.debug(f"策略扫描完成，共注册 {len(self.registry)} 个策略")
+            for sid, cls in self.registry.items():
+                logger.debug(
+                    f"已注册策略: {sid} "
+                    f"({self._id_to_name.get(sid, sid)}) -> {cls.__module__}.{cls.__name__}"
+                )
         self._strategies_mtime = self._get_latest_mtime()
 
     def _register_strategy_instance(self, strategy_class: Type[StrategyBase]) -> None:
@@ -118,8 +123,10 @@ class StrategyFactory:
 
         if strategy_id in self.registry:
             existing = self.registry[strategy_id]
-            print(
-                f"[StrategyFactory] 跳过重复的 strategy_id '{strategy_id}': "
+            from utils.logger import get_logger
+            logger = get_logger(__name__)
+            logger.warning(
+                f"跳过重复的 strategy_id '{strategy_id}': "
                 f"{module_name}.{class_name} 已被 "
                 f"{existing.__module__}.{existing.__name__} 占用"
             )
@@ -130,9 +137,12 @@ class StrategyFactory:
         if strategy_name not in self._name_to_id:
             self._name_to_id[strategy_name] = strategy_id
 
-        print(
-            f"[StrategyFactory] 自动注册策略: {strategy_id} -> {module_name}.{class_name}"
-        )
+        # 只在 DEBUG 模式下输出注册信息
+        debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
+        if debug_mode:
+            from utils.logger import get_logger
+            logger = get_logger(__name__)
+            logger.debug(f"自动注册策略: {strategy_id} -> {module_name}.{class_name}")
 
     def _get_latest_mtime(self) -> float:
         latest = 0.0
