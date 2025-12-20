@@ -17,7 +17,9 @@ let chartInstance: echarts.ECharts | null = null;
 
 // 按代数分组数据，用于箱线图
 const boxplotData = computed(() => {
-  if (!props.history || props.history.length === 0) return [];
+  if (!props.history || props.history.length === 0) {
+    return { generations: [], data: [] };
+  }
   
   // 按iteration分组
   const byGeneration = new Map<number, number[]>();

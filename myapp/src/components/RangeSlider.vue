@@ -7,11 +7,11 @@
       </div>
       <div class="flex items-center gap-2 text-xs font-mono">
         <span class="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-semibold shadow-sm">
-          {{ formatValue(minValue) }}{{ unit }}
+          {{ formatValue(displayMinValue) }}{{ unit }}
         </span>
         <span class="text-slate-500 font-bold">——</span>
         <span class="px-3 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-semibold shadow-sm">
-          {{ formatValue(maxValue) }}{{ unit }}
+          {{ formatValue(displayMaxValue) }}{{ unit }}
         </span>
       </div>
     </div>
@@ -35,7 +35,7 @@
           @touchstart.stop="startDrag('min', $event)"
         >
           <div class="slider-handle-tooltip">
-            {{ formatValue(minValue) }}{{ unit }}
+            {{ formatValue(displayMinValue) }}{{ unit }}
           </div>
         </div>
         
@@ -48,7 +48,7 @@
           @touchstart.stop="startDrag('max', $event)"
         >
           <div class="slider-handle-tooltip">
-            {{ formatValue(maxValue) }}{{ unit }}
+            {{ formatValue(displayMaxValue) }}{{ unit }}
           </div>
         </div>
       </div>
@@ -89,7 +89,11 @@ const emit = defineEmits<{
 
 const dragging = ref<'min' | 'max' | null>(null);
 const sliderTrack = ref<HTMLElement | null>(null);
-const sliderContainer = ref<HTMLElement | null>(null);
+
+// === 核心：本地视觉状态（UI层，0-100%线性） ===
+// 拖动时，滑块位置完全由这个本地状态控制，不受 props 影响
+const localMinPercent = ref<number>(0);
+const localMaxPercent = ref<number>(100);
 
 // 格式化值，根据步长判断是否为整数
 const formatValue = (value: number): string => {
@@ -110,39 +114,74 @@ const formatValue = (value: number): string => {
   return value.toFixed(2);
 };
 
-// 对数轴转换函数
-const logTransform = (value: number, min: number, max: number): number => {
-  if (min <= 0 || max <= 0 || value <= 0) return 0;
-  const logMin = Math.log10(min);
-  const logMax = Math.log10(max);
-  const logValue = Math.log10(value);
-  return (logValue - logMin) / (logMax - logMin);
-};
-
-const logInverse = (percent: number, min: number, max: number): number => {
-  if (min <= 0 || max <= 0) return min;
-  const logMin = Math.log10(min);
-  const logMax = Math.log10(max);
-  const logValue = logMin + percent * (logMax - logMin);
-  return Math.pow(10, logValue);
-};
-
-const minPercent = computed(() => {
+// === 对数轴转换函数（只在边界使用） ===
+// Logic -> UI: 将数值转换为百分比
+const valueToPercent = (value: number, min: number, max: number): number => {
   if (props.useLogScale) {
-    return logTransform(props.minValue, props.absoluteMin, props.absoluteMax) * 100;
+    if (min <= 0 || max <= 0 || value <= 0) return 0;
+    const logMin = Math.log10(min);
+    const logMax = Math.log10(max);
+    const logValue = Math.log10(value);
+    return ((logValue - logMin) / (logMax - logMin)) * 100;
   }
-  const range = props.absoluteMax - props.absoluteMin;
+  const range = max - min;
   if (range <= 0) return 0;
-  return ((props.minValue - props.absoluteMin) / range) * 100;
+  return ((value - min) / range) * 100;
+};
+
+// UI -> Logic: 将百分比转换为数值
+const percentToValue = (percent: number, min: number, max: number): number => {
+  const clampedPercent = Math.max(0, Math.min(100, percent)) / 100;
+  if (props.useLogScale) {
+    if (min <= 0 || max <= 0) return min;
+    const logMin = Math.log10(min);
+    const logMax = Math.log10(max);
+    const logValue = logMin + clampedPercent * (logMax - logMin);
+    return Math.pow(10, logValue);
+  }
+  const range = max - min;
+  if (range <= 0) return min;
+  return min + clampedPercent * range;
+};
+
+// === 滑块位置计算：拖动时用本地状态，非拖动时用 props ===
+const minPercent = computed(() => {
+  // 拖动时：完全使用本地状态，切断 prop 影响
+  if (dragging.value === 'min') {
+    return localMinPercent.value;
+  }
+  // 非拖动时：从 props 同步到本地状态（用于初始化或外部更新）
+  const percent = valueToPercent(props.minValue, props.absoluteMin, props.absoluteMax);
+  localMinPercent.value = percent;
+  return percent;
 });
 
 const maxPercent = computed(() => {
-  if (props.useLogScale) {
-    return logTransform(props.maxValue, props.absoluteMin, props.absoluteMax) * 100;
+  // 拖动时：完全使用本地状态，切断 prop 影响
+  if (dragging.value === 'max') {
+    return localMaxPercent.value;
   }
-  const range = props.absoluteMax - props.absoluteMin;
-  if (range <= 0) return 100;
-  return ((props.maxValue - props.absoluteMin) / range) * 100;
+  // 非拖动时：从 props 同步到本地状态（用于初始化或外部更新）
+  const percent = valueToPercent(props.maxValue, props.absoluteMin, props.absoluteMax);
+  localMaxPercent.value = percent;
+  return percent;
+});
+
+// === 显示值：拖动时从本地状态计算，非拖动时用 props ===
+const displayMinValue = computed(() => {
+  if (dragging.value === 'min') {
+    // 拖动时：从本地百分比计算显示值
+    return percentToValue(localMinPercent.value, props.absoluteMin, props.absoluteMax);
+  }
+  return props.minValue;
+});
+
+const displayMaxValue = computed(() => {
+  if (dragging.value === 'max') {
+    // 拖动时：从本地百分比计算显示值
+    return percentToValue(localMaxPercent.value, props.absoluteMin, props.absoluteMax);
+  }
+  return props.maxValue;
 });
 
 const trackBackground = computed(() => {
@@ -157,25 +196,12 @@ const trackBackground = computed(() => {
     ${props.trackColor} 100%)`;
 });
 
-const getValueFromPosition = (clientX: number): number => {
-  if (!sliderTrack.value) return props.minValue;
-  
+// === 从鼠标位置获取百分比（UI层，纯线性） ===
+const getPercentFromPosition = (clientX: number): number => {
+  if (!sliderTrack.value) return 0;
   const rect = sliderTrack.value.getBoundingClientRect();
-  const percentage = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-  
-  let value: number;
-  if (props.useLogScale) {
-    // 对数轴：先转换到线性空间，再取对数
-    value = logInverse(percentage, props.absoluteMin, props.absoluteMax);
-  } else {
-  const range = props.absoluteMax - props.absoluteMin;
-  if (range <= 0) return props.absoluteMin;
-    value = props.absoluteMin + percentage * range;
-  }
-  
-  // 对齐到步长（对数轴也需要对齐）
-  const stepped = Math.round(value / props.step) * props.step;
-  return Math.max(props.absoluteMin, Math.min(props.absoluteMax, stepped));
+  const rawPercent = ((clientX - rect.left) / rect.width) * 100;
+  return Math.max(0, Math.min(100, rawPercent));
 };
 
 const startDrag = (handle: 'min' | 'max', event: MouseEvent | TouchEvent) => {
@@ -185,62 +211,102 @@ const startDrag = (handle: 'min' | 'max', event: MouseEvent | TouchEvent) => {
     return;
   }
   
+  // === 开启拖动模式：切断 prop 监听 ===
   dragging.value = handle;
   event.preventDefault();
   
-  const clientX = 'touches' in event ? event.touches[0].clientX : event.clientX;
-  const value = getValueFromPosition(clientX);
+  // 立即更新本地视觉状态（0延迟）
+  const clientX = ('touches' in event && event.touches && event.touches.length > 0)
+    ? event.touches[0].clientX 
+    : (event as MouseEvent).clientX;
+  const percent = getPercentFromPosition(clientX);
   
   if (handle === 'min') {
-    const newMin = Math.min(value, props.maxValue - props.step);
-    emit('update:minValue', newMin);
+    // 限制：不能超过 max 的位置
+    localMinPercent.value = Math.min(percent, localMaxPercent.value - 0.1);
   } else {
-    const newMax = Math.max(value, props.minValue + props.step);
-    emit('update:maxValue', newMax);
+    // 限制：不能小于 min 的位置
+    localMaxPercent.value = Math.max(percent, localMinPercent.value + 0.1);
   }
+  
+  // 异步上报父组件（不阻塞 UI）
+  requestAnimationFrame(() => {
+    syncToParent(handle);
+  });
 };
 
 const handleTrackClick = (event: MouseEvent | TouchEvent) => {
-  if (props.locked) {
+  if (props.locked || dragging.value) {
     event.preventDefault();
     event.stopPropagation();
     return;
   }
-  if (dragging.value) return;
   
-  const clientX = 'touches' in event ? event.touches[0].clientX : event.clientX;
-  const value = getValueFromPosition(clientX);
+  const clientX = ('touches' in event && event.touches && event.touches.length > 0)
+    ? event.touches[0].clientX 
+    : (event as MouseEvent).clientX;
+  const percent = getPercentFromPosition(clientX);
   
   // 判断点击位置更接近哪个滑块
-  const distToMin = Math.abs(value - props.minValue);
-  const distToMax = Math.abs(value - props.maxValue);
+  const distToMin = Math.abs(percent - localMinPercent.value);
+  const distToMax = Math.abs(percent - localMaxPercent.value);
   
   if (distToMin < distToMax) {
-    const newMin = Math.min(value, props.maxValue - props.step);
-    emit('update:minValue', newMin);
+    localMinPercent.value = Math.min(percent, localMaxPercent.value - 0.1);
+    syncToParent('min');
   } else {
-    const newMax = Math.max(value, props.minValue + props.step);
-    emit('update:maxValue', newMax);
+    localMaxPercent.value = Math.max(percent, localMinPercent.value + 0.1);
+    syncToParent('max');
   }
 };
 
 const handleMouseMove = (event: MouseEvent | TouchEvent) => {
   if (!dragging.value) return;
   
-  const clientX = 'touches' in event ? event.touches[0].clientX : event.clientX;
-  const value = getValueFromPosition(clientX);
+  // === 拖动中：直接更新本地视觉状态（0延迟，60fps丝滑） ===
+  const clientX = ('touches' in event && event.touches && event.touches.length > 0)
+    ? event.touches[0].clientX 
+    : (event as MouseEvent).clientX;
+  const percent = getPercentFromPosition(clientX);
   
   if (dragging.value === 'min') {
-    const newMin = Math.min(value, props.maxValue - props.step);
-    emit('update:minValue', newMin);
+    // 限制：不能超过 max 的位置
+    localMinPercent.value = Math.min(percent, localMaxPercent.value - 0.1);
   } else {
-    const newMax = Math.max(value, props.minValue + props.step);
-    emit('update:maxValue', newMax);
+    // 限制：不能小于 min 的位置
+    localMaxPercent.value = Math.max(percent, localMinPercent.value + 0.1);
+  }
+  
+  // 异步上报父组件（使用 requestAnimationFrame 批量更新，不阻塞 UI）
+  requestAnimationFrame(() => {
+    syncToParent(dragging.value!);
+  });
+};
+
+// === 同步本地状态到父组件（只在边界做对数转换） ===
+const syncToParent = (handle: 'min' | 'max') => {
+  if (handle === 'min') {
+    // UI -> Logic: 百分比转数值，对齐步长
+    let value = percentToValue(localMinPercent.value, props.absoluteMin, props.absoluteMax);
+    value = Math.round(value / props.step) * props.step;
+    value = Math.max(props.absoluteMin, Math.min(value, props.maxValue - props.step));
+    emit('update:minValue', value);
+  } else {
+    // UI -> Logic: 百分比转数值，对齐步长
+    let value = percentToValue(localMaxPercent.value, props.absoluteMin, props.absoluteMax);
+    value = Math.round(value / props.step) * props.step;
+    value = Math.min(props.absoluteMax, Math.max(value, props.minValue + props.step));
+    emit('update:maxValue', value);
   }
 };
 
 const handleMouseUp = () => {
-  dragging.value = null;
+  if (dragging.value) {
+    // === 松开时：最终同步一次，然后恢复 prop 监听 ===
+    syncToParent(dragging.value);
+    dragging.value = null;
+    // 此时 computed 会自动从 props 同步最新值到本地状态
+  }
 };
 
 onMounted(() => {

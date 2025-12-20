@@ -194,81 +194,38 @@ class BacktestVisualizationAPI:
             return []  # 返回空列表而不是报错
     
     def get_strategy_logic(self, strategy_id: str) -> Dict[str, Any]:
-        """获取策略的买入逻辑和卖出逻辑描述"""
+        """
+        获取策略的逻辑描述
+        【优化】直接读取策略类的 DocString，不再维护硬编码字典
+        """
         try:
-            strategy_class = StrategyFactory.get_strategy_by_name(strategy_id)
+            strategy_class = StrategyFactory.get_factory().get_strategy_by_name(strategy_id)
             if not strategy_class:
-                return {
-                    "buy_logic": "策略未找到",
-                    "sell_logic": "策略未找到",
-                    "description": ""
-                }
+                return {"buy_logic": "策略未找到", "sell_logic": "", "description": ""}
             
-            # 获取策略类的文档字符串
-            doc = strategy_class.__doc__ or ""
+            # 1. 优先尝试调用策略类的 get_logic_description 方法 (如果你实现了的话)
+            if hasattr(strategy_class, "get_logic_description"):
+                return strategy_class.get_logic_description()
+
+            # 2. 否则自动解析 Python 文档注释 (__doc__)
+            doc = strategy_class.__doc__ or "暂无描述"
             
-            # 尝试从策略逻辑元数据中获取
-            logic_metadata = self._get_strategy_logic_metadata(strategy_id)
-            
+            # 简单粗暴的解析：假设文档里写了 "买入逻辑：" 和 "卖出逻辑："
+            # 如果没写，就全部丢给 description
             return {
-                "buy_logic": logic_metadata.get("buy_logic", "暂无买入逻辑说明"),
-                "sell_logic": logic_metadata.get("sell_logic", "暂无卖出逻辑说明"),
-                "description": doc.strip() or logic_metadata.get("description", "")
+                "buy_logic": "请在策略代码类注释中补充买入逻辑...", # 前端兼容占位
+                "sell_logic": "请在策略代码类注释中补充卖出逻辑...", 
+                "description": doc.strip()
             }
         except Exception as e:
             print(f"获取策略逻辑失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "buy_logic": "获取失败",
-                "sell_logic": "获取失败",
-                "description": ""
-            }
-    
-    def _get_strategy_logic_metadata(self, strategy_id: str) -> Dict[str, str]:
-        """根据策略ID返回买入卖出逻辑描述"""
-        logic_map = {
-            "聚宽量比市值策略V3_严格趋势": {
-                "buy_logic": """
-1. 量能过滤：量比 >= 量比阈值 且 换手率 >= 换手率阈值
-2. K线形态：收盘价 >= 开盘价 * 1.03（放量大阳）
-3. 上影线：上影线比例 <= 3%（非冲高回落）
-4. 严格趋势：Close > MA5 > MA10 > MA20，且 Close > MA20 * 1.03
-5. 生命线：Close > MA60（如果存在MA60）
-6. 市值筛选：在最小市值和最大市值范围内
-7. 无主升浪时：进入银行防守模式（银行股需满足安全均线条件）
-                """,
-                "sell_logic": """
-1. 跌破MA5：收盘价 < MA5 时卖出
-                """,
-                "description": "聚宽量比市值策略 V3 (严格主升浪版)\n核心改进：\n1. 极其严格的\"主升浪\"定义：必须 MA5 > MA10 > MA20，且位于 MA60 之上。\n2. 任何趋势不明、数据缺失的股票，一律视为弱势，不予买入。\n3. 只有真正的强势股才会被选中，否则强制进入银行防守或空仓。"
-            },
-            "聚宽量比市值策略V5_趋势过滤_五日线大阴线": {
-                "buy_logic": """
-1. 量能过滤：量比 >= 量比阈值 且 换手率 >= 换手率阈值
-2. K线形态：实体涨幅 >= 3%（放量中大阳）
-3. 上影线：上影线比例 <= 5%（避免冲高回落）
-4. 趋势过滤：MA5 > MA10 > MA20，且 Close >= MA20 * 1.02
-5. 趋势向上：如果有MA20斜率，要求 > 0；如果有MA60，要求 Close > MA60
-6. 量价结构：当日成交量 >= 20日均量（避免偶发放量）
-                """,
-                "sell_logic": """
-1. 跌破MA5：收盘价 < MA5 时卖出
-2. 巨大阴线：当日跌幅 <= -5% 且 距离MA5 >= 3% 时卖出（防出货砸盘）
-                """,
-                "description": "聚宽量比市值策略 V5\n思路：\n1）买点：先用趋势过滤器确认\"真·主升浪环境\"，再看放量大阳，尽量只买中段，而不是底部反弹。\n2）卖点：收盘跌破 MA5 或 当日出现巨大阴线（跌幅 <= -5% 且 距离 MA5 超过 3%）立即离场，用来防伪主升浪、高位出货砸盘。"
-            }
-        }
-        return logic_map.get(strategy_id, {
-            "buy_logic": "暂无买入逻辑说明",
-            "sell_logic": "暂无卖出逻辑说明",
-            "description": ""
-        })
+            return {"buy_logic": "获取失败", "sell_logic": "", "description": ""}
     
     def get_strategy_params(self, strategy_id: str) -> list[dict]:
         """
         返回给前端用的参数列表。
-        优先使用策略类的 PARAM_SPEC；否则退回到 dataclass 自动推断。
+        【优化】彻底移除 param_metadata 映射和 default_min/max 猜测逻辑。
+        只有策略类明确说了范围 (get_param_spec) 才返回，否则一律 None，由前端接管。
         """
         # 1. 找到策略类
         strategy_class = StrategyFactory.get_factory().get_strategy_by_name(strategy_id)
@@ -279,15 +236,15 @@ class BacktestVisualizationAPI:
         if hasattr(strategy_class, "get_param_spec"):
             spec = strategy_class.get_param_spec()
             if spec:
-                # 可以在这里统一补全一些缺省字段
+                # 完全放权给前端：不返回 min/max，让前端自主决定搜索范围
                 return [
                     {
                         "key": item["key"],
                         "label": item.get("label", item["key"]),
                         "group": item.get("group", "其它"),
                         "type": item.get("type", "float"),
-                        "min": item.get("min"),
-                        "max": item.get("max"),
+                        "min": None,  # 不返回范围限制，完全由前端控制
+                        "max": None,  # 不返回范围限制，完全由前端控制
                         "step": item.get("step"),
                         "default": item.get("default"),
                         "optimize": item.get("optimize", True),
@@ -296,7 +253,7 @@ class BacktestVisualizationAPI:
                     for item in spec
                 ]
 
-        # 3. 没有 PARAM_SPEC 的旧策略，退回 dataclass 自动推断
+        # 3. 退回 dataclass 自动推断 (旧式策略)
         strategy = StrategyFactory.get_factory().create_strategy(strategy_id)
         if hasattr(strategy, "config"):
             from dataclasses import is_dataclass, asdict
@@ -307,112 +264,32 @@ class BacktestVisualizationAPI:
             elif isinstance(config, dict):
                 config_dict = config
             else:
-                raise TypeError(f"策略 {strategy_id} 的 config 不是 dataclass 或 dict")
+                return []
 
             params = []
-            # 定义参数元数据映射（根据策略类型）
-            param_metadata = self._get_param_metadata(strategy_id)
             
             for field_name, field_value in config_dict.items():
-                # 跳过非优化参数（如 bank_codes 列表）
+                # 跳过非优化参数
                 if isinstance(field_value, (list, dict)) or field_name.startswith('_'):
                     continue
                 
-                # 获取该参数的元数据
-                meta = param_metadata.get(field_name, {})
-                
                 param_type = 'int' if isinstance(field_value, int) else 'float'
                 
-                param_dict = {
+                # 【核心修改】不再去查 metadata_map，也不再去猜 min/max
+                # 直接告诉前端：我有这个参数，默认值是多少，剩下的你看着办
+                params.append({
                     "key": field_name,
-                    "label": meta.get('label', field_name),
+                    "label": field_name, # 没有label就直接用key
                     "type": param_type,
-                    "min": meta.get('min', self._get_default_min(field_name, field_value, param_type)),
-                    "max": meta.get('max', self._get_default_max(field_name, field_value, param_type)),
+                    "min": None, 
+                    "max": None,
                     "default": field_value,
-                    "description": meta.get('description', '')
-                }
-                params.append(param_dict)
+                    "description": ""
+                })
             return params
 
         # 4. 实在啥都没有，就返回空
         return []
-    
-    def _get_param_metadata(self, strategy_id: str) -> Dict[str, Dict]:
-        """根据策略ID返回参数元数据映射"""
-        # 定义各策略的参数元数据
-        metadata_map = {
-            "聚宽量比市值策略V3_严格趋势": {
-                "market_cap_min": {"label": "最小市值(万元)", "min": 300000, "max": 500000, "description": "最小市值阈值"},
-                "market_cap_max": {"label": "最大市值(万元)", "min": 600000, "max": 2000000, "description": "最大市值阈值"},
-                "volume_ratio_threshold": {"label": "量比阈值", "min": 1.0, "max": 5.0, "description": "量比阈值"},
-                "turnover_rate_threshold": {"label": "换手率阈值", "min": 1.0, "max": 15.0, "description": "换手率阈值"},
-                "ma_days": {"label": "均线天数", "min": 5, "max": 60, "description": "移动平均线天数"},
-                "min_list_days": {"label": "最小上市天数", "min": 60, "max": 365, "description": "最小上市天数"},
-                "max_candidates": {"label": "最大候选数", "min": 10, "max": 100, "description": "最大候选股票数"},
-                "position_ratio": {"label": "仓位比例", "min": 0.1, "max": 1.0, "description": "单只股票仓位比例"},
-                "max_stocks_per_day": {"label": "每日最大持股数", "min": 1, "max": 5, "description": "每日最大持股数"},
-                "bank_position_ratio": {"label": "银行仓位比例", "min": 0.1, "max": 0.5, "description": "银行股仓位比例"},
-                "bank_safe_ma": {"label": "银行安全均线", "min": 10, "max": 120, "description": "银行股安全均线天数"},
-            },
-            "聚宽量比市值策略": {
-                "market_cap_min": {"label": "最小市值(万元)", "min": 200000, "max": 1000000, "description": "最小市值阈值"},
-                "market_cap_max": {"label": "最大市值(万元)", "min": 500000, "max": 20000000, "description": "最大市值阈值"},
-                "volume_ratio_threshold": {"label": "量比阈值", "min": 1.0, "max": 5.0, "description": "量比阈值"},
-                "turnover_rate_threshold": {"label": "换手率阈值", "min": 1.0, "max": 15.0, "description": "换手率阈值"},
-                "ma_days": {"label": "均线天数", "min": 5, "max": 60, "description": "移动平均线天数"},
-                "min_list_days": {"label": "最小上市天数", "min": 60, "max": 365, "description": "最小上市天数"},
-                "max_candidates": {"label": "最大候选数", "min": 10, "max": 100, "description": "最大候选股票数"},
-                "position_ratio": {"label": "仓位比例", "min": 0.1, "max": 1.0, "description": "单只股票仓位比例"},
-                "max_stocks_per_day": {"label": "每日最大持股数", "min": 1, "max": 5, "description": "每日最大持股数"},
-            }
-        }
-        
-        return metadata_map.get(strategy_id, {})
-    
-    def _get_default_min(self, field_name: str, default_value: Any, param_type: str) -> float:
-        """根据字段名和默认值计算最小值"""
-        if param_type == 'int':
-            if 'days' in field_name or 'ma' in field_name:
-                return 5
-            elif 'candidates' in field_name or 'stocks' in field_name:
-                return 1
-            elif 'cap_min' in field_name:
-                return 200000
-            else:
-                return max(1, int(default_value * 0.5))
-        else:  # float
-            if 'ratio' in field_name or 'threshold' in field_name:
-                return max(0.1, float(default_value * 0.5))
-            elif 'cap_min' in field_name:
-                return 10.0
-            else:
-                return 0.1
-    
-    def _get_default_max(self, field_name: str, default_value: Any, param_type: str) -> float:
-        """根据字段名和默认值计算最大值"""
-        if param_type == 'int':
-            if 'days' in field_name:
-                return 365
-            elif 'ma' in field_name:
-                return 120
-            elif 'candidates' in field_name:
-                return 100
-            elif 'stocks' in field_name:
-                return 5
-            elif 'cap_max' in field_name:
-                return 20000000
-            else:
-                return int(default_value * 3)
-        else:  # float
-            if 'ratio' in field_name:
-                return 1.0
-            elif 'threshold' in field_name:
-                return 15.0
-            elif 'cap_max' in field_name:
-                return 2000.0
-            else:
-                return float(default_value * 3)
     
     def _get_benchmark_data_from_db(self, benchmark_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """获取基准数据（需要数据库连接）"""

@@ -79,41 +79,70 @@ const CUSTOM_PARAM_CONFIG: Record<string, {
 }> = {
   // === 市值参数配置 ===
   'market_cap_min': {
-    overrideMin: 0,
+    overrideMin: 100,
     overrideMax: 50000000,    // 5000亿 (单位：万元)
     defaultStart: 200000,     // 20亿
     defaultEnd: 1000000,      // 100亿
-    step: 0.5,                // 0.5亿
+    step: 0.1,                // 0.5亿
     useSlider: true,
     useLogScale: true
   },
   'market_cap_max': {
-    overrideMin: 0,
+    overrideMin: 100,
     overrideMax: 50000000,
     defaultStart: 200000,
     defaultEnd: 1000000,
-    step: 0.5,
+    step: 0.1,
     useSlider: true,
     useLogScale: true
   },
-  
-  // === 举例：以后你想加个"成交量"或者"换手率"，直接在这写 ===
-  // 例如：换手率 (turnover)，后端可能给0-1，你想放宽到 0-100%
-  // 'turnover_min': {
-  //   overrideMin: 0,
-  //   overrideMax: 50,       // 允许最大拉到 50%
-  //   defaultStart: 1,       // 默认 1%
-  //   defaultEnd: 10,        // 默认 10%
-  //   step: 0.1,
-  //   useSlider: true,
-  //   useLogScale: false
-  // }
+
 };
 
 const normalizeParamKey = (key: string) => key?.trim().toLowerCase();
 const getParamDisplayConfig = (key: string) => {
   if (!key) return undefined;
   return PARAM_DISPLAY[normalizeParamKey(key)];
+};
+
+// --- 通用默认范围生成器（当后端不返回 min/max 时使用）---
+const getDefaultRange = (param: any): { min: number; max: number } => {
+  // 1. 优先使用配置表中的值
+  const config = CUSTOM_PARAM_CONFIG[param.key];
+  if (config && config.overrideMin !== undefined && config.overrideMax !== undefined) {
+    return {
+      min: config.overrideMin,
+      max: config.overrideMax
+    };
+  }
+  
+  // 2. 根据参数类型和名称推断通用超大范围
+  const paramType = param.type || 'float';
+  const key = param.key?.toLowerCase() || '';
+  
+  if (paramType === 'int') {
+    // 整数类型：根据字段名推断
+    if (key.includes('days') || key.includes('ma')) {
+      return { min: 1, max: 1000 };  // 天数类：1-1000
+    } else if (key.includes('candidates') || key.includes('stocks')) {
+      return { min: 1, max: 1000 };  // 数量类：1-1000
+    } else if (key.includes('cap')) {
+      return { min: 0, max: 50000000 };  // 市值类：0-5000亿（万元）
+    } else {
+      return { min: 1, max: 10000 };  // 其他整数：1-10000
+    }
+  } else {
+    // 浮点数类型
+    if (key.includes('ratio') || key.includes('position')) {
+      return { min: 0, max: 10 };  // 比例类：0-10
+    } else if (key.includes('threshold')) {
+      return { min: 0, max: 100 };  // 阈值类：0-100
+    } else if (key.includes('cap')) {
+      return { min: 0, max: 50000000 };  // 市值类：0-5000亿（万元）
+    } else {
+      return { min: 0, max: 1000 };  // 其他浮点数：0-1000
+    }
+  }
 };
 
 const getParamUnit = (key: string): string => {
@@ -299,15 +328,25 @@ const fetchStrategyParams = async () => {
           // 1. 尝试从配置表中获取自定义配置
           const config = CUSTOM_PARAM_CONFIG[param.key];
           
+          // 2. 处理 min/max：如果后端返回 null，使用默认范围生成器
+          if (param.min === null || param.min === undefined) {
+            const defaultRange = getDefaultRange(param);
+            param.min = defaultRange.min;
+          }
+          if (param.max === null || param.max === undefined) {
+            const defaultRange = getDefaultRange(param);
+            param.max = defaultRange.max;
+          }
+          
           if (config) {
             // === 命中配置：应用覆盖逻辑 ===
             
-            // 覆盖物理极限 (RangeSlider 的轨道长度)
+            // 覆盖物理极限 ( 的轨道长度)
             if (config.overrideMin !== undefined) param.min = config.overrideMin;
             if (config.overrideMax !== undefined) param.max = config.overrideMax;
             
             // 设置滑块初始选区 (把手位置)
-            // 如果配置了 defaultStart/End 就用配置的，否则用覆盖后的 min/max，再兜底用原值
+            // 如果配置了 defaultStart/End 就用配置的，否则用覆盖后的 min/max
             const startVal = config.defaultStart ?? param.min;
             const endVal = config.defaultEnd ?? param.max;
             
@@ -316,10 +355,12 @@ const fetchStrategyParams = async () => {
               max: endVal
             };
           } else {
-            // === 未命中配置：走默认后端逻辑 ===
+            // === 未命中配置：使用默认范围或后端值 ===
+            // 如果后端返回了值就用后端的，否则用默认范围生成器
+            const defaultRange = getDefaultRange(param);
             paramRangeValues.value[param.key] = {
-              min: param.min,
-              max: param.max
+              min: param.min ?? defaultRange.min,
+              max: param.max ?? defaultRange.max
             };
           }
         });
@@ -1665,38 +1706,40 @@ onUnmounted(() => {
                     <!-- 使用配置表控制的滑块参数 -->
                     <div v-if="CUSTOM_PARAM_CONFIG[param.key]?.useSlider" class="mt-4">
                       <RangeSlider
-                        :label="getParamLabel(param)"
-                        :unit="getParamUnit(param.key) || param.unit || ''"
-                        
-                        :absolute-min="toUiValue(param.key, param.min) ?? 0"
-                        :absolute-max="toUiValue(param.key, param.max) ?? 100"
-                        
-                        :min-value="Math.max(toUiValue(param.key, param.min) ?? 0, toUiValue(param.key, paramRangeValues[param.key]?.min) ?? 0)"
-                        :max-value="Math.min(toUiValue(param.key, param.max) ?? 100, toUiValue(param.key, paramRangeValues[param.key]?.max) ?? 100)"
-                        
-                        :step="CUSTOM_PARAM_CONFIG[param.key]?.step ?? 0.01"
-                        :locked="paramLocked[param.key]"
-                        :use-log-scale="CUSTOM_PARAM_CONFIG[param.key]?.useLogScale ?? false"
-                        
-                        @update:min-value="(v) => { 
-                          const backendVal = toBackendValue(param.key, v) || 0;
-                          const existing = paramRangeValues[param.key];
-                          const currentMax = existing?.max ?? param.max ?? 1000000;
-                          paramRangeValues[param.key] = { 
-                            min: Math.max(param.min ?? 0, Math.min(backendVal, currentMax - 1)),
-                            max: currentMax
-                          }; 
-                        }"
-                        @update:max-value="(v) => { 
-                          const backendVal = toBackendValue(param.key, v) || 0;
-                          const existing = paramRangeValues[param.key];
-                          const currentMin = existing?.min ?? param.min ?? 200000;
-                          paramRangeValues[param.key] = { 
-                            min: currentMin,
-                            max: Math.min(param.max ?? 50000000, Math.max(backendVal, currentMin + 1))
-                          }; 
-                        }"
-                      />
+                                  :label="getParamLabel(param)"
+                                  :unit="getParamUnit(param.key) || param.unit || '亿'"
+                                  
+                                  :absolute-min="Math.max(0.01, toUiValue(param.key, param.min) || 0.01)"
+                                  :absolute-max="toUiValue(param.key, param.max) || 100"
+                                  
+                                  :min-value="Math.max(0.01, toUiValue(param.key, paramRangeValues[param.key]?.min) || 0.01)"
+                                  :max-value="Math.max(0.01, toUiValue(param.key, paramRangeValues[param.key]?.max) || 100)"
+                                  
+                                  :step="CUSTOM_PARAM_CONFIG[param.key]?.step ?? 0.01"
+                                  :locked="paramLocked[param.key]"
+                                  :use-log-scale="CUSTOM_PARAM_CONFIG[param.key]?.useLogScale ?? false"
+                                  
+                                  @update:min-value="(v) => { 
+                                    const safeV = Math.max(0.0001, v); 
+                                    const backendVal = toBackendValue(param.key, safeV) || 0;
+                                    // 修复：增加 || { min: 0, max: 0 } 兜底，消除 TS 类型错误
+                                    const oldVal = paramRangeValues[param.key] || { min: 0, max: 0 };
+                                    paramRangeValues[param.key] = { 
+                                      ...oldVal, 
+                                      min: backendVal 
+                                    }; 
+                                  }"
+                                  @update:max-value="(v) => { 
+                                    const safeV = Math.max(0.0001, v);
+                                    const backendVal = toBackendValue(param.key, safeV) || 0;
+                                    // 修复：增加 || { min: 0, max: 0 } 兜底，消除 TS 类型错误
+                                    const oldVal = paramRangeValues[param.key] || { min: 0, max: 0 };
+                                    paramRangeValues[param.key] = { 
+                                      ...oldVal, 
+                                      max: backendVal 
+                                    }; 
+                                  }"
+                                />
                     </div>
                     <!-- 其他参数使用数字输入框 -->
                     <div v-else class="mt-2 flex justify-between items-center text-[10px] text-[#94a3b8] font-mono">
