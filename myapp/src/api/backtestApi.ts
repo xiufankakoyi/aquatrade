@@ -375,6 +375,7 @@ export interface StockWordCloudWord {
   positiveWeight: number;
   negativeWeight: number;
   count: number;
+  sentiment?: number;
 }
 
 export interface StockWordCloudResponse {
@@ -415,6 +416,52 @@ export async function fetchStockWordCloud(symbol: string): Promise<StockWordClou
   }
 }
 
+export interface PostByKeyword {
+  title: string;
+  clicks: number;
+  comments: number;
+  forwards: number;
+  publishTime: string;
+}
+
+export interface PostsByKeywordResponse {
+  posts: PostByKeyword[];
+  total: number;
+}
+
+/**
+ * 获取包含特定关键词的帖子列表
+ */
+export async function fetchPostsByKeyword(
+  symbol: string,
+  keyword: string,
+  limit: number = 50
+): Promise<PostsByKeywordResponse | null> {
+  if (!symbol || !keyword) return null;
+
+  const params = new URLSearchParams();
+  params.set('symbol', symbol);
+  params.set('keyword', keyword);
+  params.set('limit', limit.toString());
+
+  const url = `${API_BASE_URL}/stock_posts_by_keyword?${params.toString()}`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+    const data = await res.json();
+    if (data && data.success && data.data) {
+      return data.data as PostsByKeywordResponse;
+    }
+    return null;
+  } catch (error) {
+    console.error('获取关键词帖子列表失败:', error);
+    throw error;
+  }
+}
+
 // 新增 API 接口用于 Dashboard
 export interface SentimentTrendPoint {
   date: string;
@@ -434,6 +481,9 @@ export interface ScatterDataPoint {
   name: string;
   size: number;
   color: string;
+  is_comment?: boolean; // 是否为评论数据
+  post_title?: string; // 评论标题（仅评论数据有）
+  market_cap?: number; // 市值（仅股票数据有）
 }
 
 /**
@@ -554,24 +604,85 @@ export async function fetchScatterData(symbol?: string, retryCount = 3): Promise
       
       // 从后端响应中提取数据并转换为前端期望的格式
       if (result && result.success && result.data) {
-        return result.data.map((stock: any) => {
+        // 统计情感值分布，用于调试
+        const sentimentStats = {
+          positive: 0,
+          negative: 0,
+          neutral: 0,
+          min: Infinity,
+          max: -Infinity
+        };
+        
+        const mappedData = result.data.map((item: any) => {
+          // 判断是否为评论数据
+          const isComment = item.is_comment === true;
+          
           // 根据情感值分配颜色
+          // CHANGED: 调整阈值，使用 0 作为分界点，确保看空数据能正确显示为绿色
           let color = '#94a3b8'; // 默认中性色
-          if (stock.sentiment > 0.2) {
-            color = '#10b981'; // 积极 - 绿色
-          } else if (stock.sentiment < -0.2) {
-            color = '#ef4444'; // 消极 - 红色
+          const sentiment = item.sentiment || 0;
+          
+          // 统计情感值分布
+          sentimentStats.min = Math.min(sentimentStats.min, sentiment);
+          sentimentStats.max = Math.max(sentimentStats.max, sentiment);
+          
+          if (sentiment > 0) {
+            // 看多：情感值 > 0，显示红色
+            color = '#ef4444';
+            sentimentStats.positive++;
+          } else if (sentiment < 0) {
+            // 看空：情感值 < 0，显示绿色
+            color = '#10b981';
+            sentimentStats.negative++;
+          } else {
+            // sentiment === 0 时保持中性色（灰色）
+            sentimentStats.neutral++;
           }
           
-          return {
-            x: stock.comment_count,
-            y: stock.sentiment,
-            symbol: stock.symbol,
-            name: stock.name,
-            size: Math.log(stock.market_cap + 1) * 10, // 使用市值的对数作为大小
-            color: color
-          };
+          // 优先使用归一化后的值，如果不存在则使用原始值
+          const xValue = item.comment_count_normalized !== undefined 
+            ? item.comment_count_normalized 
+            : (item.comment_count || 0);
+          
+          if (isComment) {
+            // 评论数据：x轴为评论数（归一化后），y轴为情感值，size固定
+            return {
+              x: xValue,
+              y: item.sentiment || 0,
+              symbol: item.symbol || '',
+              name: item.name || '',
+              size: 20, // 评论数据使用固定大小
+              color: color,
+              is_comment: true,
+              post_title: item.post_title || '',
+              comment_count: item.comment_count || 0 // 保留原始值用于显示
+            };
+          } else {
+            // 股票数据：x轴为评论数（归一化后），y轴为情感值，size为市值对数
+            return {
+              x: xValue,
+              y: item.sentiment || 0,
+              symbol: item.symbol || '',
+              name: item.name || '',
+              size: Math.log((item.market_cap || 0) + 1) * 10, // 使用市值的对数作为大小
+              color: color,
+              market_cap: item.market_cap || 0,
+              comment_count: item.comment_count || 0 // 保留原始值用于显示
+            };
+          }
         });
+        
+        // 输出情感值分布统计
+        console.log('情感值分布统计:', {
+          total: mappedData.length,
+          positive: sentimentStats.positive,
+          negative: sentimentStats.negative,
+          neutral: sentimentStats.neutral,
+          min: sentimentStats.min,
+          max: sentimentStats.max
+        });
+        
+        return mappedData;
       }
       
       throw new Error('服务器返回的数据格式不正确');
@@ -593,4 +704,53 @@ export async function fetchScatterData(symbol?: string, retryCount = 3): Promise
   // 所有重试都失败
   console.error('获取散点图数据失败，已达到最大重试次数:', lastError);
   throw lastError || new Error('获取散点图数据失败');
+}
+
+/**
+ * 获取个股多空博弈时间序列数据
+ */
+export interface StockSentimentTimelinePoint {
+  time: string;
+  bullishCount: number;
+  bearishCount: number;
+  neutralCount: number;
+  totalCount: number;
+}
+
+export interface StockSentimentTimelineResponse {
+  success: boolean;
+  data: StockSentimentTimelinePoint[];
+  stockName?: string;
+  error?: string;
+}
+
+export async function fetchStockSentimentTimeline(symbol: string): Promise<StockSentimentTimelineResponse> {
+  if (!symbol) {
+    throw new Error('缺少 symbol 参数');
+  }
+  
+  try {
+    const params = new URLSearchParams();
+    params.set('symbol', symbol);
+    
+    const url = `${API_BASE_URL}/stock_sentiment_timeline?${params.toString()}`;
+    
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-cache'
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+    return result as StockSentimentTimelineResponse;
+  } catch (error) {
+    console.error('获取个股多空博弈时间序列数据失败:', error);
+    throw error;
+  }
 }

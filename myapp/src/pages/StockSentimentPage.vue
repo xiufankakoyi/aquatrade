@@ -54,9 +54,18 @@
       <div class="col-span-12 lg:col-span-4">
         <div class="bg-[#151925] rounded-lg p-4 border border-slate-800 flex flex-col">
           <h2 class="text-lg font-semibold text-white mb-3">股票舆情列表</h2>
+          <!-- 搜索框 -->
+          <div class="mb-3">
+            <input
+              type="text"
+              v-model="searchText"
+              placeholder="搜索股票代码或名称..."
+              class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
           <div class="flex-1 overflow-auto max-h-80">
             <table class="w-full text-sm">
-              <thead>
+              <thead class="sticky top-0 bg-[#151925] z-10">
                 <tr class="text-slate-400 border-b border-slate-800">
                   <th class="px-2 py-2 text-left">代码</th>
                   <th class="px-2 py-2 text-left">名称</th>
@@ -66,7 +75,7 @@
               </thead>
               <tbody>
                 <tr
-                  v-for="item in items.slice(0, 15)"
+                  v-for="item in filteredItems"
                   :key="item.symbol"
                   class="border-b border-slate-800/60 hover:bg-slate-800/40 cursor-pointer"
                   :class="{ 'bg-slate-800/60': selectedItem && selectedItem.symbol === item.symbol }"
@@ -74,14 +83,14 @@
                 >
                   <td class="px-2 py-2 text-slate-100 whitespace-nowrap">{{ item.stockCode }}</td>
                   <td class="px-2 py-2 text-slate-100 truncate max-w-[6rem]">{{ item.stockName || '-' }}</td>
-                  <td class="px-2 py-2 text-right text-slate-100">{{ item.totalPosts }}</td>
-                  <td class="px-2 py-2 text-right" :class="sentimentClass(item.sentimentScore)">
-                    {{ item.sentimentScore.toFixed(2) }}
+                  <td class="px-2 py-2 text-slate-100 text-right tabular-nums">{{ item.totalPosts }}</td>
+                  <td class="px-2 py-2 text-right tabular-nums font-medium" :class="sentimentClass(item.sentimentScore)">
+                    {{ formatSentimentScore(item.sentimentScore) }}
                   </td>
                 </tr>
-                <tr v-if="!loading && !items.length">
+                <tr v-if="!loading && !filteredItems.length">
                   <td colspan="4" class="px-2 py-4 text-center text-slate-500">
-                    暂无数据
+                    {{ searchText ? '未找到匹配的股票' : '暂无数据' }}
                   </td>
                 </tr>
               </tbody>
@@ -133,6 +142,67 @@
           </div>
         </div>
       </div>
+      
+      <!-- Fourth Row: Posts List (Click-through from Word Cloud) -->
+      <div v-if="selectedKeyword" class="col-span-12">
+        <div class="bg-[#151925] rounded-lg p-4 border border-slate-800">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center space-x-2">
+              <h2 class="text-lg font-semibold text-white">
+                包含关键词 "<span class="text-blue-400">{{ selectedKeyword }}</span>" 的帖子
+              </h2>
+              <button
+                @click="selectedKeyword = null"
+                class="ml-2 px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-300 rounded"
+              >
+                <i class="fas fa-times mr-1"></i>关闭
+              </button>
+            </div>
+            <div class="text-sm text-slate-400">
+              共 {{ filteredPosts.length }} 条
+            </div>
+          </div>
+          <div class="max-h-96 overflow-y-auto">
+            <table class="w-full text-sm">
+              <thead class="sticky top-0 bg-slate-800">
+                <tr class="text-slate-400 border-b border-slate-700">
+                  <th class="px-3 py-2 text-left">标题</th>
+                  <th class="px-3 py-2 text-right">点击</th>
+                  <th class="px-3 py-2 text-right">评论</th>
+                  <th class="px-3 py-2 text-right">转发</th>
+                  <th class="px-3 py-2 text-left">发布时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(post, idx) in filteredPosts"
+                  :key="idx"
+                  class="border-b border-slate-800/60 hover:bg-slate-800/40"
+                >
+                  <td class="px-3 py-2 text-slate-100">
+                    <span v-html="highlightKeyword(post.title, selectedKeyword)"></span>
+                  </td>
+                  <td class="px-3 py-2 text-slate-300 text-right tabular-nums">{{ post.clicks }}</td>
+                  <td class="px-3 py-2 text-slate-300 text-right tabular-nums">{{ post.comments }}</td>
+                  <td class="px-3 py-2 text-slate-300 text-right tabular-nums">{{ post.forwards }}</td>
+                  <td class="px-3 py-2 text-slate-400 text-left">{{ post.publishTime || '-' }}</td>
+                </tr>
+                <tr v-if="filteredPostsLoading">
+                  <td colspan="5" class="px-3 py-4 text-center text-slate-400">
+                    <i class="fas fa-spinner fa-spin mr-2"></i>
+                    正在加载...
+                  </td>
+                </tr>
+                <tr v-if="!filteredPostsLoading && filteredPosts.length === 0">
+                  <td colspan="5" class="px-3 py-4 text-center text-slate-500">
+                    暂无相关帖子
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Algorithm Explanations -->
@@ -174,12 +244,13 @@ defineOptions({
   name: 'StockSentimentPage'
 });
 
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import * as echarts from 'echarts';
 import 'echarts-wordcloud';
 import {
   fetchStockSentiment,
   fetchStockWordCloud,
+  fetchPostsByKeyword,
   type StockSentimentItem,
   type StockWordCloudResponse
 } from '../api/backtestApi';
@@ -193,8 +264,21 @@ const items = ref<StockSentimentItem[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const limit = ref(50);
+const searchText = ref('');
 
-const chartContainer = ref<HTMLDivElement | null>(null);
+// 过滤后的股票列表
+const filteredItems = computed(() => {
+  if (!searchText.value.trim()) {
+    return items.value;
+  }
+  const search = searchText.value.trim().toLowerCase();
+  return items.value.filter(item => {
+    const code = (item.stockCode || '').toLowerCase();
+    const name = (item.stockName || '').toLowerCase();
+    return code.includes(search) || name.includes(search);
+  });
+});
+
 const wordCloudContainer = ref<HTMLDivElement | null>(null);
 let chartInstance: echarts.ECharts | null = null;
 
@@ -202,6 +286,17 @@ const selectedItem = ref<StockSentimentItem | null>(null);
 const wordCloudData = ref<StockWordCloudResponse | null>(null);
 const wordCloudLoading = ref(false);
 const wordCloudError = ref<string | null>(null);
+
+// 点击穿透相关状态
+const selectedKeyword = ref<string | null>(null);
+const filteredPosts = ref<Array<{
+  title: string;
+  clicks: number;
+  comments: number;
+  forwards: number;
+  publishTime: string;
+}>>([]);
+const filteredPostsLoading = ref(false);
 
 // 计算总数据量
 const totalDataCount = ref(0);
@@ -260,12 +355,32 @@ async function handleRowClick(item: StockSentimentItem) {
   await loadWordCloud();
 }
 
+// 格式化情感分数，修复-0.00显示问题
+function formatSentimentScore(score: number): string {
+  // 处理浮点数精度问题，避免显示-0.00
+  const absScore = Math.abs(score);
+  if (absScore < 0.005) {
+    return '0.00';
+  }
+  return score.toFixed(2);
+}
+
+// 改进情感颜色区分，更明显的正负区分
 function sentimentClass(score: number): string {
-  if (score > 0.3) return 'text-green-300';
-  if (score > 0.05) return 'text-green-200';
-  if (score < -0.3) return 'text-red-300';
-  if (score < -0.05) return 'text-red-200';
-  return 'text-slate-200';
+  const absScore = Math.abs(score);
+  // 处理接近0的情况
+  if (absScore < 0.005) {
+    return 'text-slate-300'; // 中性，稍微亮一点
+  }
+  // 正情感：绿色系
+  if (score > 0.3) return 'text-green-400 font-semibold'; // 强正情感，更亮的绿色
+  if (score > 0.15) return 'text-green-300'; // 中等正情感
+  if (score > 0.05) return 'text-green-200'; // 弱正情感
+  // 负情感：红色系
+  if (score < -0.3) return 'text-red-400 font-semibold'; // 强负情感，更亮的红色
+  if (score < -0.15) return 'text-red-300'; // 中等负情感
+  if (score < -0.05) return 'text-red-200'; // 弱负情感
+  return 'text-slate-300'; // 中性
 }
 
 function initWordCloudChart() {
@@ -296,11 +411,20 @@ function updateWordCloudChart() {
   const seriesData = data.words.map((w) => {
     const pos = w.positiveWeight ?? 0;
     const neg = w.negativeWeight ?? 0;
-    let color = '#e5e7eb';
-    if (pos > neg * 1.2) {
-      color = '#22c55e';
-    } else if (neg > pos * 1.2) {
-      color = '#ef4444';
+    const sentiment = w.sentiment ?? 0;
+    
+    // 颜色映射：1（正面）→ 浅红，0（中性）→ 灰色，-1（负面）→ 浅绿
+    let color = '#9ca3af'; // 默认中性灰色
+    
+    if (sentiment > 0.15) {
+      // 正面情绪（接近1）：浅红色
+      color = '#fca5a5'; // 浅红色（tailwind red-300）
+    } else if (sentiment < -0.15) {
+      // 负面情绪（接近-1）：浅绿色
+      color = '#86efac'; // 浅绿色（tailwind green-300）
+    } else {
+      // 中性情绪（接近0）：灰色
+      color = '#9ca3af'; // 灰色（tailwind gray-400）
     }
 
     return {
@@ -311,7 +435,8 @@ function updateWordCloudChart() {
       },
       positiveWeight: pos,
       negativeWeight: neg,
-      count: w.count
+      count: w.count,
+      sentiment: sentiment
     };
   });
 
@@ -325,7 +450,8 @@ function updateWordCloudChart() {
           `出现次数：${d.count ?? '-'}`,
           `权重：${(d.value ?? 0).toFixed(2)}`,
           `正向权重：${(d.positiveWeight ?? 0).toFixed(2)}`,
-          `负向权重：${(d.negativeWeight ?? 0).toFixed(2)}`
+          `负向权重：${(d.negativeWeight ?? 0).toFixed(2)}`,
+          `<span style="color: #60a5fa;">点击查看包含该词的帖子</span>`
         ];
         return lines.join('<br/>');
       }
@@ -350,6 +476,39 @@ function updateWordCloudChart() {
   };
 
   chartInstance.setOption(option);
+  
+  // 添加点击事件监听
+  chartInstance.off('click');
+  chartInstance.on('click', (params: any) => {
+    if (params.data && params.data.name) {
+      handleWordClick(params.data.name);
+    }
+  });
+}
+
+async function handleWordClick(keyword: string) {
+  if (!selectedItem.value || !keyword) return;
+  
+  selectedKeyword.value = keyword;
+  filteredPostsLoading.value = true;
+  filteredPosts.value = [];
+  
+  try {
+    const data = await fetchPostsByKeyword(selectedItem.value.symbol, keyword, 100);
+    if (data && data.posts) {
+      filteredPosts.value = data.posts;
+    }
+  } catch (e) {
+    console.error('获取关键词帖子列表失败:', e);
+  } finally {
+    filteredPostsLoading.value = false;
+  }
+}
+
+function highlightKeyword(text: string, keyword: string | null): string {
+  if (!keyword || !text) return text;
+  const regex = new RegExp(`(${keyword})`, 'gi');
+  return text.replace(regex, '<span class="bg-yellow-500/30 text-yellow-300 font-semibold">$1</span>');
 }
 
 async function loadWordCloud() {

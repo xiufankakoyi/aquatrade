@@ -760,6 +760,7 @@ class OptimizedBacktestEngine:
         # 【修复2+用户需求】仓位管理：策略参数优先，未提供则全仓买入所有信号
         # 检查策略是否提供了仓位管理参数
         strategy_has_max_positions = strategy and hasattr(strategy, 'max_positions')
+        strategy_has_max_stocks_per_day = strategy and hasattr(strategy, 'max_stocks_per_day')
         strategy_has_position_ratio = strategy and hasattr(strategy, 'position_ratio')
         
         if strategy_has_max_positions:
@@ -767,18 +768,27 @@ class OptimizedBacktestEngine:
         else:
             max_positions = None  # None 表示不限制持仓数量
         
+        # 【关键修复】支持 max_stocks_per_day：限制每天买入的股票数量（不是总持仓）
+        if strategy_has_max_stocks_per_day:
+            max_stocks_per_day = strategy.max_stocks_per_day
+        else:
+            max_stocks_per_day = None  # None 表示不限制每天买入数量
+        
         if strategy_has_position_ratio:
             position_ratio = strategy.position_ratio
         else:
             position_ratio = None  # None 表示不限制单只股票仓位比例
         
-        # 如果策略提供了参数，使用策略参数；否则全仓买入所有信号
-        if max_positions is not None:
+        # 【关键修复】优先使用 max_stocks_per_day（每天买入限制），其次使用 max_positions（总持仓限制）
+        if max_stocks_per_day is not None:
+            # 策略提供了 max_stocks_per_day，限制每天买入数量
+            stocks_to_buy = buy_signals[:max_stocks_per_day]
+        elif max_positions is not None:
             # 策略提供了 max_positions，限制持仓数量
             buy_allowance = max_positions - len(new_portfolio)
             stocks_to_buy = buy_signals[:buy_allowance] if buy_allowance > 0 else []
         else:
-            # 策略未提供 max_positions，买入所有信号
+            # 策略未提供限制参数，买入所有信号
             stocks_to_buy = buy_signals
         
         if stocks_to_buy:

@@ -10,7 +10,7 @@
     <div class="mt-4 grid grid-cols-2 md:grid-cols-5 gap-2 text-xs text-gray-600 dark:text-slate-400">
       <div>
         <p class="font-semibold">超额收益</p>
-        <p>策略年化收益 vs 基准年化收益</p>
+        <p>策略期间收益 vs 基准期间收益</p>
       </div>
       <div>
         <p class="font-semibold">风险一致性</p>

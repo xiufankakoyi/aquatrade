@@ -6,6 +6,8 @@ import time
 import uuid
 import math
 import random
+import warnings
+import json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()
@@ -18,6 +20,11 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
+try:
+    import redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
 try:
     import duckdb  # type: ignore[import]
 except Exception:  # noqa: BLE001
@@ -45,10 +52,62 @@ STOPWORDS = {
     "这样", "那样", "这样一来", "如此一来"
 }
 
+# 公告和广告语模式（在分词前过滤）
+ANNOUNCEMENT_PATTERNS = [
+    r"关于.*?的公告",
+    r"关于.*?预披露公告",
+    r"关于.*?减持.*?公告",
+    r"关于.*?承诺.*?公告",
+    r".*?承诺.*?不减持.*?",
+    r".*?股份减持计划.*?",
+    r".*?控股股东.*?承诺.*?",
+    r".*?董事.*?高级管理人员.*?",
+    r".*?股份.*?减持.*?预披露",
+    r".*?公告.*?公告",  # 重复"公告"的标题
+]
+
+# 广告语关键词（如果标题包含这些词，可能是广告）
+AD_KEYWORDS = [
+    "点击", "关注", "加微信", "扫码", "领取", "免费", "限时", "优惠", "促销",
+    "立即", "马上", "赶快", "不要错过", "机会", "赚钱", "收益", "投资",
+    "加群", "进群", "微信群", "QQ群", "联系", "咨询", "详情", "了解",
+]
+
+# 股市专业术语白名单（自定义词典）
+STOCK_TERMS = [
+    # 操作词
+    "加仓", "建仓", "清仓", "做T", "做t", "抄底", "割肉", "满仓", "空仓",
+    "减仓", "补仓", "平仓", "锁仓", "持仓", "开仓", "止盈", "止损",
+    # 情绪词
+    "诱多", "诱空", "洗盘", "踏空", "套牢", "起飞", "跳水", "杀跌", "追涨",
+    "砸盘", "护盘", "拉盘", "出货", "吸筹", "震仓", "横盘", "破位",
+    # 金融词
+    "分红", "除权", "除息", "破净", "市盈率", "市净率", "主力", "北向资金", 
+    "南向资金", "中字头", "蓝筹", "白马", "黑马", "题材", "概念", "板块",
+    "涨停", "跌停", "涨停板", "跌停板", "一字板", "开板", "封板",
+    "换手率", "成交量", "成交额", "流通股", "总股本", "市值", "估值",
+    # 特定称呼
+    "中行", "工行", "建行", "农行", "四大行", "银行股",
+    # 技术分析词
+    "均线", "MACD", "KDJ", "RSI", "布林线", "支撑位", "阻力位", "压力位",
+    "金叉", "死叉", "顶背离", "底背离", "突破", "回踩", "反弹", "回调",
+]
+
+# 允许的词性标签（放宽限制，保留更多有意义的词）
+# 包括：名词、动词、形容词、副词、数词、时间词等
+ALLOWED_POS_FLAGS = ['n', 'nr', 'ns', 'nt', 'nz', 'v', 'vn', 'vd', 'a', 'ad', 'an', 'd', 'm', 't', 'f']
+
 try:
     import jieba
+    import jieba.posseg as pseg
+    # 初始化 jieba 时加载自定义词典
+    if jieba is not None:
+        # 将股市术语添加到 jieba 词典
+        for term in STOCK_TERMS:
+            jieba.add_word(term, freq=1000, tag='n')  # 设置为高频词，确保不被拆分
 except ImportError:
     jieba = None
+    pseg = None
 
 # CHANGED: 延迟初始化 API，在后台线程中预热数据库
 api = None
@@ -93,6 +152,106 @@ def _init_api():
  # 在导入时立即初始化（同步初始化，确保 API 可用）
  # （已改为懒加载，由 before_first_request 钩子触发 _init_api）
 
+# Redis 订阅线程（用于接收 Worker 进程的进度消息）
+_redis_subscriber_thread = None
+_redis_subscriber_running = False
+
+def start_redis_subscriber():
+    """
+    启动 Redis 订阅线程，监听 Worker 进程发布的进度消息
+    并将消息转发给前端（通过 socketio）
+    """
+    global _redis_subscriber_thread, _redis_subscriber_running
+    
+    if not REDIS_AVAILABLE:
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.warning("Redis 不可用，跳过订阅线程启动")
+        return
+    
+    if _redis_subscriber_thread is not None and _redis_subscriber_thread.is_alive():
+        return  # 已经启动
+    
+    def redis_subscriber_worker():
+        """Redis 订阅工作线程"""
+        global _redis_subscriber_running
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        
+        try:
+            redis_sub = redis.from_url(REDIS_URL, decode_responses=True)
+            pubsub = redis_sub.pubsub()
+            
+            # 订阅所有通知频道（使用模式匹配）
+            pubsub.psubscribe(f"{NOTIFICATION_CHANNEL_PREFIX}:*")
+            
+            logger.info(f"Redis 订阅线程启动，监听频道: {NOTIFICATION_CHANNEL_PREFIX}:*")
+            _redis_subscriber_running = True
+            
+            while _redis_subscriber_running:
+                try:
+                    # 阻塞式接收消息，超时 1 秒
+                    message = pubsub.get_message(timeout=1.0)
+                    
+                    if message is None:
+                        continue
+                    
+                    # 消息类型：pmessage (pattern message)
+                    if message['type'] == 'pmessage':
+                        channel = message['channel']
+                        data_str = message['data']
+                        
+                        try:
+                            data = json.loads(data_str)
+                            event = data.get('event')
+                            event_data = data.get('data', {})
+                            sid = data.get('sid')  # session ID
+                            
+                            # 通过 socketio 转发给前端
+                            if sid:
+                                socketio.emit(event, event_data, to=sid)
+                            else:
+                                socketio.emit(event, event_data)
+                                
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Redis 消息 JSON 解析失败: {e}")
+                        except Exception as e:
+                            logger.error(f"转发 Redis 消息失败: {e}", exc_info=True)
+                            
+                except redis.ConnectionError as e:
+                    logger.error(f"Redis 订阅连接错误: {e}")
+                    time.sleep(5)  # 等待后重试
+                    try:
+                        redis_sub = redis.from_url(REDIS_URL, decode_responses=True)
+                        pubsub = redis_sub.pubsub()
+                        pubsub.psubscribe(f"{NOTIFICATION_CHANNEL_PREFIX}:*")
+                    except Exception:
+                        logger.error("Redis 重新连接失败")
+                        break
+                except Exception as e:
+                    logger.error(f"Redis 订阅线程错误: {e}", exc_info=True)
+                    time.sleep(1)
+            
+            # 清理资源
+            try:
+                pubsub.close()
+                redis_sub.close()
+            except Exception:
+                pass
+            
+            logger.info("Redis 订阅线程已停止")
+            
+        except Exception as e:
+            logger.error(f"Redis 订阅线程启动失败: {e}", exc_info=True)
+            _redis_subscriber_running = False
+    
+    _redis_subscriber_thread = threading.Thread(target=redis_subscriber_worker, daemon=True)
+    _redis_subscriber_thread.start()
+    
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
+    logger.info("Redis 订阅线程已启动")
+
 app = Flask(__name__, static_folder='static')
 
 CORS(app, resources={r"/api/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"], "headers": ["Content-Type", "Authorization", "X-Requested-With"]}})
@@ -112,8 +271,153 @@ _restart_scheduled = False
 ga_tasks: Dict[str, Dict] = {}  # 内存任务表，用于存储异步GA优化任务
 active_optimizations: Dict[str, Event] = {}  # 用于存储活跃的优化任务及其停止事件
 
+# 【健壮性加固】全局数据查询实例（统一数据访问入口）
+_global_data_query = None
+
+def get_global_data_query():
+    """获取全局数据查询实例（单例模式）"""
+    global _global_data_query
+    if _global_data_query is None:
+        from database.optimized_data_query import OptimizedStockDataQuery
+        _global_data_query = OptimizedStockDataQuery(warmup=True)
+    return _global_data_query
+
+# Redis 配置
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+TASK_QUEUE = "aqua_tasks"  # Redis List 名称
+NOTIFICATION_CHANNEL_PREFIX = "aqua_notifications"
+
+# Redis 客户端（用于推送任务）
+_redis_client = None
+
+def get_redis_client():
+    """获取 Redis 客户端（单例模式）"""
+    global _redis_client
+    if _redis_client is None and REDIS_AVAILABLE:
+        try:
+            _redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+            _redis_client.ping()
+            from utils.logger import get_logger
+            logger = get_logger(__name__)
+            logger.info(f"Redis 客户端初始化成功: {REDIS_URL}")
+        except Exception as e:
+            from utils.logger import get_logger
+            logger = get_logger(__name__)
+            logger.error(f"Redis 客户端初始化失败: {e}")
+    return _redis_client
+
+# 【健壮性加固】全局错误处理器
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """捕获所有未处理的异常，返回标准 JSON 格式"""
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
+    
+    # CHANGED: 特别处理连接中止错误，这是常见的网络问题，不应该被视为严重错误
+    if isinstance(e, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+        # 客户端在服务器发送响应之前关闭了连接，这是正常的网络行为
+        # 只记录警告，不记录错误堆栈
+        logger.debug(f"客户端连接已关闭: {type(e).__name__} - {str(e)}")
+        # 返回 None 让 Flask 正常处理（实际上连接已关闭，无法返回响应）
+        return None
+    
+    # CHANGED: 特别处理 404 错误，这是正常的 HTTP 状态码，不应该被视为错误
+    from werkzeug.exceptions import NotFound, MethodNotAllowed
+    if isinstance(e, NotFound):
+        # 404 是正常的 HTTP 状态码，只记录 DEBUG 级别
+        logger.debug(f"404 Not Found: {request.path}")
+        return jsonify({
+            'success': False,
+            'error': '资源未找到',
+            'data': []
+        }), 404
+    
+    if isinstance(e, MethodNotAllowed):
+        # 405 也是正常的 HTTP 状态码
+        logger.debug(f"405 Method Not Allowed: {request.method} {request.path}")
+        return jsonify({
+            'success': False,
+            'error': '请求方法不允许',
+            'data': []
+        }), 405
+    
+    # 记录错误堆栈
+    import traceback
+    error_trace = traceback.format_exc()
+    logger.error(f"未处理的异常: {e}\n{error_trace}")
+    
+    # 返回标准 JSON 格式，确保前端能优雅降级
+    return jsonify({
+        'success': False,
+        'error': str(e),
+        'data': []
+    }), 500
+
+@app.errorhandler(500)
+def handle_500(e):
+    """专门处理 500 错误"""
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
+    
+    # CHANGED: 特别处理连接中止错误
+    if isinstance(e, (ConnectionAbortedError, ConnectionResetError, BrokenPipeError)):
+        logger.debug(f"客户端连接已关闭 (500): {type(e).__name__} - {str(e)}")
+        return None
+    
+    import traceback
+    error_trace = traceback.format_exc()
+    logger.error(f"500 错误: {e}\n{error_trace}")
+    
+    return jsonify({
+        'success': False,
+        'error': '服务器内部错误',
+        'data': []
+    }), 500
+
+# CHANGED: 添加 after_request 钩子，捕获响应写入时的连接错误
+@app.after_request
+def after_request_handler(response):
+    """在响应发送后处理，捕获连接错误"""
+    try:
+        return response
+    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError) as e:
+        # 客户端在响应发送过程中关闭了连接，这是正常的网络行为
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.debug(f"响应发送时客户端连接已关闭: {type(e).__name__} - {str(e)}")
+        # 返回原始响应，让 Flask 正常处理
+        return response
+    except Exception as e:
+        # 其他异常正常处理
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.warning(f"after_request 钩子异常: {e}")
+        return response
+
 def _ensure_api_initialized() -> None:
     _init_api()
+
+def _sanitize_json_data(data):
+    """
+    【健壮性加固】清洗数据，将 NaN/Infinity 转换为 null，防止 JSON 序列化报错
+    """
+    import math
+    import numpy as np
+    
+    if isinstance(data, dict):
+        return {k: _sanitize_json_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [_sanitize_json_data(item) for item in data]
+    elif isinstance(data, (float, np.floating)):
+        if math.isnan(data) or math.isinf(data):
+            return None
+        return float(data)
+    elif isinstance(data, (int, np.integer)):
+        return int(data)
+    elif pd.isna(data):
+        return None
+    else:
+        return data
 
 
 def _schedule_restart(delay: float = 1.0) -> None:
@@ -146,8 +450,7 @@ def index():
 
 @app.route('/api/strategies', methods=['GET'])
 def get_strategies():
-    """??????????"""
-    print("[DEBUG] API???????")
+    """获取策略列表"""
     try:
         from strategies.strategy_factory import get_factory
         factory = get_factory()
@@ -159,23 +462,23 @@ def get_strategies():
             safe_id = _normalize_strategy_id(raw_name)
             strategy_id = strategy.get('id') or raw_name or safe_id or f"strategy_{i}"
 
-            # ?????
+            # 检查重复，如果已存在则添加索引后缀
             if len([s for s in result if s['id'] == strategy_id]) > 0:
                 strategy_id = f"{strategy_id}_{i}"
 
-            print(f"[DEBUG] ????: {strategy_id} - {raw_name}")
             result.append({
-                "id": strategy_id,          # ?? ID?????????????????
+                "id": strategy_id,          # 策略 ID，用于前端识别
                 "name": raw_name or strategy_id,
-                "safeId": safe_id           # ?????? URL ?? ID
+                "safeId": safe_id           # 安全的 URL 兼容 ID
             })
 
-        print(f"[DEBUG] ???{len(result)} ???")
         response = jsonify({"success": True, "data": result})
         response.headers.add('Content-Type', 'application/json')
         return response
     except Exception as e:
-        print(f"[ERROR] ????????: {e}")
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"获取策略列表失败: {e}", exc_info=True)
         response = jsonify({"success": False, "data": [], "error": str(e)})
         response.headers.add('Content-Type', 'application/json')
         return response, 500
@@ -339,21 +642,23 @@ def get_stock_sentiment():
             try:
                 parquet_str = str(parquet_path).replace('\\', '/')
                 # DuckDB 直接在 Parquet 上聚合，避免逐文件读取 CSV
+                # 优化：使用 TRY_CAST 但减少重复转换，添加 WHERE 过滤提高性能
                 sql = f'''
                     SELECT
                         symbol,
-                        COALESCE(stockbar_code, RIGHT(symbol, 6)) AS stockCode,
-                        COALESCE(stockbar_name, '') AS stockName,
+                        COALESCE(CAST(stockbar_code AS VARCHAR), CAST(RIGHT(symbol, 6) AS VARCHAR)) AS stockCode,
+                        COALESCE(CAST(stockbar_name AS VARCHAR), '') AS stockName,
                         COUNT(*) AS totalPosts,
                         SUM(COALESCE(TRY_CAST(post_click_count AS BIGINT), 0)) AS totalClicks,
                         SUM(COALESCE(TRY_CAST(post_comment_count AS BIGINT), 0)) AS totalComments,
                         SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) > 0 THEN 1 ELSE 0 END) AS bullishCount,
                         SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) < 0 THEN 1 ELSE 0 END) AS bearishCount,
-                        SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) = 0 THEN 1 ELSE 0 END) AS neutralCount,
+                        SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) = 0 OR bullish_bearish IS NULL THEN 1 ELSE 0 END) AS neutralCount,
                         COALESCE(AVG(TRY_CAST(bullish_bearish AS DOUBLE)), 0.0) AS sentimentScore,
                         MAX(TRY_CAST(post_publish_time AS TIMESTAMP)) AS lastPostTime,
                         COUNT(DISTINCT CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE)) AS activeDays
                     FROM read_parquet('{parquet_str}')
+                    WHERE symbol IS NOT NULL
                     GROUP BY symbol, stockbar_code, stockbar_name
                     ORDER BY totalComments DESC, totalPosts DESC
                     LIMIT ?
@@ -362,6 +667,15 @@ def get_stock_sentiment():
                 effective_limit = limit if limit and limit > 0 else 1000
                 con = duckdb.connect()
                 try:
+                    # 设置 DuckDB 性能参数以加速查询
+                    try:
+                        con.execute("SET threads TO 4")
+                    except Exception:
+                        pass  # 如果设置失败，使用默认值
+                    try:
+                        con.execute("SET memory_limit='2GB'")
+                    except Exception:
+                        pass
                     df = con.execute(sql, [effective_limit]).df()
                 finally:
                     con.close()
@@ -460,11 +774,23 @@ def get_stock_sentiment():
             active_days = None
             if 'post_publish_time' in df.columns:
                 try:
-                    # Pandas 新版本已经默认启用更严格的一致性解析，这里仅保留 errors='coerce'
-                    times = pd.to_datetime(
-                        df['post_publish_time'],
-                        errors='coerce'
-                    )
+                    # 抑制日期解析格式警告
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings('ignore', category=UserWarning, message='.*Could not infer format.*')
+                        # 使用 format='mixed' 允许混合格式，提高解析性能并避免警告
+                        # 如果 pandas 版本不支持，会回退到自动推断
+                        try:
+                            times = pd.to_datetime(
+                                df['post_publish_time'],
+                                format='mixed',
+                                errors='coerce'
+                            )
+                        except (ValueError, TypeError):
+                            # 回退到自动推断（兼容旧版本 pandas）
+                            times = pd.to_datetime(
+                                df['post_publish_time'],
+                                errors='coerce'
+                            )
                     if not times.isna().all():
                         last = times.max()
                         last_post_time = last.isoformat(sep=' ', timespec='seconds')
@@ -522,7 +848,10 @@ def get_stock_sentiment_words():
                         stockbar_name,
                         post_title,
                         post_click_count,
-                        post_comment_count
+                        post_comment_count,
+                        post_forward_count,
+                        post_publish_time,
+                        TRY_CAST(bullish_bearish AS DOUBLE) AS bullish_bearish
                     FROM read_parquet('{parquet_str}')
                     WHERE symbol = ?
                 """
@@ -572,11 +901,18 @@ def get_stock_sentiment_words():
         try:
             from snownlp import SnowNLP  # type: ignore[import]
             import jieba  # type: ignore[import]
+            import jieba.posseg as pseg  # type: ignore[import]
+            
+            # 确保自定义词典已加载
+            if jieba is not None:
+                for term in STOCK_TERMS:
+                    jieba.add_word(term, freq=1000, tag='n')
 
             sentiment_available = True
         except Exception:
             SnowNLP = None  # type: ignore[assignment]
             jieba = None  # type: ignore[assignment]
+            pseg = None  # type: ignore[assignment]
             sentiment_available = False
 
         import math
@@ -586,16 +922,104 @@ def get_stock_sentiment_words():
         sentiment_weight_sum = 0.0
 
         def tokenize(text: str):
+            """
+            改进的分词函数，确保细粒度分词，避免出现完整句子
+            1. 使用精确模式分词，避免长词
+            2. 对分词结果进行二次切分，确保词长度合理
+            3. 只保留2-4个字的词（避免5-6字的短语被当作一个词）
+            """
             if not text:
                 return []
+            
+            words = []
+            
+            # 优先使用 jieba 精确模式分词（cut_all=False）
             if sentiment_available and jieba is not None:
-                return [w.strip() for w in jieba.lcut(text) if w and not w.isspace()]
-            # 简单回退：按中文连续字符切分
-            return re.findall(r"[\u4e00-\u9fff]{2,}", text)
+                try:
+                    # 使用精确模式，避免过度合并
+                    seg_list = jieba.cut(text, cut_all=False)
+                    
+                    for word in seg_list:
+                        word = word.strip()
+                        if not word or word.isspace():
+                            continue
+                        
+                        word_len = len(word)
+                        
+                        # 只保留2-4个字的词（避免出现长短语）
+                        if word_len < 2 or word_len > 4:
+                            # 如果词太长（>4），尝试进一步切分
+                            if word_len > 4:
+                                # 对长词进行二次切分
+                                sub_words = jieba.cut(word, cut_all=False)
+                                for sub_word in sub_words:
+                                    sub_word = sub_word.strip()
+                                    sub_len = len(sub_word)
+                                    if 2 <= sub_len <= 4 and sub_word not in STOPWORDS:
+                                        words.append(sub_word)
+                            continue
+                        
+                        # 过滤停用词
+                        if word in STOPWORDS:
+                            continue
+                        
+                        # 过滤纯数字
+                        if word.isdigit():
+                            continue
+                        
+                        words.append(word)
+                except Exception:
+                    # 如果分词失败，使用简单切分
+                    words = [w.strip() for w in re.findall(r"[\u4e00-\u9fff]{2,4}", text)
+                            if w.strip() and w.strip() not in STOPWORDS and not w.strip().isdigit()]
+            else:
+                # 简单回退：按中文连续字符切分，只保留2-4个字
+                words = [w.strip() for w in re.findall(r"[\u4e00-\u9fff]{2,4}", text)
+                        if w.strip() and w.strip() not in STOPWORDS and not w.strip().isdigit()]
+            
+            # 去重但保持顺序
+            seen = set()
+            unique_words = []
+            for w in words:
+                if w not in seen:
+                    seen.add(w)
+                    unique_words.append(w)
+            
+            return unique_words
+
+        def should_filter_title(title: str) -> bool:
+            """在分词前过滤长句子和广告语"""
+            if not title:
+                return True
+            
+            # 过滤过长的标题（超过35个字符，可能是公告或广告）
+            if len(title) > 35:
+                return True
+            
+            # 过滤包含公告模式的标题
+            for pattern in ANNOUNCEMENT_PATTERNS:
+                if re.search(pattern, title):
+                    return True
+            
+            # 过滤包含广告关键词的标题
+            for keyword in AD_KEYWORDS:
+                if keyword in title:
+                    return True
+            
+            # 过滤包含过多标点符号的标题（可能是格式化文本）
+            punctuation_count = len(re.findall(r'[，。、；：！？]', title))
+            if punctuation_count > 3:
+                return True
+            
+            return False
 
         for _, row in df.iterrows():
             title = str(row.get("post_title") or "").strip()
             if not title:
+                continue
+            
+            # 在分词前过滤长句子和广告语
+            if should_filter_title(title):
                 continue
 
             clicks = float(row.get("post_click_count") or 0.0)
@@ -605,8 +1029,30 @@ def get_stock_sentiment_words():
             # 将帖子数、评论数、点击数综合为权重（对大数取 log 减少极端值影响）
             weight = 1.0 + math.log1p(clicks) + 2.0 * math.log1p(comments) + 1.5 * math.log1p(forwards)
 
+            # 优先使用数据库中已计算好的 bullish_bearish 字段（与散点图保持一致）
+            # 如果不存在，再使用 SnowNLP 实时计算
             score = None
-            if sentiment_available and SnowNLP is not None:
+            if 'bullish_bearish' in df.columns:
+                try:
+                    bb_value = row.get("bullish_bearish")
+                    if bb_value is not None and pd.notna(bb_value):
+                        # bullish_bearish 已经是 -1 到 1 之间的值，需要转换为 0-1 范围用于分类
+                        # 但我们可以直接使用它来判断正负面
+                        bb_float = float(bb_value)
+                        if bb_float > 0:
+                            # 正面：将 -1到1 映射到 0.5到1
+                            score = 0.5 + (bb_float * 0.5)
+                        elif bb_float < 0:
+                            # 负面：将 -1到0 映射到 0到0.5
+                            score = 0.5 + (bb_float * 0.5)
+                        else:
+                            # 中性
+                            score = 0.5
+                except (ValueError, TypeError):
+                    score = None
+            
+            # 如果数据库中没有 bullish_bearish，回退到 SnowNLP
+            if score is None and sentiment_available and SnowNLP is not None:
                 try:
                     score = float(SnowNLP(title).sentiments)
                 except Exception:
@@ -616,24 +1062,19 @@ def get_stock_sentiment_words():
                 total_sentiment += score * weight
                 sentiment_weight_sum += weight
 
+            # 改进情感分类阈值：使用更严格的阈值，提高区分度
+            # 个股评论情感通常更极端，使用 0.55/0.45 作为阈值
             if score is None:
                 label = "neutral"
-            elif score >= 0.6:
+            elif score >= 0.55:  # 从0.6降低到0.55，提高正面识别率
                 label = "positive"
-            elif score <= 0.4:
+            elif score <= 0.45:  # 从0.4提高到0.45，提高负面识别率
                 label = "negative"
             else:
                 label = "neutral"
 
+            # 分词处理（tokenize 内部已经处理了过滤）
             for token in tokenize(title):
-                if len(token) < 2:
-                    continue
-                if token.isdigit():
-                    continue
-                # 过滤停用词
-                if token in STOPWORDS:
-                    continue
-
                 info = word_stats.setdefault(token, {
                     "weight": 0.0,
                     "positiveWeight": 0.0,
@@ -642,21 +1083,59 @@ def get_stock_sentiment_words():
                 })
                 info["weight"] += weight
                 info["count"] += 1.0
-                if label == "positive":
-                    info["positiveWeight"] += weight
-                elif label == "negative":
-                    info["negativeWeight"] += weight
+                
+                # 如果有 bullish_bearish 值，直接使用它来计算情绪权重
+                # 这样可以更准确地反映情绪，与散点图保持一致
+                if bb_value is not None and pd.notna(bb_value):
+                    bb_float = float(bb_value)
+                    if bb_float > 0:
+                        info["positiveWeight"] += weight * bb_float  # 正面权重 = weight * 情绪强度
+                    elif bb_float < 0:
+                        info["negativeWeight"] += weight * abs(bb_float)  # 负面权重 = weight * |情绪强度|
+                    # bb_float == 0 时，不累加正负面权重（保持为0，表示中性）
+                else:
+                    # 如果没有 bullish_bearish，使用 label 分类（回退方案）
+                    if label == "positive":
+                        info["positiveWeight"] += weight
+                    elif label == "negative":
+                        info["negativeWeight"] += weight
 
         words = []
         for token, info in word_stats.items():
+            weight = float(info.get("weight", 0.0))
+            positive_weight = float(info.get("positiveWeight", 0.0))
+            negative_weight = float(info.get("negativeWeight", 0.0))
+            count = int(info.get("count", 0.0))
+            
+            # 计算情绪倾向（-1 到 1，-1=完全负面，0=中性，1=完全正面）
+            # 改进：使用更敏感的计算方式，提高区分度
+            sentiment_score = 0.0
+            if weight > 0:
+                # 情绪得分 = (正面权重 - 负面权重) / 总权重
+                sentiment_score = (positive_weight - negative_weight) / weight
+                # 放大差异：如果正负面权重差异明显，增强信号
+                if abs(sentiment_score) > 0.3:
+                    # 对极端情绪进行放大（但不超过±1）
+                    sentiment_score = sentiment_score * 1.2
+                # 限制在 -1 到 1 之间
+                sentiment_score = max(-1.0, min(1.0, sentiment_score))
+            
             words.append({
                 "word": token,
-                "weight": float(info.get("weight", 0.0)),
-                "positiveWeight": float(info.get("positiveWeight", 0.0)),
-                "negativeWeight": float(info.get("negativeWeight", 0.0)),
-                "count": int(info.get("count", 0.0)),
+                "weight": weight,  # 词的总权重，用于控制词云中词的大小（weight 越大，词越大）
+                "positiveWeight": positive_weight,  # 正面情绪权重
+                "negativeWeight": negative_weight,  # 负面情绪权重
+                "count": count,  # 词出现的次数
+                "sentiment": sentiment_score,  # 情绪得分（-1到1），用于控制词的颜色
+                # 前端使用建议：
+                # - 词大小：根据 weight 值按比例缩放（weight 越大，字体越大）
+                # - 词颜色：根据 sentiment 值设置颜色
+                #   * sentiment > 0.2: 正面情绪，使用暖色（如绿色、橙色）
+                #   * sentiment < -0.2: 负面情绪，使用冷色（如红色、蓝色）
+                #   * -0.2 <= sentiment <= 0.2: 中性情绪，使用中性色（如灰色）
             })
 
+        # 按权重排序，确保词大小与出现程度正相关（权重高的词排在前面）
         words.sort(key=lambda x: x["weight"], reverse=True)
         words = words[:150]
 
@@ -683,6 +1162,103 @@ def get_stock_sentiment_words():
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e), "data": None}), 500
+
+
+@app.route('/api/stock_sentiment_timeline', methods=['GET'])
+def get_stock_sentiment_timeline():
+    """获取个股多空博弈时间序列数据（按时间分组，显示看多、看空、中立三条线）"""
+    try:
+        symbol = request.args.get('symbol')
+        if not symbol:
+            return jsonify({"success": False, "error": "缺少 symbol 参数", "data": []}), 400
+        
+        base_dir = Path(__file__).parent
+        parquet_path = base_dir / 'parquet_data' / 'guba_posts.parquet'
+        
+        if duckdb is None or not parquet_path.exists():
+            return jsonify({"success": False, "error": "Parquet 数据文件不存在", "data": []}), 500
+        
+        parquet_str = str(parquet_path).replace('\\', '/')
+        
+        # 提取6位数字代码
+        if symbol.startswith('sz') or symbol.startswith('sh'):
+            code_6 = symbol[2:] if len(symbol) > 2 else symbol
+            full_symbol = symbol
+        else:
+            code_6 = symbol[-6:] if len(symbol) >= 6 else symbol.zfill(6)
+            full_symbol = symbol
+        
+        # 构建多种匹配条件
+        symbol_conditions = [
+            f"symbol = '{full_symbol}'",
+            f"symbol = '{code_6}'",
+            f"RIGHT(symbol, 6) = '{code_6}'",
+            f"stockbar_code = '{code_6}'",
+            f"symbol LIKE '%{code_6}%'"
+        ]
+        where_clause = ' OR '.join(symbol_conditions)
+        
+        # 按时间分组（按小时），统计看多、看空、中立的数量
+        sql = f"""
+            SELECT
+                DATE_TRUNC('hour', TRY_CAST(post_publish_time AS TIMESTAMP)) AS time_hour,
+                SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) > 0 THEN 1 ELSE 0 END) AS bullishCount,
+                SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) < 0 THEN 1 ELSE 0 END) AS bearishCount,
+                SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) = 0 OR bullish_bearish IS NULL THEN 1 ELSE 0 END) AS neutralCount,
+                COUNT(*) AS totalCount,
+                COALESCE(CAST(stockbar_name AS VARCHAR), '') AS stockName
+            FROM read_parquet('{parquet_str}')
+            WHERE ({where_clause})
+                AND TRY_CAST(post_publish_time AS TIMESTAMP) IS NOT NULL
+            GROUP BY time_hour, stockbar_name
+            ORDER BY time_hour ASC
+        """
+        
+        con = duckdb.connect()
+        try:
+            con.execute("SET threads TO 4")
+            con.execute("SET memory_limit='2GB'")
+            df = con.execute(sql).df()
+        finally:
+            con.close()
+        
+        if df.empty:
+            return jsonify({"success": True, "data": [], "stockName": ""})
+        
+        # 获取股票名称（从第一条记录）
+        stock_name = str(df.iloc[0].get('stockName', '')) if 'stockName' in df.columns else ''
+        
+        # 转换为前端需要的格式
+        results = []
+        for _, row in df.iterrows():
+            time_hour = row.get('time_hour')
+            if pd.isna(time_hour):
+                continue
+            
+            # 格式化时间为字符串（如 "2024-01-01 09:00"）
+            if isinstance(time_hour, pd.Timestamp):
+                time_str = time_hour.strftime('%Y-%m-%d %H:%M')
+            else:
+                time_str = str(time_hour)
+            
+            results.append({
+                'time': time_str,
+                'bullishCount': int(row.get('bullishCount', 0)),
+                'bearishCount': int(row.get('bearishCount', 0)),
+                'neutralCount': int(row.get('neutralCount', 0)),
+                'totalCount': int(row.get('totalCount', 0))
+            })
+        
+        return jsonify({
+            "success": True,
+            "data": results,
+            "stockName": stock_name
+        })
+    except Exception as e:
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"获取个股多空博弈时间序列数据失败: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e), "data": []}), 500
 
 
 @app.route('/api/strategies/<strategy_name>/profiles', methods=['GET'])
@@ -798,21 +1374,33 @@ def get_strategy_detail(version_id):
 
 @socketio.on('connect')
 def handle_connect():
-    # 只在 DEBUG 模式下输出连接信息
-    debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
-    if debug_mode:
+    """【健壮性加固】SocketIO 连接事件，添加异常捕获"""
+    try:
+        # 只在 DEBUG 模式下输出连接信息
+        debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
+        if debug_mode:
+            from utils.logger import get_logger
+            logger = get_logger(__name__)
+            logger.debug(f"Socket.IO 客户端已连接: {request.sid}")
+    except Exception as e:
         from utils.logger import get_logger
         logger = get_logger(__name__)
-        logger.debug(f"Socket.IO 客户端已连接: {request.sid}")
+        logger.error(f"Socket.IO 连接处理失败: {e}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    # 只在 DEBUG 模式下输出断开信息
-    debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
-    if debug_mode:
+    """【健壮性加固】SocketIO 断开事件，添加异常捕获"""
+    try:
+        # 只在 DEBUG 模式下输出断开信息
+        debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
+        if debug_mode:
+            from utils.logger import get_logger
+            logger = get_logger(__name__)
+            logger.debug(f"Socket.IO 客户端已断开: {request.sid}")
+    except Exception as e:
         from utils.logger import get_logger
         logger = get_logger(__name__)
-        logger.debug(f"Socket.IO 客户端已断开: {request.sid}")
+        logger.error(f"Socket.IO 断开处理失败: {e}")
 
 # ---------------- 真正的后台回测任务（不要加装饰器！） ---------------- #
 
@@ -843,47 +1431,55 @@ def run_backtest_background(sid, strategy_name, start_date, end_date, benchmark_
             data = update.get('data', {})
 
             if stop_event.is_set():
-                socketio.emit('backtest_cancelled', {"message": "回测已取消"}, to=sid)
+                try:
+                    socketio.emit('backtest_cancelled', {"message": "回测已取消"}, to=sid)
+                except Exception:
+                    pass  # SocketIO 推送失败不影响主流程
                 break
 
-            if t == 'error':
-                socketio.emit('backtest_error', data, to=sid)
-                logger.error(f"后台回测错误: {data}")
-                return
+            # 【健壮性加固】所有 SocketIO 推送都包裹异常捕获
+            try:
+                if t == 'error':
+                    socketio.emit('backtest_error', data, to=sid)
+                    logger.error(f"后台回测错误: {data}")
+                    return
 
-            elif t == 'cancelled':
-                socketio.emit('backtest_cancelled', data or {"message": "回测已取消"}, to=sid)
-                return
+                elif t == 'cancelled':
+                    socketio.emit('backtest_cancelled', data or {"message": "回测已取消"}, to=sid)
+                    return
 
-            elif t == 'backtest_start':
-                socketio.emit('backtest_start', data, to=sid)
+                elif t == 'backtest_start':
+                    socketio.emit('backtest_start', data, to=sid)
 
-            elif t == 'progress':
-                socketio.emit('progress', data, to=sid)
+                elif t == 'progress':
+                    socketio.emit('progress', data, to=sid)
 
-            elif t == 'initializing':
-                socketio.emit('initializing', data, to=sid)
+                elif t == 'initializing':
+                    socketio.emit('initializing', data, to=sid)
 
-            elif t == 'initialized':
-                socketio.emit('initialized', data, to=sid)
+                elif t == 'initialized':
+                    socketio.emit('initialized', data, to=sid)
 
-            elif t == 'daily_equity':
-                # 映射为前端监听的 daily_update
-                socketio.emit('daily_update', data, to=sid)
+                elif t == 'daily_equity':
+                    # 映射为前端监听的 daily_update
+                    socketio.emit('daily_update', data, to=sid)
 
-            elif t == 'new_trade':
-                socketio.emit('new_trade', data, to=sid)
+                elif t == 'new_trade':
+                    socketio.emit('new_trade', data, to=sid)
 
-            elif t == 'final_metrics':
-                socketio.emit('metrics_update', data, to=sid)
+                elif t == 'final_metrics':
+                    socketio.emit('metrics_update', data, to=sid)
 
-            elif t == 'risk_data':
-                socketio.emit('risk_update', data, to=sid)
+                elif t == 'risk_data':
+                    socketio.emit('risk_update', data, to=sid)
 
-            elif t == 'stream_complete':
-                socketio.emit('stream_complete', {"message": "回测完成"}, to=sid)
-                logger.info("后台线程回测完成")
-                return
+                elif t == 'stream_complete':
+                    socketio.emit('stream_complete', {"message": "回测完成"}, to=sid)
+                    logger.info("后台线程回测完成")
+                    return
+            except Exception as emit_err:
+                # SocketIO 推送失败不影响主流程，只记录日志
+                logger.warning(f"SocketIO 推送失败 (type={t}): {emit_err}")
 
     except Exception as e:
         logger.error(f"后台流式回测失败: {e}", exc_info=True)
@@ -992,48 +1588,35 @@ def handle_request_kline(data):
 
 # ---------------- 参数优化相关事件处理 ---------------- #
 
-def run_optimization_background(sid, config):
-    """在后台线程中运行参数优化"""
+def push_optimization_task_to_redis(sid, config):
+    """
+    将优化任务推送到 Redis 队列
+    
+    Args:
+        sid: Socket.IO session ID
+        config: 优化配置
+    """
     from utils.logger import get_logger
     logger = get_logger(__name__)
+    
+    redis_client = get_redis_client()
+    if not redis_client:
+        logger.error("Redis 不可用，无法推送任务")
+        return False
+    
     try:
-        from backtest.optimization_engine import StrategyOptimizer
-        from threading import Event
+        task_data = {
+            "sid": sid,
+            "config": config
+        }
         
-        # 确保 API 已初始化
-        api._ensure_initialized()
-        
-        # 创建停止事件
-        stop_event = Event()
-        
-        # 存储活跃的优化任务
-        active_optimizations[sid] = stop_event
-        
-        # 创建优化器实例，传入 socketio 和 sid
-        optimizer = StrategyOptimizer(
-            data_query=api.data_query,
-            socketio=socketio,
-            sid=sid,
-            stop_event=stop_event
-        )
-        
-        # 运行优化
-        result = optimizer.run_optimization(config)
-        
-        logger.info(f"参数优化完成 (sid: {sid})")
-        
+        # 推送到 Redis List
+        redis_client.rpush(TASK_QUEUE, json.dumps(task_data))
+        logger.info(f"优化任务已推送到 Redis 队列 (sid: {sid})")
+        return True
     except Exception as e:
-        logger.error(f"参数优化失败 (sid: {sid}): {e}", exc_info=True)
-        import traceback
-        traceback.print_exc()
-        socketio.emit('optimization_error', {
-            "message": str(e),
-            "error": str(e)
-        }, to=sid)
-    finally:
-        # 清理活跃的优化任务
-        if sid in active_optimizations:
-            del active_optimizations[sid]
+        logger.error(f"推送任务到 Redis 失败: {e}", exc_info=True)
+        return False
 
 @socketio.on('stop_optimization')
 def handle_stop_optimization(data):
@@ -1314,13 +1897,13 @@ def handle_run_optimization(data):
                 "selected_params": list(selected_params.keys()) if selected_params else None,
             }
         
-        # 启动后台任务
-        socketio.start_background_task(
-            run_optimization_background,
-            sid, optimization_config
-        )
+        # 推送任务到 Redis 队列（异步架构）
+        success = push_optimization_task_to_redis(sid, optimization_config)
         
-        emit('optimization_request_received', {"message": "优化请求已收到，正在启动..."})
+        if success:
+            emit('optimization_request_received', {"message": "优化请求已收到，已加入队列，等待 Worker 处理..."})
+        else:
+            emit('optimization_error', {"message": "Redis 不可用，无法启动优化任务"})
         
     except Exception as e:
         from utils.logger import get_logger
@@ -1427,32 +2010,113 @@ def api_ga_status(task_id: str):
 # ========== 高级情感分析API路由 ==========
 @app.route('/api/sentiment_trends', methods=['GET'])
 def get_sentiment_trends():
-    """获取情感趋势数据"""
+    """获取情感趋势数据（从真实数据库查询）"""
     try:
         symbol = request.args.get('symbol')
         days = int(request.args.get('days', 7))
         
+        base_dir = Path(__file__).parent
+        parquet_path = base_dir / 'parquet_data' / 'guba_posts.parquet'
+        
+        if duckdb is None or not parquet_path.exists():
+            return jsonify({
+                'success': False,
+                'error': 'Parquet 数据文件不存在',
+                'data': []
+            }), 500
+        
+        parquet_str = str(parquet_path).replace('\\', '/')
+        
+        # 计算日期范围
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days-1)
+        start_date_str = start_date.strftime('%Y-%m-%d')
+        end_date_str = end_date.strftime('%Y-%m-%d')
         
-        # 生成模拟时间序列数据
-        dates = pd.date_range(start_date, end_date, freq='D')
+        # 构建 WHERE 条件
+        where_conditions = [
+            "TRY_CAST(post_publish_time AS TIMESTAMP) IS NOT NULL",
+            f"CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE) >= '{start_date_str}'",
+            f"CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE) <= '{end_date_str}'"
+        ]
         
-        data = [{
-            'date': date.strftime('%Y-%m-%d'),
-            'post_count': random.randint(50, 200),
-            'avg_sentiment': round(random.uniform(-0.5, 0.5), 2)
-        } for date in dates]
+        # 如果提供了 symbol，添加股票过滤条件
+        if symbol:
+            # 提取6位数字代码
+            if symbol.startswith('sz') or symbol.startswith('sh'):
+                code_6 = symbol[2:] if len(symbol) > 2 else symbol
+                full_symbol = symbol
+            else:
+                code_6 = symbol[-6:] if len(symbol) >= 6 else symbol.zfill(6)
+                full_symbol = symbol
+            
+            symbol_conditions = [
+                f"symbol = '{full_symbol}'",
+                f"symbol = '{code_6}'",
+                f"RIGHT(symbol, 6) = '{code_6}'",
+                f"stockbar_code = '{code_6}'",
+                f"symbol LIKE '%{code_6}%'"
+            ]
+            where_conditions.append(f"({' OR '.join(symbol_conditions)})")
+        
+        where_clause = ' AND '.join(where_conditions)
+        
+        # 按日期分组，统计每天的帖子数量和平均情感得分
+        sql = f"""
+            SELECT
+                CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE) AS date,
+                COUNT(*) AS post_count,
+                COALESCE(AVG(TRY_CAST(bullish_bearish AS DOUBLE)), 0.0) AS avg_sentiment
+            FROM read_parquet('{parquet_str}')
+            WHERE {where_clause}
+            GROUP BY date
+            ORDER BY date ASC
+        """
+        
+        con = duckdb.connect()
+        try:
+            con.execute("SET threads TO 4")
+            con.execute("SET memory_limit='2GB'")
+            df = con.execute(sql).df()
+        finally:
+            con.close()
+        
+        # 转换为前端需要的格式
+        data = []
+        if not df.empty:
+            for _, row in df.iterrows():
+                date_val = row.get('date')
+                if pd.isna(date_val):
+                    continue
+                
+                # 格式化日期
+                if isinstance(date_val, pd.Timestamp):
+                    date_str = date_val.strftime('%Y-%m-%d')
+                else:
+                    date_str = str(date_val)
+                
+                data.append({
+                    'date': date_str,
+                    'post_count': int(row.get('post_count', 0)),
+                    'avg_sentiment': round(float(row.get('avg_sentiment', 0.0)), 3)
+                })
+        
+        # 确保按日期排序（虽然 SQL 已经排序了，但这里再确保一次）
+        data.sort(key=lambda x: x['date'])
         
         return jsonify({
             'success': True,
             'data': data,
-            'message': f'Successfully retrieved sentiment trend for {symbol}'
+            'message': f'Successfully retrieved sentiment trend for {symbol or "all stocks"}'
         })
     except Exception as e:
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"获取情感趋势数据失败: {e}", exc_info=True)
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'data': []
         }), 500
 
 @app.route('/api/lda_topics', methods=['GET'])
@@ -1497,172 +2161,47 @@ def get_lda_topics():
 
 @app.route('/api/scatter_data', methods=['GET'])
 def get_scatter_data():
-    """获取情感-热度散点图数据 - 使用真实数据"""
+    """获取情感-热度散点图数据 - 重构后：委托给 visualization_api"""
+    from utils.logger import get_logger
+    logger = get_logger(__name__)
+    
     try:
         symbol = request.args.get('symbol')
-
-        # 【关键】使用真实数据而不是模拟数据
-        stocks = []
-
-        # 1. 从真实股票数据文件中读取股票信息
-        base_dir = Path(__file__).parent
-        data_dir = base_dir / 'data'
-        spider_data_dir = base_dir / 'spider' / 'data'
-        parquet_path = base_dir / 'parquet_data' / 'guba_posts.parquet'
-        stock_daily_parquet = base_dir / 'parquet_data' / 'stock_daily.parquet'
-
-        # 读取股票基础信息，优先使用 Parquet（stock_daily.parquet），不再逐个扫描 CSV
-        stock_info = {}  # {symbol: {name, market_cap}}
-
-        if duckdb is not None and stock_daily_parquet.exists():
+        logger.info(f"开始获取散点图数据: symbol={symbol}")
+        
+        # CHANGED: 使用线程池执行，添加超时控制
+        import concurrent.futures
+        import threading
+        
+        def execute_query():
+            """在单独线程中执行查询"""
+            return api.get_scatter_data(symbol)
+        
+        # 使用线程池执行，设置60秒超时
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(execute_query)
             try:
-                stock_parquet_str = str(stock_daily_parquet).replace('\\', '/')
-                sql_stock = f"""
-                    SELECT
-                        "股票代码"      AS stock_code,
-                        "名称"          AS stock_name,
-                        "总市值(万元)"  AS market_cap
-                    FROM read_parquet('{stock_parquet_str}')
-                    GROUP BY stock_code, stock_name, market_cap
-                """
-
-                con = duckdb.connect()
-                try:
-                    df_stock = con.execute(sql_stock).df()
-                finally:
-                    con.close()
-
-                for _, row in df_stock.iterrows():
-                    symbol_code = str(row.get('stock_code')).zfill(6)
-                    stock_name = row.get('stock_name')
-                    # 将“万元”转换为“亿元”，与原 CSV 逻辑保持一致
-                    market_cap = float(row.get('market_cap') or 0.0) / 10000.0
-
-                    # 构建标准股票代码
-                    if symbol_code.startswith('0'):
-                        full_symbol = f"sz{symbol_code}"
-                    elif symbol_code.startswith('6'):
-                        full_symbol = f"sh{symbol_code}"
-                    else:
-                        full_symbol = symbol_code
-
-                    stock_info[full_symbol] = {
-                        'name': stock_name,
-                        'market_cap': market_cap,
-                        'original_code': symbol_code
-                    }
-            except Exception as e:
-                # 如果 Parquet 读取失败，回退到 CSV 扫描（兼容旧数据）
-                print(f"使用 stock_daily.parquet 读取股票基础信息失败，将回退到 CSV: {e}")
-
-        # 回退：如果上面没有成功构建 stock_info，则继续使用原有 CSV 方案
-        if not stock_info:
-            for csv_file in data_dir.glob('*.csv'):
-                try:
-                    df = pd.read_csv(csv_file)
-                    if not df.empty:
-                        latest_row = df.iloc[0]  # 取最新数据
-                        symbol_code = str(latest_row['股票代码']).zfill(6)  # 确保位字符串
-                        stock_name = latest_row['名称']
-                        market_cap = latest_row['总市值(万元)'] / 10000  # 转换为亿元
-                        
-                        # 构建标准股票代码
-                        if symbol_code.startswith('0'):
-                            full_symbol = f"sz{symbol_code}"
-                        elif symbol_code.startswith('6'):
-                            full_symbol = f"sh{symbol_code}"
-                        else:
-                            full_symbol = symbol_code
-                        
-                        stock_info[full_symbol] = {
-                            'name': stock_name,
-                            'market_cap': float(market_cap),
-                            'original_code': symbol_code
-                        }
-                except Exception as e:
-                    print(f"读取股票文件 {csv_file} 失败: {e}")
-                    continue
-
-        # 2. 优先尝试使用 Parquet + DuckDB 聚合股吧数据，加速散点图生成
-        #    为避免接口过慢，此处如果 Parquet 路径不可用，直接返回空数据，而不再回退到 CSV + FinBERT 重计算
-        if duckdb is not None and parquet_path.exists() and stock_info:
-            try:
-                parquet_str = str(parquet_path).replace('\\', '/')
-                sql = f"""
-                    SELECT
-                        symbol,
-                        COALESCE(stockbar_code, RIGHT(symbol, 6)) AS stockCode,
-                        COALESCE(stockbar_name, '') AS stockName,
-                        SUM(COALESCE(TRY_CAST(post_comment_count AS BIGINT), 0)) AS commentCount,
-                        COALESCE(AVG(TRY_CAST(bullish_bearish AS DOUBLE)), 0.0) AS sentiment
-                    FROM read_parquet('{parquet_str}')
-                    GROUP BY symbol, stockbar_code, stockbar_name
-                """
-
-                con = duckdb.connect()
-                try:
-                    df = con.execute(sql).df()
-                finally:
-                    con.close()
-
-                for _, row in df.iterrows():
-                    raw_symbol = str(row.get('symbol') or '')
-                    stock_code = str(row.get('stockCode') or '')[-6:]
-
-                    symbol_key = raw_symbol
-                    if not symbol_key and stock_code:
-                        if stock_code.startswith('0'):
-                            symbol_key = f"sz{stock_code}"
-                        elif stock_code.startswith('6'):
-                            symbol_key = f"sh{stock_code}"
-                        else:
-                            symbol_key = stock_code
-
-                    info = stock_info.get(symbol_key)
-                    if not info:
-                        continue
-
-                    if symbol and symbol not in symbol_key:
-                        continue
-
-                    comment_count = int(row.get('commentCount') or 0)
-                    sentiment = float(row.get('sentiment') or 0.0)
-
-                    stocks.append({
-                        'symbol': symbol_key,
-                        'name': info['name'],
-                        'comment_count': comment_count,
-                        'sentiment': round(sentiment, 3),
-                        'market_cap': round(info['market_cap'], 2)
-                    })
-
-                # 如果指定了特定股票，则不再做额外筛选；否则按市值取前 50
-                if not symbol:
-                    stocks.sort(key=lambda x: x['market_cap'], reverse=True)
-                    stocks = stocks[:50]
-
-                print(f"散点图返回 {len(stocks)} 只股票的真实数据（Parquet 加速）")
-
+                result = future.result(timeout=60.0)  # 60秒超时
+                logger.info(f"散点图数据获取成功: {len(result.get('data', []))} 条记录")
+                return jsonify(result)
+            except concurrent.futures.TimeoutError:
+                logger.warning("散点图数据查询超时（超过60秒）")
                 return jsonify({
-                    'success': True,
-                    'data': stocks
-                })
-            except Exception as e:
-                # 如果 Parquet / DuckDB 出现问题，为避免接口过慢，直接返回空数据
-                from utils.logger import get_logger
-                logger = get_logger(__name__)
-                logger.warning(f"使用 Parquet 生成散点图数据失败，将返回空数据: {e}")
-                return jsonify({'success': True, 'data': []})
-
-        # 如果 DuckDB / Parquet 或基础股票信息不可用，同样快速返回空数据，避免慢查询
-        from utils.logger import get_logger
-        logger = get_logger(__name__)
-        logger.warning("散点图 Parquet 数据或股票基础信息不可用，返回空数据")
-        return jsonify({'success': True, 'data': []})
+                    'success': False,
+                    'error': '查询超时，数据量较大，请稍后重试或指定具体股票代码',
+                    'data': []
+                }), 504
+    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError) as e:
+        # CHANGED: 特别处理连接错误，这是客户端超时关闭连接导致的
+        logger.debug(f"客户端连接已关闭（散点图数据）: {type(e).__name__}")
+        # 连接已关闭，无法返回响应，返回 None 让 Flask 正常处理
+        return None
     except Exception as e:
+        logger.error(f"获取散点图数据失败: {e}", exc_info=True)
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'data': []
         }), 500
 
 
@@ -1670,5 +2209,7 @@ if __name__ == '__main__':
     print('🚀 启动量化回测数据可视化API服务...')
     # 在启动服务前预先初始化 API（替代 @app.before_first_request）
     _ensure_api_initialized()
+    # 启动 Redis 订阅线程（用于接收 Worker 进程的进度消息）
+    start_redis_subscriber()
     # 必须使用 socketio.run 才能启用 Socket.IO 事件
     socketio.run(app, host='0.0.0.0', port=5000, debug=True)

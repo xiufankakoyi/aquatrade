@@ -70,7 +70,18 @@ class BacktestVisualizationAPI:
                     return {}
 
                 df = pd.read_sql_query(f"SELECT {code_col}, {name_col} FROM stock_info", conn)
-                return pd.Series(df[name_col].values, index=df[code_col].astype(str)).to_dict()
+                # CHANGED: 确保 stock_code 是6位数字格式，作为字典的 key
+                # 这样在查找时可以使用统一的格式
+                stock_info_dict = {}
+                for _, row in df.iterrows():
+                    code = str(row[code_col]).strip()
+                    name = str(row[name_col]).strip()
+                    # 标准化为6位数字代码
+                    code_6 = code.zfill(6) if len(code) <= 6 else code[-6:]
+                    stock_info_dict[code_6] = name
+                logger = get_logger(__name__)
+                logger.debug(f"加载股票信息: {len(stock_info_dict)} 条记录")
+                return stock_info_dict
         except Exception:
             return {}
     def _get_global_latest_factor(self, symbol_code: str) -> float:
@@ -1158,3 +1169,708 @@ class BacktestVisualizationAPI:
                 "type": "error",
                 "data": {"message": str(e)}
             }
+
+    def _get_stock_info_with_market_cap(self, needed_symbols: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        获取股票基础信息（名称、市值）
+        复用 OptimizedStockDataQuery 和 stock_info_map，避免重复查询
+        
+        Args:
+            needed_symbols: 可选，如果提供则只查询这些股票，否则查询所有股票
+        
+        返回: {symbol: {name: str, market_cap: float}}
+        """
+        if not self._initialized:
+            self._ensure_initialized()
+        
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        stock_info = {}
+        
+        try:
+            # 优先从数据库获取市值信息
+            db_uri = f'file:{self.db_path}?mode=ro'
+            with sqlite3.connect(db_uri, uri=True) as conn:
+                # CHANGED: 如果指定了需要的股票列表，只查询这些股票，大幅减少查询时间
+                if needed_symbols:
+                    # 提取6位股票代码
+                    stock_codes = []
+                    for sym in needed_symbols:
+                        # 处理 sz/sh 前缀
+                        if sym.startswith(('sz', 'sh')):
+                            code = sym[2:]  # 去掉 sz/sh 前缀
+                        else:
+                            code = sym
+                        # 提取6位数字代码
+                        if len(code) >= 6:
+                            code_6 = code[-6:].zfill(6)  # 确保是6位
+                            stock_codes.append(code_6)
+                        elif len(code) == 6:
+                            stock_codes.append(code.zfill(6))
+                    
+                    logger.debug(f"从 needed_symbols 提取的股票代码: {needed_symbols} -> {stock_codes}")
+                    
+                    if stock_codes:
+                        # 使用 IN 查询，只查询需要的股票
+                        placeholders = ','.join(['?' for _ in stock_codes])
+                        query = f"""
+                            SELECT 
+                                stock_code,
+                                MAX(total_mv) as market_cap
+                            FROM stock_daily
+                            WHERE total_mv IS NOT NULL
+                                AND stock_code IN ({placeholders})
+                            GROUP BY stock_code
+                        """
+                        df = pd.read_sql_query(query, conn, params=stock_codes)
+                        logger.debug(f"市值查询结果: {len(df)} 条记录")
+                    else:
+                        df = pd.DataFrame()
+                        logger.warning(f"无法从 needed_symbols 提取有效的股票代码: {needed_symbols}")
+                else:
+                    # 获取每只股票的最新市值（取最新交易日的市值）
+                    query = """
+                        SELECT 
+                            stock_code,
+                            MAX(total_mv) as market_cap
+                        FROM stock_daily
+                        WHERE total_mv IS NOT NULL
+                        GROUP BY stock_code
+                    """
+                    df = pd.read_sql_query(query, conn)
+                
+                for _, row in df.iterrows():
+                    symbol_code = str(row['stock_code']).zfill(6)
+                    market_cap = float(row['market_cap'] or 0.0) / 10000.0  # 万元转亿元
+                    
+                    # 构建标准股票代码
+                    if symbol_code.startswith('0'):
+                        full_symbol = f"sz{symbol_code}"
+                    elif symbol_code.startswith('6'):
+                        full_symbol = f"sh{symbol_code}"
+                    else:
+                        full_symbol = symbol_code
+                    
+                    # CHANGED: 从 stock_info_map 获取名称（已加载）
+                    # stock_info_map 的 key 是 6位数字代码（如 '603099'），不是带前缀的格式
+                    stock_name = self.stock_info_map.get(symbol_code, '')
+                    
+                    # 如果 stock_info_map 中没有名称，尝试从数据库直接查询
+                    if not stock_name:
+                        try:
+                            # 尝试查询 name 列
+                            name_query = "SELECT name FROM stock_info WHERE stock_code = ?"
+                            name_df = pd.read_sql_query(name_query, conn, params=[symbol_code])
+                            if not name_df.empty:
+                                stock_name = str(name_df.iloc[0]['name']) if 'name' in name_df.columns else ''
+                            # 如果 name 列没有数据，尝试 stock_name 列
+                            if not stock_name:
+                                name_query2 = "SELECT stock_name FROM stock_info WHERE stock_code = ?"
+                                name_df2 = pd.read_sql_query(name_query2, conn, params=[symbol_code])
+                                if not name_df2.empty:
+                                    stock_name = str(name_df2.iloc[0]['stock_name']) if 'stock_name' in name_df2.columns else ''
+                        except Exception as e:
+                            logger.debug(f"查询股票名称失败: {symbol_code}, 错误: {e}")
+                            pass  # 如果查询失败，保持空名称
+                    
+                    logger.debug(f"股票信息: {full_symbol} (代码: {symbol_code}) -> 名称: {stock_name or '(空)'}")
+                    
+                    stock_info[full_symbol] = {
+                        'name': stock_name,
+                        'market_cap': market_cap,
+                        'original_code': symbol_code
+                    }
+        except Exception as e:
+            logger.warning(f"从数据库获取股票市值失败，尝试 Parquet: {e}")
+            
+            # 回退：尝试从 Parquet 读取
+            try:
+                try:
+                    import duckdb
+                except ImportError:
+                    duckdb = None
+                
+                if duckdb is not None:
+                    base_dir = Path(__file__).parent
+                    stock_daily_parquet = base_dir / 'parquet_data' / 'stock_daily.parquet'
+                    stock_info_parquet = base_dir / 'parquet_data' / 'stock_info.parquet'
+                    
+                    if stock_daily_parquet.exists():
+                        stock_daily_str = str(stock_daily_parquet).replace('\\', '/')
+                        
+                        # CHANGED: 如果指定了需要的股票列表，添加过滤条件
+                        if needed_symbols:
+                            stock_codes = []
+                            for sym in needed_symbols:
+                                code = sym[2:] if sym.startswith(('sz', 'sh')) else sym
+                                if len(code) >= 6:
+                                    stock_codes.append(code[-6:])
+                            
+                            if stock_codes:
+                                codes_str = "', '".join(stock_codes)
+                                code_filter = f"AND d.stock_code IN ('{codes_str}')"
+                            else:
+                                code_filter = ""
+                        else:
+                            code_filter = ""
+                        
+                        if stock_info_parquet.exists():
+                            stock_info_str = str(stock_info_parquet).replace('\\', '/')
+                            sql = f"""
+                                SELECT
+                                    d.stock_code,
+                                    COALESCE(CAST(i.stock_name AS VARCHAR), '') AS stock_name,
+                                    MAX(d.total_mv) AS market_cap
+                                FROM read_parquet('{stock_daily_str}') d
+                                LEFT JOIN read_parquet('{stock_info_str}') i ON d.stock_code = i.stock_code
+                                WHERE d.total_mv IS NOT NULL
+                                    {code_filter}
+                                GROUP BY d.stock_code, i.stock_name
+                            """
+                        else:
+                            sql = f"""
+                                SELECT
+                                    stock_code,
+                                    '' AS stock_name,
+                                    MAX(total_mv) AS market_cap
+                                FROM read_parquet('{stock_daily_str}')
+                                WHERE total_mv IS NOT NULL
+                                    {code_filter}
+                                GROUP BY stock_code
+                            """
+                        
+                        con = duckdb.connect()
+                        try:
+                            # CHANGED: 设置 DuckDB 性能参数
+                            try:
+                                con.execute("SET threads TO 4")
+                            except Exception:
+                                pass
+                            try:
+                                con.execute("SET memory_limit='2GB'")
+                            except Exception:
+                                pass
+                            
+                            df_stock = con.execute(sql).df()
+                            for _, row in df_stock.iterrows():
+                                symbol_code = str(row.get('stock_code')).zfill(6)
+                                stock_name = row.get('stock_name') or ''
+                                market_cap = float(row.get('market_cap') or 0.0) / 10000.0
+                                
+                                if symbol_code.startswith('0'):
+                                    full_symbol = f"sz{symbol_code}"
+                                elif symbol_code.startswith('6'):
+                                    full_symbol = f"sh{symbol_code}"
+                                else:
+                                    full_symbol = symbol_code
+                                
+                                # 如果从 Parquet 获取的名称为空，尝试从 stock_info_map 或数据库获取
+                                if not stock_name:
+                                    stock_name = self.stock_info_map.get(symbol_code, '')
+                                    # 如果 stock_info_map 也没有，尝试从数据库查询
+                                    if not stock_name:
+                                        try:
+                                            db_uri = f'file:{self.db_path}?mode=ro'
+                                            with sqlite3.connect(db_uri, uri=True) as db_conn:
+                                                name_query = "SELECT name FROM stock_info WHERE stock_code = ?"
+                                                name_df = pd.read_sql_query(name_query, db_conn, params=[symbol_code])
+                                                if not name_df.empty:
+                                                    stock_name = str(name_df.iloc[0]['name']) if 'name' in name_df.columns else ''
+                                        except Exception:
+                                            pass  # 如果查询失败，保持空名称
+                                
+                                stock_info[full_symbol] = {
+                                    'name': stock_name,
+                                    'market_cap': market_cap,
+                                    'original_code': symbol_code
+                                }
+                        finally:
+                            con.close()
+            except Exception as e2:
+                logger.warning(f"从 Parquet 获取股票信息也失败: {e2}")
+        
+        return stock_info
+
+    def _load_guba_posts_from_parquet(self, symbol: Optional[str] = None, sample_size: int = 50) -> pd.DataFrame:
+        """
+        从 Parquet 文件加载股吧数据
+        如果指定 symbol，返回该股票的评论数据（可抽样）
+        否则返回所有股票的聚合数据
+        """
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        
+        try:
+            import duckdb
+        except ImportError:
+            return pd.DataFrame()
+        
+        base_dir = Path(__file__).parent
+        parquet_path = base_dir / 'parquet_data' / 'guba_posts.parquet'
+        
+        if not parquet_path.exists():
+            logger.warning(f"Parquet 文件不存在: {parquet_path}")
+            return pd.DataFrame()
+        
+        parquet_str = str(parquet_path).replace('\\', '/')
+        
+        try:
+            con = duckdb.connect()
+            try:
+                # CHANGED: 设置 DuckDB 性能参数，加速 Parquet 查询
+                try:
+                    con.execute("SET threads TO 4")
+                except Exception:
+                    pass
+                try:
+                    con.execute("SET memory_limit='2GB'")
+                except Exception:
+                    pass
+                try:
+                    # 启用并行扫描
+                    con.execute("SET enable_progress_bar=false")
+                except Exception:
+                    pass
+                
+                if symbol:
+                    # CHANGED: 构建 symbol 匹配条件，处理 Parquet 中可能存储的是纯数字代码的情况
+                    # Parquet 中的 symbol 可能是 "601166" 或 "sh601166"，需要兼容两种格式
+                    symbol_conditions = []
+                    
+                    # 提取6位数字代码
+                    if symbol.startswith('sz') or symbol.startswith('sh'):
+                        code_6 = symbol[2:] if len(symbol) > 2 else symbol
+                        full_symbol = symbol
+                    else:
+                        code_6 = symbol[-6:] if len(symbol) >= 6 else symbol.zfill(6)
+                        full_symbol = symbol
+                    
+                    # 构建多种匹配条件，确保能找到数据
+                    # 1. 完全匹配（如果 Parquet 中存储的是完整格式）
+                    symbol_conditions.append(f"symbol = '{full_symbol}'")
+                    # 2. 匹配6位代码（如果 Parquet 中存储的是纯数字）
+                    symbol_conditions.append(f"symbol = '{code_6}'")
+                    # 3. 使用 RIGHT 函数匹配（处理可能的格式差异）
+                    symbol_conditions.append(f"RIGHT(symbol, 6) = '{code_6}'")
+                    # 4. 使用 stockbar_code 匹配（如果存在）
+                    symbol_conditions.append(f"stockbar_code = '{code_6}'")
+                    # 5. LIKE 匹配（兜底）
+                    symbol_conditions.append(f"symbol LIKE '%{code_6}%'")
+                    
+                    where_clause = ' OR '.join(symbol_conditions)
+                    
+                    # CHANGED: 优化查询条件
+                    # 1. 允许情感值为 0（中性情感）
+                    # 2. 只过滤掉 comment_count 为 NULL 或无效的记录
+                    # 3. 情感值允许为 0，但过滤掉 NULL
+                    sql = f"""
+                        SELECT
+                            symbol,
+                            COALESCE(CAST(stockbar_code AS VARCHAR), CAST(RIGHT(symbol, 6) AS VARCHAR)) AS stockCode,
+                            COALESCE(CAST(stockbar_name AS VARCHAR), '') AS stockName,
+                            COALESCE(TRY_CAST(post_comment_count AS BIGINT), 0) AS commentCount,
+                            COALESCE(TRY_CAST(bullish_bearish AS DOUBLE), 0.0) AS sentiment,
+                            COALESCE(CAST(post_title AS VARCHAR), '') AS postTitle,
+                            TRY_CAST(post_publish_time AS TIMESTAMP) AS postPublishTime
+                        FROM read_parquet('{parquet_str}')
+                        WHERE ({where_clause})
+                            AND TRY_CAST(post_comment_count AS BIGINT) IS NOT NULL
+                            AND TRY_CAST(post_comment_count AS BIGINT) > 0
+                            AND TRY_CAST(bullish_bearish AS DOUBLE) IS NOT NULL
+                    """
+                    
+                    logger.debug(f"查询个股散点图数据: symbol={symbol}, code_6={code_6}, where_clause={where_clause}")
+                    
+                    df = con.execute(sql).df()
+                    logger.info(f"查询返回 {len(df)} 条记录")
+                    
+                    # 随机抽样
+                    if len(df) > sample_size:
+                        df = df.sample(n=sample_size, random_state=42).reset_index(drop=True)
+                        logger.info(f"随机抽样后: {len(df)} 条记录")
+                else:
+                    # CHANGED: 优化聚合查询，利用 Parquet 列式存储和 CTE 优化
+                    # 1. 使用 CTE 先过滤无效数据（减少 GROUP BY 的数据量）
+                    # 2. 在过滤阶段就进行类型转换，避免在聚合时重复转换
+                    # 3. 限制返回的股票数量（只取评论数最多的前100只）
+                    sql = f"""
+                        WITH filtered_data AS (
+                            SELECT
+                                symbol,
+                                COALESCE(CAST(stockbar_code AS VARCHAR), CAST(RIGHT(symbol, 6) AS VARCHAR)) AS stockCode,
+                                COALESCE(CAST(stockbar_name AS VARCHAR), '') AS stockName,
+                                TRY_CAST(post_comment_count AS BIGINT) AS commentCount,
+                                TRY_CAST(bullish_bearish AS DOUBLE) AS sentiment
+                            FROM read_parquet('{parquet_str}')
+                            WHERE symbol IS NOT NULL
+                                AND TRY_CAST(post_comment_count AS BIGINT) > 0
+                                -- CHANGED: 移除 bullish_bearish IS NOT NULL 条件，允许中性情绪（0值）
+                                -- 这样可以让更多股票显示在散点图上
+                        ),
+                        aggregated AS (
+                            SELECT
+                                symbol,
+                                stockCode,
+                                stockName,
+                                SUM(commentCount) AS commentCount,
+                                -- CHANGED: 使用 COALESCE 处理 NULL 值，将 NULL 视为 0（中性情绪）
+                                COALESCE(AVG(sentiment), 0.0) AS sentiment
+                            FROM filtered_data
+                            GROUP BY symbol, stockCode, stockName
+                        )
+                        SELECT *
+                        FROM aggregated
+                        ORDER BY commentCount DESC
+                        LIMIT 200
+                    """
+                    df = con.execute(sql).df()
+                    logger.info(f"从 Parquet 查询到 {len(df)} 只股票（按评论数排序的前200只）")
+                
+                return df
+            finally:
+                con.close()
+        except Exception as e:
+            logger.warning(f"从 Parquet 读取股吧数据失败: {e}", exc_info=True)
+            return pd.DataFrame()
+
+    def _normalize_symbol_key(self, raw_symbol: str, stock_code: str) -> str:
+        """规范化股票代码为标准格式（sz/sh + 6位数字）"""
+        symbol_key = raw_symbol
+        if not symbol_key and stock_code:
+            code_6 = stock_code[-6:] if len(stock_code) >= 6 else stock_code.zfill(6)
+            if code_6.startswith('0'):
+                symbol_key = f"sz{code_6}"
+            elif code_6.startswith('6'):
+                symbol_key = f"sh{code_6}"
+            else:
+                symbol_key = code_6
+        return symbol_key
+
+    def get_scatter_data(self, symbol: Optional[str] = None) -> Dict[str, Any]:
+        """
+        获取情感-热度散点图数据
+        
+        Args:
+            symbol: 可选，如果指定则返回该股票的评论数据（随机抽样50个），否则返回所有股票的聚合数据
+        
+        Returns:
+            {
+                'success': bool,
+                'data': List[Dict]  # 散点图数据点列表
+            }
+        """
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        
+        try:
+            # 确保已初始化
+            if not self._initialized:
+                self._ensure_initialized()
+            
+            import time
+            start_time = time.perf_counter()
+            
+            # CHANGED: 优化查询顺序 - 先获取股吧数据（已优化，只返回前100只），再只查询这些股票的市值
+            # 1. 从 Parquet 加载股吧数据（已优化：只返回评论数最多的前100只股票）
+            logger.info(f"开始加载股吧数据: symbol={symbol}")
+            df = self._load_guba_posts_from_parquet(symbol)
+            load_time = time.perf_counter() - start_time
+            logger.info(f"股吧数据加载完成: {len(df)} 条记录, 耗时 {load_time:.2f} 秒")
+            
+            if df.empty:
+                logger.warning(f"股吧数据为空，返回空数据 (symbol={symbol})")
+                return {'success': True, 'data': []}
+            
+            # CHANGED: 添加数据检查日志
+            logger.info(f"DataFrame 信息: shape={df.shape}, columns={list(df.columns)}, dtypes={df.dtypes.to_dict()}")
+            if not df.empty:
+                logger.info(f"前3行数据样例:\n{df.head(3)}")
+            
+            # 2. 提取需要查询的股票代码列表（只查询实际需要的股票，而不是所有股票）
+            if symbol:
+                # 单个股票：直接获取该股票信息
+                raw_symbol = str(df.iloc[0].get('symbol') or '')
+                stock_code_raw = df.iloc[0].get('stockCode', '')
+                stock_code = str(stock_code_raw or '')[-6:] if stock_code_raw else ''
+                symbol_key = self._normalize_symbol_key(raw_symbol, stock_code)
+                needed_symbols = [symbol_key]
+                logger.info(f"单个股票模式: raw_symbol={raw_symbol}, stock_code={stock_code}, symbol_key={symbol_key}")
+            else:
+                # 多个股票：提取所有需要的股票代码
+                needed_symbols = []
+                for idx, row in df.iterrows():
+                    try:
+                        raw_symbol = str(row.get('symbol') or '')
+                        stock_code_raw = row.get('stockCode', '')
+                        stock_code = str(stock_code_raw or '')[-6:] if stock_code_raw else ''
+                        symbol_key = self._normalize_symbol_key(raw_symbol, stock_code)
+                        if symbol_key:  # 只添加非空的 symbol_key
+                            needed_symbols.append(symbol_key)
+                    except Exception as e:
+                        logger.warning(f"提取第 {idx} 行股票代码时出错: {e}")
+                        continue
+                logger.info(f"聚合模式: 提取到 {len(needed_symbols)} 个股票代码 (去重前)")
+                # 去重
+                needed_symbols = list(set(needed_symbols))
+                logger.info(f"聚合模式: 去重后有 {len(needed_symbols)} 个唯一股票代码")
+            
+            # 3. 只查询需要的股票的市值信息（而不是所有股票）
+            info_start = time.perf_counter()
+            logger.info(f"开始查询股票市值信息: {len(needed_symbols)} 只股票")
+            stock_info = self._get_stock_info_with_market_cap(needed_symbols)
+            info_time = time.perf_counter() - info_start
+            logger.info(f"股票市值信息查询完成: {len(stock_info)} 条记录, 耗时 {info_time:.2f} 秒")
+            
+            # 4. 处理数据
+            results = []
+            
+            if symbol:
+                # 单个股票的评论数据
+                info = stock_info.get(symbol_key, {})
+                
+                logger.info(f"处理个股评论数据: df长度={len(df)}, symbol_key={symbol_key}, stock_info存在={symbol_key in stock_info}")
+                if symbol_key in stock_info:
+                    logger.info(f"股票信息详情: {stock_info[symbol_key]}")
+                else:
+                    logger.warning(f"股票信息不存在: symbol_key={symbol_key}, stock_info keys={list(stock_info.keys())[:10]}")
+                
+                # CHANGED: 从 Parquet 数据中获取股票名称（借鉴 /api/stock_sentiment 的方式）
+                stock_name_from_parquet = ''
+                if not df.empty and 'stockName' in df.columns:
+                    stock_name_from_parquet = str(df.iloc[0].get('stockName', '')).strip()
+                
+                # 优先使用 Parquet 中的名称，如果没有则使用 stock_info 中的名称
+                display_name = stock_name_from_parquet or info.get('name', '')
+                
+                logger.info(f"股票名称查找: symbol_key={symbol_key}, stock_name_from_parquet={stock_name_from_parquet}, info_name={info.get('name', '')}, display_name={display_name}")
+                
+                for _, row in df.iterrows():
+                    comment_count = int(row.get('commentCount') or 0)
+                    sentiment = float(row.get('sentiment') or 0.0)
+                    post_title = str(row.get('postTitle') or '')[:50]
+                    
+                    # CHANGED: 确保 comment_count > 0，避免显示无效数据点
+                    if comment_count <= 0:
+                        continue
+                    
+                    # CHANGED: 确保 sentiment 是有效数值
+                    if pd.isna(sentiment) or abs(sentiment) > 100:
+                        sentiment = 0.0
+                    
+                    results.append({
+                        'symbol': symbol_key,
+                        'name': display_name,  # CHANGED: 使用从 Parquet 获取的名称
+                        'comment_count': comment_count,
+                        'sentiment': round(sentiment, 3),
+                        'post_title': post_title,
+                        'is_comment': True
+                    })
+                
+                logger.info(f"个股评论数据处理完成: {len(results)} 条有效记录")
+            else:
+                # 所有股票的聚合数据
+                logger.info(f"开始处理聚合数据: df长度={len(df)}, df列={list(df.columns)}")
+                for idx, row in df.iterrows():
+                    try:
+                        # CHANGED: 使用更安全的方式获取值，处理 pandas Series 类型
+                        raw_symbol = str(row.get('symbol', '') or '')
+                        stock_code_raw = row.get('stockCode', '')
+                        stock_code = str(stock_code_raw or '')[-6:] if stock_code_raw else ''
+                        symbol_key = self._normalize_symbol_key(raw_symbol, stock_code)
+                        
+                        info = stock_info.get(symbol_key, {})
+                        # CHANGED: 不再跳过没有市值信息的股票，使用空字典
+                        # 这样可以让更多股票显示在散点图上
+                        
+                        # CHANGED: 更安全地处理 commentCount，可能是 float 或 int
+                        comment_count_raw = row.get('commentCount', 0)
+                        if pd.isna(comment_count_raw) or comment_count_raw is None:
+                            comment_count = 0
+                        else:
+                            try:
+                                comment_count = int(float(comment_count_raw))
+                            except (ValueError, TypeError):
+                                comment_count = 0
+                        
+                        # CHANGED: 确保 comment_count > 0，避免显示无效数据点
+                        if comment_count <= 0:
+                            logger.debug(f"跳过第 {idx} 行: comment_count={comment_count} <= 0")
+                            continue
+                        
+                        sentiment_raw = row.get('sentiment')
+                        # CHANGED: 处理 NULL 和 NaN 值，将 NULL/NaN 视为 0（中性情绪）
+                        if pd.isna(sentiment_raw) or sentiment_raw is None:
+                            sentiment = 0.0
+                        else:
+                            try:
+                                sentiment = float(sentiment_raw)
+                                # 如果 sentiment 异常大，归一化到合理范围
+                                if abs(sentiment) > 100:
+                                    sentiment = 0.0
+                            except (ValueError, TypeError):
+                                sentiment = 0.0
+                        
+                        # 优先使用 Parquet 中的名称
+                        stock_name_from_parquet = str(row.get('stockName', '') or '').strip()
+                        display_name = stock_name_from_parquet or info.get('name', '')
+                        
+                        results.append({
+                            'symbol': symbol_key,
+                            'name': display_name,
+                            'comment_count': comment_count,
+                            'sentiment': round(sentiment, 3),
+                            'market_cap': round(info.get('market_cap', 0.0), 2) if not pd.isna(info.get('market_cap', 0.0)) else 0.0
+                        })
+                    except Exception as e:
+                        logger.warning(f"处理第 {idx} 行数据时出错: {e}, row={dict(row)}")
+                        continue
+                
+                logger.info(f"散点图数据：查询到 {len(df)} 只股票，处理后有 {len(results)} 只股票")
+                if len(results) == 0 and len(df) > 0:
+                    logger.warning(f"警告：查询到 {len(df)} 只股票，但处理后结果为空！可能所有行都被过滤掉了。")
+                    # 输出前几行的详细信息用于调试
+                    for idx, row in df.head(5).iterrows():
+                        logger.warning(f"  行 {idx}: symbol={row.get('symbol')}, stockCode={row.get('stockCode')}, "
+                                     f"commentCount={row.get('commentCount')}, sentiment={row.get('sentiment')}")
+                
+                # CHANGED: 按市值排序（有市值的优先），如果没有市值则按评论数排序
+                # 增加显示数量到 100
+                results.sort(key=lambda x: (
+                    x.get('market_cap', 0.0) if x.get('market_cap', 0.0) > 0 else 0,
+                    x.get('comment_count', 0.0)
+                ), reverse=True)
+                results = results[:100]
+                logger.info(f"最终返回 {len(results)} 只股票（按市值和评论数排序）")
+                
+                # 如果结果少于50，尝试不按市值过滤，显示所有有数据的股票
+                if len(results) < 50:
+                    logger.warning(f"散点图数据较少（{len(results)} 只），尝试显示所有有数据的股票")
+                    # 重新处理，不要求市值信息
+                    results = []
+                    for _, row in df.iterrows():
+                        raw_symbol = str(row.get('symbol') or '')
+                        stock_code = str(row.get('stockCode') or '')[-6:]
+                        symbol_key = self._normalize_symbol_key(raw_symbol, stock_code)
+                        
+                        info = stock_info.get(symbol_key, {})
+                        
+                        comment_count = int(row.get('commentCount') or 0)
+                        sentiment = float(row.get('sentiment') or 0.0)
+                        
+                        results.append({
+                            'symbol': symbol_key,
+                            'name': info.get('name', '') or str(row.get('stockName', '')).strip(),
+                            'comment_count': comment_count,
+                            'sentiment': round(sentiment, 3) if not (pd.isna(sentiment) or abs(sentiment) > 100) else 0.0,
+                            'market_cap': round(info.get('market_cap', 0.0), 2) if not pd.isna(info.get('market_cap', 0.0)) else 0.0
+                        })
+                    
+                    # 按评论数排序，取前100
+                    results.sort(key=lambda x: x.get('comment_count', 0.0), reverse=True)
+                    results = results[:100]
+                    logger.info(f"重新处理后：{len(results)} 只股票")
+                else:
+                    results = results[:100]  # 增加显示数量到100
+            
+            # 5. 对数据进行归一化处理，解决散点图数据点被压缩的问题
+            if results:
+                # 收集所有 comment_count 和 sentiment 值
+                comment_counts = [r.get('comment_count', 0) for r in results if r.get('comment_count', 0) > 0]
+                sentiments = [r.get('sentiment', 0.0) for r in results]
+                
+                # 计算最小值和最大值
+                min_comment = min(comment_counts) if comment_counts else 0
+                max_comment = max(comment_counts) if comment_counts else 1
+                comment_range = max_comment - min_comment if max_comment != min_comment else 1
+                
+                min_sentiment = min(sentiments) if sentiments else -1
+                max_sentiment = max(sentiments) if sentiments else 1
+                sentiment_range = max_sentiment - min_sentiment if max_sentiment != min_sentiment else 2
+                
+                # CHANGED: 对于单个数据点或所有值相同的情况，使用原始值而不是归一化
+                # 这样可以避免所有点都显示在同一个位置
+                use_normalization = len(comment_counts) > 1 and comment_range > 0
+                
+                # 对每个数据点进行归一化
+                for result in results:
+                    comment_count = result.get('comment_count', 0)
+                    sentiment = result.get('sentiment', 0.0)
+                    
+                    # Min-Max 归一化：将 comment_count 映射到 [0, 1] 范围
+                    if use_normalization:
+                        normalized_comment = (comment_count - min_comment) / comment_range
+                    else:
+                        # CHANGED: 如果只有一个数据点或所有值相同，对于个股模式使用原始值
+                        # 对于聚合模式，如果只有一个股票，也使用原始值
+                        # 前端会根据 is_comment 字段判断是否使用归一化值
+                        if symbol:
+                            # 个股模式：使用原始 comment_count（前端会处理）
+                            normalized_comment = comment_count if comment_count > 0 else 0.5
+                        else:
+                            # 聚合模式：如果只有一个股票，归一化到 0.5
+                            normalized_comment = 0.5
+                    
+                    result['comment_count_normalized'] = round(normalized_comment, 4)
+                    
+                    # 确保 sentiment 在 [-1, 1] 范围内
+                    if abs(sentiment) > 1:
+                        normalized_sentiment = max(-1, min(1, sentiment / 100))  # 处理异常值
+                        result['sentiment'] = round(normalized_sentiment, 3)
+                    else:
+                        # 如果原始值在 [-1, 1] 范围内，也可以选择归一化到 [0, 1]
+                        # 但为了保持情感的正负性，我们保持原值
+                        pass
+                
+                logger.info(f"数据归一化完成: comment_count 范围 [{min_comment}, {max_comment}], "
+                          f"sentiment 范围 [{min_sentiment:.3f}, {max_sentiment:.3f}], "
+                          f"使用归一化={use_normalization}, 数据点数量={len(results)}")
+            
+            # 6. 清洗数据（防止 JSON 序列化报错）
+            def sanitize_data(data):
+                """递归清洗数据，将 NaN/Infinity 转换为 null"""
+                import math
+                try:
+                    np_floating = np.floating
+                    np_integer = np.integer
+                except AttributeError:
+                    # 兼容性处理：如果 np.floating 不存在，只检查 float
+                    np_floating = float
+                    np_integer = int
+                
+                if isinstance(data, dict):
+                    return {k: sanitize_data(v) for k, v in data.items()}
+                elif isinstance(data, list):
+                    return [sanitize_data(item) for item in data]
+                elif isinstance(data, (float, np_floating)):
+                    if math.isnan(data) or math.isinf(data):
+                        return None
+                    return float(data)
+                elif isinstance(data, (int, np_integer)):
+                    return int(data)
+                elif pd.isna(data):
+                    return None
+                else:
+                    return data
+            
+            cleaned_data = sanitize_data(results)
+            
+            total_time = time.perf_counter() - start_time
+            
+            # CHANGED: 添加详细的数据检查日志
+            if symbol:
+                logger.info(f"个股散点图数据获取完成: {len(cleaned_data)} 条数据, 总耗时 {total_time:.2f} 秒")
+                if cleaned_data:
+                    sample_item = cleaned_data[0]
+                    logger.info(f"数据样例: symbol={sample_item.get('symbol')}, comment_count={sample_item.get('comment_count')}, "
+                              f"comment_count_normalized={sample_item.get('comment_count_normalized')}, "
+                              f"sentiment={sample_item.get('sentiment')}, is_comment={sample_item.get('is_comment')}")
+                else:
+                    logger.warning(f"个股散点图数据为空！df长度={len(df)}, results长度={len(results)}")
+            else:
+                logger.info(f"散点图数据获取完成: {len(cleaned_data)} 条数据, 总耗时 {total_time:.2f} 秒 (加载: {load_time:.2f}s, 市值: {info_time:.2f}s)")
+            
+            return {'success': True, 'data': cleaned_data}
+            
+        except Exception as e:
+            logger.error(f"获取散点图数据失败: {e}", exc_info=True)
+            return {'success': False, 'error': str(e), 'data': []}

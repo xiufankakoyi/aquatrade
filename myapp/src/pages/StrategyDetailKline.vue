@@ -591,6 +591,10 @@ watch(trades, (newTrades) => {
 }, { immediate: true });
 
 onMounted(() => {
+  // CHANGED: 从 localStorage 恢复回测数据，而不是清空
+  // 这样用户在回测完成后返回页面时，数据仍然存在
+  backtestStore.hydrateFromStorage();
+  
   connect('http://localhost:5000');
   loadStrategyDetail();
 });

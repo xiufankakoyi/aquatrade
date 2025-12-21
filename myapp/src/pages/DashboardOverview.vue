@@ -223,7 +223,7 @@ const monthlyReturnsData = computed(() => {
 const clamp = (val: number, min: number, max: number) => Math.min(Math.max(val, min), max);
 
 function normalizeRadarScores(m: Metrics) {
-  // 年化收益率：-100%~100% 映射到 0~100
+  // 期间收益：-100%~100% 映射到 0~100
   const excessReturn = clamp(((m.annualizedReturn || 0) + 100) / 2, 0, 100);
   // 夏普：-1~3 映射到 0~100
   const sharpe = clamp(((m.sharpeRatio || 0) + 1) * 25, 0, 100);
@@ -345,9 +345,9 @@ async function loadData() {
 }
 
 onMounted(() => {
-  // 初始状态：清空所有回测数据，不恢复 localStorage 中的旧数据
-  // 如果用户需要查看历史数据，可以通过"历史记录"功能查看
-  backtestStore.clearBacktestData();
+  // CHANGED: 从 localStorage 恢复回测数据，而不是清空
+  // 这样用户在回测完成后返回页面时，数据仍然存在
+  backtestStore.hydrateFromStorage();
   loadData();
   connect('http://localhost:5000');
   

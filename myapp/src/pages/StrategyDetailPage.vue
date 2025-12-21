@@ -41,7 +41,7 @@
           </p>
         </div>
         <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4">
-          <p class="text-sm text-gray-500 dark:text-slate-400 mb-1">年化收益率</p>
+          <p class="text-sm text-gray-500 dark:text-slate-400 mb-1">期间收益</p>
           <p class="text-2xl font-bold" :class="backtestResult.metrics.annualizedReturn >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'">
             {{ formatPercent(backtestResult.metrics.annualizedReturn) }}
           </p>
@@ -224,6 +224,10 @@ watch(() => props.versionId, (newVersionId) => {
 }, { immediate: true });
 
 onMounted(() => {
+  // CHANGED: 从 localStorage 恢复回测数据，而不是清空
+  // 这样用户在回测完成后返回页面时，数据仍然存在
+  backtestStore.hydrateFromStorage();
+  
   if (props.versionId) {
     loadStrategyDetail();
   }

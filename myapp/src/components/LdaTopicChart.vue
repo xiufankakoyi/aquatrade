@@ -88,10 +88,26 @@ function updateChart() {
   const topicData = data.value || { topics: [], scores: [] };
   if (!topicData.topics || !topicData.scores) return;
 
-  const colors = [
-    '#3b82f6', '#10b981', '#f59e0b', '#ef4444', 
-    '#8b5cf6', '#06b6d4', '#84cc16', '#f97316'
-  ];
+  // 计算最大分数，用于生成渐变色
+  const maxScore = Math.max(...topicData.scores);
+  
+  // 使用渐变色表示权重，权重越高颜色越深/越亮
+  const getColorByWeight = (score: number, maxScore: number) => {
+    const ratio = score / maxScore;
+    // 使用蓝色系渐变，权重越高颜色越深
+    // 从浅蓝 (#60a5fa) 到深蓝 (#3b82f6) 再到紫色 (#6366f1)
+    if (ratio > 0.8) {
+      return '#6366f1'; // 最高权重：紫色
+    } else if (ratio > 0.6) {
+      return '#3b82f6'; // 高权重：深蓝
+    } else if (ratio > 0.4) {
+      return '#60a5fa'; // 中权重：中蓝
+    } else if (ratio > 0.2) {
+      return '#93c5fd'; // 低权重：浅蓝
+    } else {
+      return '#cbd5e1'; // 最低权重：灰蓝
+    }
+  };
 
   const option = {
     tooltip: {
@@ -105,10 +121,11 @@ function updateChart() {
       }
     },
     grid: {
-      left: '3%',
-      right: '4%',
+      left: '25%', // 增加左边距，为长文本留出空间
+      right: '8%', // 增加右边距，为数字标签留出空间
       bottom: '3%',
-      containLabel: true
+      top: '5%',
+      containLabel: false // 改为false，手动控制间距
     },
     xAxis: {
       type: 'value',
@@ -122,8 +139,10 @@ function updateChart() {
         formatter: '{value}'
       },
       splitLine: {
+        show: true,
         lineStyle: {
-          color: '#1e293b'
+          color: '#1e293b',
+          type: 'dashed'
         }
       }
     },
@@ -136,7 +155,16 @@ function updateChart() {
         }
       },
       axisLabel: {
-        color: '#94a3b8'
+        color: '#94a3b8',
+        width: 120, // 设置标签宽度，确保文字完整显示
+        overflow: 'truncate', // 超出部分截断
+        formatter: (value: string) => {
+          // 如果文字太长，截断并加省略号
+          if (value && value.length > 8) {
+            return value.substring(0, 8) + '...';
+          }
+          return value;
+        }
       }
     },
     series: [
@@ -145,15 +173,20 @@ function updateChart() {
         data: topicData.scores.map((score, index) => ({
           value: score,
           itemStyle: {
-            color: colors[index % colors.length]
+            color: getColorByWeight(score, maxScore) // 使用渐变色表示权重
           }
         })),
-        barWidth: '60%',
+        barWidth: '35%', // 减小柱子宽度，从60%改为35%，避免过于粗重
+        barCategoryGap: '30%', // 增加柱子之间的间距
         label: {
           show: true,
           position: 'right',
           color: '#94a3b8',
-          formatter: '{c}'
+          formatter: (params: any) => {
+            // 格式化数字，保留3位小数
+            return params.value.toFixed(3);
+          },
+          distance: 5 // 数字标签与柱子之间的距离
         }
       }
     ]

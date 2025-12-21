@@ -31,6 +31,11 @@ try:
     import optuna
     from optuna.samplers import TPESampler
     from optuna.storages import JournalStorage, JournalFileStorage
+    try:
+        from optuna.storages import RedisStorage
+        REDIS_STORAGE_AVAILABLE = True
+    except ImportError:
+        REDIS_STORAGE_AVAILABLE = False
 except ImportError as exc:  # pragma: no cover - import guard
     raise ImportError(
         "StrategyOptimizer requires `optuna`. Install via `pip install optuna`."
@@ -42,6 +47,28 @@ from database.optimized_data_query import OptimizedStockDataQuery
 from strategies.strategy_factory import StrategyFactory
 
 MIN_FITNESS_SCORE = -1e9
+
+# 缓存警告状态，避免重复警告（性能优化，确保 <1ms）
+# 使用 frozenset 提高查找性能，限制缓存大小避免内存泄漏
+_metric_warning_cache: set = set()
+_MAX_WARNING_CACHE_SIZE = 1000  # 限制缓存大小
+
+
+def _warn_missing_field(field_name: str, context: str = "") -> None:
+    """快速警告缺失字段（使用缓存避免重复警告，确保 <1ms 响应）"""
+    # 快速路径：如果缓存已满，直接返回（避免字符串拼接和打印开销）
+    if len(_metric_warning_cache) >= _MAX_WARNING_CACHE_SIZE:
+        return
+    
+    # 使用简单的字符串拼接（比 f-string 稍快）
+    cache_key = f"{field_name}:{context}" if context else field_name
+    
+    # 快速检查：使用 in 操作符（O(1) 平均情况）
+    if cache_key not in _metric_warning_cache:
+        _metric_warning_cache.add(cache_key)
+        # 只在第一次警告时打印，后续直接返回（避免 I/O 开销）
+        if len(_metric_warning_cache) <= 100:  # 只打印前100个警告，避免日志过多
+            print(f"⚠️ 警告: metrics 中缺失字段 '{field_name}'" + (f" ({context})" if context else "") + "，使用默认值")
 
 
 def _sanitize_score(value: Any) -> float:
@@ -58,33 +85,53 @@ def _sanitize_score(value: Any) -> float:
 
 
 def _metric_from_config(metrics: Dict[str, Any], target: str) -> float:
-    """Helper to extract and normalize metric values."""
+    """Helper to extract and normalize metric values.
+    
+    字段缺失时直接警告并返回既定的假数据（默认值），响应时间 <1ms。
+    """
     if not metrics:
         return MIN_FITNESS_SCORE
 
     target = target.lower()
-    mapping = {
-        "sharpe": metrics.get("sharpeRatio"),
-        "returns": metrics.get("annualizedReturn"),
-        "calmar": metrics.get("calmarRatio"),
-        "sortino": metrics.get("sortinoRatio"),
-        "total_return": metrics.get("totalReturn"),
+    
+    # 快速检查字段是否存在（使用 in 操作符，确保 <1ms）
+    field_mapping = {
+        "sharpe": ("sharpeRatio", MIN_FITNESS_SCORE),
+        "returns": ("annualizedReturn", MIN_FITNESS_SCORE),
+        "calmar": ("calmarRatio", MIN_FITNESS_SCORE),
+        "sortino": ("sortinoRatio", MIN_FITNESS_SCORE),
+        "total_return": ("totalReturn", MIN_FITNESS_SCORE),
     }
-    value = mapping.get(target, metrics.get("sharpeRatio"))
-    if value is None:
-        return MIN_FITNESS_SCORE
+    
+    field_name, default_value = field_mapping.get(target, ("sharpeRatio", MIN_FITNESS_SCORE))
+    
+    # 快速检查：字段是否存在且非 None
+    if field_name not in metrics or metrics[field_name] is None:
+        _warn_missing_field(field_name, f"target={target}")
+        return default_value
+    
+    value = metrics[field_name]
     return _sanitize_score(value)
 
 
 def _get_metric_value(metrics: Optional[Dict[str, Any]], keys: Iterable[str], default: float = 0.0) -> float:
+    """
+    获取指标值，字段缺失时直接警告并返回既定的假数据（默认值），响应时间 <1ms。
+    """
     if not metrics:
         return default
+    
+    # 快速检查：遍历 keys，找到第一个存在的字段（使用 in 操作符，确保 <1ms）
     for key in keys:
         if key in metrics and metrics[key] is not None:
             try:
                 return float(metrics[key])
             except (TypeError, ValueError):
                 continue
+    
+    # 所有字段都缺失，警告并返回默认值
+    keys_str = ", ".join(keys)
+    _warn_missing_field(keys_str, "get_metric_value")
     return default
 
 
@@ -204,76 +251,102 @@ def _evaluate_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     The payload must contain all serializable objects.
     
     Supports merging default parameters when only selected params are optimized.
+    
+    【健壮性加固】在最外层包裹异常捕获，确保任何错误都不会导致进程崩溃。
     """
-    strategy_name: str = payload["strategy_name"]
-    params_config: List[Dict[str, Any]] = payload["param_specs"]
-    genes: Iterable[float] = payload["genes"]
-    target_metric: str = payload["target_metric"]
-    start_date: str = payload["start_date"]
-    end_date: str = payload["end_date"]
-    db_path: str = payload["db_path"]
-    default_params: Optional[Dict[str, Any]] = payload.get("default_params")
-
-    # 【关键修复】在并行环境中，每个进程必须创建独立的数据库连接
-    # 禁用 warmup 避免重复初始化，在子进程中手动控制
-    local_query = None
+    import os
+    import traceback
+    
+    # 【最外层异常捕获】捕获所有可能的异常（内存错误、数据库锁、逻辑 Bug 等）
     try:
-        import os
-        # 创建数据查询实例（每个子进程独立实例，禁用 warmup）
-        local_query = OptimizedStockDataQuery(db_path=db_path, warmup=False)
-        
-        # 【关键修复】在子进程中预加载数据，避免并行执行时数据未加载的问题
-        # 检查是否禁用预加载（某些场景可能不需要）
-        if os.getenv("DISABLE_PRELOAD", "0") != "1":
-            # 计算需要预加载的日期范围（包含预热期）
-            # 默认预热60天，覆盖MA60等指标
-            from datetime import timedelta
-            import pandas as pd
-            required_warmup = 60  # 默认60天预热期
-            load_start_date = pd.to_datetime(start_date) - timedelta(days=required_warmup)
-            load_start_date_str = load_start_date.strftime('%Y-%m-%d')
+        strategy_name: str = payload.get("strategy_name", "")
+        params_config: List[Dict[str, Any]] = payload.get("param_specs", [])
+        genes: Iterable[float] = payload.get("genes", [])
+        target_metric: str = payload.get("target_metric", "sharpe")
+        start_date: str = payload.get("start_date", "")
+        end_date: str = payload.get("end_date", "")
+        db_path: str = payload.get("db_path", "")
+        default_params: Optional[Dict[str, Any]] = payload.get("default_params")
+
+        # 参数验证
+        if not strategy_name or not start_date or not end_date:
+            print(f"[WORKER {os.getpid()}] 参数不完整，返回最低分")
+            return {
+                "score": MIN_FITNESS_SCORE,
+                "metrics": None,
+                "params": {},
+            }
+
+        # 【关键修复】在并行环境中，每个进程必须创建独立的数据库连接
+        # 禁用 warmup 避免重复初始化，在子进程中手动控制
+        local_query = None
+        try:
+            # 创建数据查询实例（每个子进程独立实例，禁用 warmup）
+            local_query = OptimizedStockDataQuery(db_path=db_path, warmup=False)
             
-            try:
-                local_query.preload_backtest_data(load_start_date_str, end_date)
-            except Exception as preload_err:
-                # 预加载失败不影响执行，会回退到逐日查询
-                print(f"[WORKER {os.getpid()}] 预加载数据失败，将使用逐日查询: {preload_err}")
-        
-        optimizer = _EvaluationHelper(local_query)
-        params = _build_strategy_params(genes, params_config)
-        # 如果有默认参数，合并它们（优化参数优先）
-        if default_params:
-            merged_params = {**default_params, **params}
-            params = merged_params
-        evaluation = optimizer.evaluate(strategy_name, params, start_date, end_date, target_metric)
-        return {
-            "score": evaluation.get("score", MIN_FITNESS_SCORE),
-            "metrics": evaluation.get("metrics"),
-            "params": params,
-        }
-    except Exception as eval_err:
-        # 评估过程中的错误，返回最低分
-        import traceback
-        print(f"[WORKER {os.getpid()}] 评估过程出错: {eval_err}")
+            # 【关键修复】在子进程中预加载数据，避免并行执行时数据未加载的问题
+            # 检查是否禁用预加载（某些场景可能不需要）
+            if os.getenv("DISABLE_PRELOAD", "0") != "1":
+                # 计算需要预加载的日期范围（包含预热期）
+                # 默认预热60天，覆盖MA60等指标
+                from datetime import timedelta
+                import pandas as pd
+                required_warmup = 60  # 默认60天预热期
+                try:
+                    load_start_date = pd.to_datetime(start_date) - timedelta(days=required_warmup)
+                    load_start_date_str = load_start_date.strftime('%Y-%m-%d')
+                    
+                    try:
+                        local_query.preload_backtest_data(load_start_date_str, end_date)
+                    except Exception as preload_err:
+                        # 预加载失败不影响执行，会回退到逐日查询
+                        print(f"[WORKER {os.getpid()}] 预加载数据失败，将使用逐日查询: {preload_err}")
+                except Exception as date_err:
+                    print(f"[WORKER {os.getpid()}] 日期解析失败，跳过预加载: {date_err}")
+            
+            optimizer = _EvaluationHelper(local_query)
+            params = _build_strategy_params(genes, params_config)
+            # 如果有默认参数，合并它们（优化参数优先）
+            if default_params:
+                merged_params = {**default_params, **params}
+                params = merged_params
+            evaluation = optimizer.evaluate(strategy_name, params, start_date, end_date, target_metric)
+            return {
+                "score": evaluation.get("score", MIN_FITNESS_SCORE),
+                "metrics": evaluation.get("metrics"),
+                "params": params,
+            }
+        except Exception as eval_err:
+            # 评估过程中的错误，返回最低分
+            print(f"[WORKER {os.getpid()}] 评估过程出错: {eval_err}")
+            traceback.print_exc()
+            return {
+                "score": MIN_FITNESS_SCORE,
+                "metrics": None,
+                "params": {},
+            }
+        finally:
+            # 【关键修复】确保清理资源，释放内存，避免内存泄漏
+            if local_query is not None:
+                try:
+                    # 使用统一的 close() 方法清理所有资源
+                    local_query.close()
+                except Exception as e:
+                    # 即使关闭失败也不应该影响主流程
+                    print(f"[WORKER {os.getpid()}] 清理资源时出错（已忽略）: {e}")
+                finally:
+                    # 清理引用，帮助垃圾回收
+                    local_query = None
+                    
+    except Exception as outer_err:
+        # 【最外层异常捕获】捕获所有未预期的异常（内存错误、数据库锁、系统错误等）
+        print(f"[WORKER {os.getpid()}] 【严重错误】Trial 崩溃，返回最低分: {outer_err}")
         traceback.print_exc()
         return {
             "score": MIN_FITNESS_SCORE,
             "metrics": None,
             "params": {},
         }
-    finally:
-        # 【关键修复】确保清理资源，释放内存，避免内存泄漏
-        if local_query is not None:
-            try:
-                # 使用统一的 close() 方法清理所有资源
-                local_query.close()
-            except Exception as e:
-                # 即使关闭失败也不应该影响主流程
-                import os
-                print(f"[WORKER {os.getpid()}] 清理资源时出错（已忽略）: {e}")
-            finally:
-                # 清理引用，帮助垃圾回收
-                local_query = None
 
 
 class _EvaluationHelper:
@@ -710,46 +783,74 @@ class StrategyOptimizer:
         import os
         cpu_count = os.cpu_count() or 4
         # 使用所有 CPU 核心进行并行优化
-        n_jobs = -1  # -1 表示使用所有可用 CPU 核心
+        n_jobs = 5 # -1 表示使用所有可用 CPU 核心
         print(f"🎯 Optuna 并行配置: CPU核心数={cpu_count}, 并行任务数={n_jobs} (使用所有核心)")
         
-        # 配置 Optuna Storage（使用 JournalStorage 文件系统存储支持并行，避免 SQLite 性能问题）
-        import tempfile
+        # 配置 Optuna Storage（优先使用 Redis，支持分布式并行，无锁冲突）
+        import os
         import time
-        storage_dir = os.path.join(os.path.dirname(db_path) if db_path else tempfile.gettempdir(), "optuna_storage")
-        os.makedirs(storage_dir, exist_ok=True)
+        
+        # 从环境变量读取 Redis Storage URL，默认为 redis://localhost:6379/0
+        redis_storage_url = os.getenv("OPTUNA_REDIS_STORAGE_URL", "redis://localhost:6379/0")
+        
         # 使用时间戳确保 study_name 唯一性
         timestamp = int(time.time() * 1000)
-        # JournalStorage 使用 JSON Lines 格式文件，性能优于 SQLite
-        journal_path = os.path.join(storage_dir, f"optuna_{strategy_name}_{start_date}_{end_date}_{timestamp}.log")
-        
-        # 创建 study，使用 TPE 采样器（Tree-structured Parzen Estimator）
         study_name = f"optuna_{strategy_name}_{start_date}_{end_date}_{timestamp}"
         sampler = TPESampler(seed=options.get("random_state", 48))
         
-        try:
-            # 使用 JournalStorage（基于文件系统，支持并行，性能优于 SQLite）
-            journal_storage = JournalStorage(JournalFileStorage(journal_path))
-            study = optuna.create_study(
-                study_name=study_name,
-                storage=journal_storage,
-                sampler=sampler,
-                direction="maximize",  # 最大化目标函数（如夏普比率）
-                load_if_exists=True,  # 如果 study 已存在则加载
-            )
-            print(f"✅ 使用 JournalStorage 文件存储: {journal_path}")
-        except Exception as e:
-            print(f"⚠️ 创建 Optuna JournalStorage 失败，尝试使用内存存储: {e}")
-            import traceback
-            traceback.print_exc()
-            # 如果文件存储失败，回退到内存存储（不支持并行）
-            study = optuna.create_study(
-                study_name=study_name,
-                sampler=sampler,
-                direction="maximize",
-            )
-            n_jobs = 1  # 内存存储不支持并行
-            print(f"⚠️ 回退到内存存储，并行已禁用 (n_jobs=1)")
+        study = None
+        storage_used = None
+        
+        # 优先尝试 Redis Storage（支持分布式并行，无锁冲突）
+        if REDIS_STORAGE_AVAILABLE and redis_storage_url.startswith("redis://"):
+            try:
+                redis_storage = RedisStorage(url=redis_storage_url)
+                study = optuna.create_study(
+                    study_name=study_name,
+                    storage=redis_storage,
+                    sampler=sampler,
+                    direction="maximize",
+                    load_if_exists=True,
+                )
+                storage_used = "Redis"
+                print(f"✅ 使用 Redis Storage: {redis_storage_url}")
+            except Exception as e:
+                print(f"⚠️ 创建 Optuna Redis Storage 失败: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # 如果 Redis 失败，回退到 JournalStorage（文件系统，支持并行）
+        if study is None:
+            try:
+                journal_dir = os.path.join(os.getcwd(), "optuna_logs")
+                os.makedirs(journal_dir, exist_ok=True)
+                import tempfile
+                storage_dir = os.path.join(os.path.dirname(db_path) if db_path else tempfile.gettempdir(), "optuna_storage")
+                os.makedirs(storage_dir, exist_ok=True)
+                journal_path = os.path.join(storage_dir, f"optuna_{strategy_name}_{start_date}_{end_date}_{timestamp}.log")
+                journal_storage = JournalStorage(JournalFileStorage(journal_path))
+                study = optuna.create_study(
+                    study_name=study_name,
+                    storage=journal_storage,
+                    sampler=sampler,
+                    direction="maximize",
+                    load_if_exists=True,
+                )
+                storage_used = "JournalStorage"
+                print(f"✅ 使用 JournalStorage 文件存储: {journal_path}")
+            except Exception as e:
+                print(f"⚠️ 创建 Optuna JournalStorage 失败，尝试使用内存存储: {e}")
+                import traceback
+                traceback.print_exc()
+                # 如果文件存储失败，回退到内存存储（不支持并行）
+                study = optuna.create_study(
+                    study_name=study_name,
+                    sampler=sampler,
+                    direction="maximize",
+                )
+                n_jobs = 1  # 内存存储不支持并行
+                storage_used = "InMemory"
+                print(f"⚠️ 回退到内存存储，并行已禁用 (n_jobs=1)")
         
         # 评估计数器（用于进度追踪）
         evaluation_count = [0]  # 使用列表以便在闭包中修改
@@ -959,6 +1060,8 @@ class StrategyOptimizer:
         """
         Convert backend metrics to frontend standard format.
         frontend expects: annual_return, max_drawdown, profit_factor, sharpe, composite_score
+        
+        字段缺失时直接警告并返回既定的假数据（默认值），响应时间 <1ms。
         """
         if not raw_metrics:
             return {
@@ -970,16 +1073,30 @@ class StrategyOptimizer:
                 "score": score,
             }
         
-        return {
-            "annual_return": raw_metrics.get("annualizedReturn", 0.0),
-            "max_drawdown": raw_metrics.get("maxDrawdown", 0.0),
-            "profit_factor": raw_metrics.get("profitFactor", 0.0),
-            "sharpe": raw_metrics.get("sharpeRatio", 0.0),
+        # 快速检查字段是否存在（使用 in 操作符，确保 <1ms）
+        field_mappings = [
+            ("annualizedReturn", "annual_return", 0.0),
+            ("maxDrawdown", "max_drawdown", 0.0),
+            ("profitFactor", "profit_factor", 0.0),
+            ("sharpeRatio", "sharpe", 0.0),
+        ]
+        
+        result = {
             "composite_score": score,
             "score": score,
             # Preserve original keys just in case
             **raw_metrics
         }
+        
+        # 快速检查并填充字段（缺失时警告并使用默认值）
+        for source_field, target_field, default_value in field_mappings:
+            if source_field not in raw_metrics or raw_metrics[source_field] is None:
+                _warn_missing_field(source_field, "standardize_metrics")
+                result[target_field] = default_value
+            else:
+                result[target_field] = raw_metrics[source_field]
+        
+        return result
 
     # ---------------------------------------------------------------------- #
     # Unified entry

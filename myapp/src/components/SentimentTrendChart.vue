@@ -44,24 +44,40 @@ const error = ref<string | null>(null);
 const data = ref<SentimentTrendPoint[]>([]);
 
 async function loadData() {
-  // 第一步：清空当前数据
+  // 1. 先清空数据，防止闪烁旧数据
   data.value = [];
   error.value = null;
   
-  // 第二步：显示加载状态
+  // 🔴 关键点：如果图表还在，先显示 loading 效果或清空
+  if (chartInstance) {
+    chartInstance.showLoading({
+      text: '加载中...',
+      color: '#3b82f6',
+      textColor: '#94a3b8',
+      maskColor: 'rgba(21, 25, 37, 0.8)',
+    });
+  }
+
   loading.value = true;
   
   try {
-    // 第三步：获取新数据
     const result = await fetchSentimentTrend(props.selectedSymbol, 30);
-    data.value = result;
+    
+    // 🔴 核心修复：强制按日期升序排序！
+    // 防止后端返回乱序导致折线图"反复横跳"
+    data.value = result.sort((a, b) => {
+      return new Date(a.date).getTime() - new Date(b.date).getTime();
+    });
+
     await nextTick();
     updateChart();
   } catch (e) {
     console.error('获取情感趋势数据失败:', e);
     error.value = '获取数据失败，请检查后端 API';
+    if (chartInstance) chartInstance.hideLoading();
   } finally {
     loading.value = false;
+    if (chartInstance) chartInstance.hideLoading();
   }
 }
 
@@ -84,11 +100,20 @@ function initChart() {
 function updateChart() {
   if (!chartInstance) return;
 
+  // 🔴 修复：如果数据为空，清空画布并退出，不要留着旧图
+  if (!data.value || data.value.length === 0) {
+    chartInstance.clear();
+    return;
+  }
+
   // 提取时间、情感得分和发帖数量数据
   const timeLabels = data.value.map(item => item.date);
   // 使用接口返回的平均情感值字段 avg_sentiment
   const sentimentScores = data.value.map(item => item.avg_sentiment);
   const postCounts = data.value.map(item => item.post_count);
+
+  // 计算日期间隔，避免标签重叠
+  const labelInterval = Math.max(1, Math.floor(timeLabels.length / 8));
 
   const option = {
     tooltip: {
@@ -149,7 +174,16 @@ function updateChart() {
           }
         },
         axisLabel: {
-          color: '#94a3b8'
+          color: '#94a3b8',
+          interval: labelInterval, // 设置日期间隔，避免标签重叠
+          rotate: 45, // 旋转45度，进一步避免重叠
+          formatter: (value: string) => {
+            // 格式化日期显示，只显示月-日
+            if (value && value.length >= 10) {
+              return value.substring(5, 10);
+            }
+            return value;
+          }
         }
       }
     ],
@@ -175,9 +209,11 @@ function updateChart() {
           }
         },
         splitLine: {
+          show: true,
           lineStyle: {
             type: 'dashed',
-            color: '#475569'
+            color: '#1e293b',
+            width: 1
           }
         }
       },
@@ -201,7 +237,7 @@ function updateChart() {
         name: '情感得分',
         type: 'line',
         yAxisIndex: 0,
-        smooth: 0.3,
+        smooth: 0.5, // 增加平滑度，从0.3改为0.5
         data: sentimentScores,
         lineStyle: {
           width: 3,
@@ -210,9 +246,16 @@ function updateChart() {
         markLine: {
           data: [{ yAxis: 0 }],
           lineStyle: {
-            color: '#94a3b8',
-            opacity: 0.5,
-            type: 'dashed'
+            color: '#64748b', // 更明显的颜色
+            opacity: 0.8, // 增加不透明度
+            width: 2, // 加粗
+            type: 'solid' // 改为实线
+          },
+          label: {
+            show: true,
+            position: 'end',
+            formatter: '0',
+            color: '#94a3b8'
           }
         },
         areaStyle: {
@@ -241,31 +284,48 @@ function updateChart() {
         yAxisIndex: 1,
         data: postCounts,
         itemStyle: {
-          color: 'rgba(34, 197, 94, 0.6)'
-        }
+          // 降低绿色饱和度，使用更柔和的绿色
+          color: 'rgba(74, 222, 128, 0.4)' // 从高饱和度的绿色改为更柔和的绿色
+        },
+        barWidth: '60%' // 减小柱子宽度，避免过于拥挤
       }
     ]
   };
 
-  chartInstance.setOption(option);
+  // 🔴 核心修复：
+  // 1. 先 clear() 清除所有之前的状态（包括缩放、残留的线）
+  chartInstance.clear(); 
+  // 2. 使用 setOption(option, true) 强制不合并
+  chartInstance.setOption(option, true);
 }
 
-function handleResize() {
+// 定义一个 resize 处理函数
+const handleResize = () => {
   chartInstance?.resize();
-}
+};
 
 onMounted(() => {
-  loadData();
-  nextTick(() => {
-    initChart();
-    window.addEventListener('resize', handleResize);
-  });
+  // 1. 先初始化图表容器（此时是空的）
+  initChart();
+  
+  // 2. 添加监听
+  window.addEventListener('resize', handleResize);
+  
+  // 3. 最后加载数据
+  // 注意：不需要在这里写 nextTick，因为 initChart 已经建立好实例了
+  // loadData 会触发 data 变化，data 变化会触发 watch，watch 会触发 updateChart
+  if (props.selectedSymbol) {
+    loadData();
+  }
 });
 
 onUnmounted(() => {
   window.removeEventListener('resize', handleResize);
-  chartInstance?.dispose();
-  chartInstance = null;
+  // 🔴 必须销毁实例，防止内存泄漏和重建时的冲突
+  if (chartInstance) {
+    chartInstance.dispose();
+    chartInstance = null;
+  }
 });
 
 watch(
@@ -278,8 +338,9 @@ watch(
 
 watch(
   () => props.selectedSymbol,
-  () => {
-    if (props.selectedSymbol) {
+  (newSymbol, oldSymbol) => {
+    // 当股票符号改变时（包括从有到无，或从无到有，或从一只股票切换到另一只），都重新加载数据
+    if (newSymbol !== oldSymbol) {
       loadData();
     }
   }

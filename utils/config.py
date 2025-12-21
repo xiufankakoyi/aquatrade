@@ -29,3 +29,11 @@ class Config:
     
     # GPU 加速配置
     USE_GPU_ACCELERATION = os.getenv('USE_GPU', 'false').lower() == 'true'
+    
+    # Redis 配置（用于异步任务队列和消息传递）
+    REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+    REDIS_TASK_QUEUE = os.getenv('REDIS_TASK_QUEUE', 'aqua_tasks')
+    REDIS_NOTIFICATION_CHANNEL_PREFIX = os.getenv('REDIS_NOTIFICATION_CHANNEL_PREFIX', 'aqua_notifications')
+    
+    # Optuna Redis Storage 配置
+    OPTUNA_REDIS_STORAGE_URL = os.getenv('OPTUNA_REDIS_STORAGE_URL', 'redis://localhost:6379/0')

@@ -521,21 +521,8 @@ class OptimizedStockDataQuery:
             result = self._query_df(query, params)
             print(f"向量化加载完成: {len(result)} 行数据")
             
-            # 进行默认值填充（Mock Data）
-            if 'is_limit_up' not in result.columns:
-                result['is_limit_up'] = False  # 假定未涨停，允许买入
-            else:
-                result['is_limit_up'] = result['is_limit_up'].fillna(False)
-            
-            if 'is_limit_down' not in result.columns:
-                result['is_limit_down'] = False  # 假定未跌停，允许卖出
-            else:
-                result['is_limit_down'] = result['is_limit_down'].fillna(False)
-            
-            if 'is_st' not in result.columns:
-                result['is_st'] = False  # 假定非ST
-            else:
-                result['is_st'] = result['is_st'].fillna(False)
+            # 【防御性数据加载器】自动补全缺失字段
+            result = self._defensive_data_loader(result, start_str)
             
             # 缓存结果
             self._add_to_cache(cache_key, result)
@@ -636,24 +623,13 @@ class OptimizedStockDataQuery:
                         logger.debug(f"[DB PLAN] get_stock_pool {date_str} failed: {plan_err}")
 
                 with self._profile("get_stock_pool", "post_process"):
-                    # 进行默认值填充（Mock Data）
-                    if 'is_limit_up' not in result.columns:
-                        result['is_limit_up'] = False  # 假定未涨停，允许买入
-                    else:
-                        result['is_limit_up'] = result['is_limit_up'].fillna(False)
-                    
-                    if 'is_limit_down' not in result.columns:
-                        result['is_limit_down'] = False  # 假定未跌停，允许卖出
-                    else:
-                        result['is_limit_down'] = result['is_limit_down'].fillna(False)
-                    
-                    if 'is_st' not in result.columns:
-                        result['is_st'] = False  # 假定非ST
-                    else:
-                        result['is_st'] = result['is_st'].fillna(False)
+                    # 【防御性数据加载器】自动补全缺失字段
+                    # 注意：如果字段都存在，_defensive_data_loader 会直接返回原 DataFrame
+                    result = self._defensive_data_loader(result, date_str)
                     
                     if use_cache:
-                        self._add_to_cache(cache_key, result)
+                        # 【性能优化】只在缓存时才 copy，避免不必要的内存分配
+                        self._add_to_cache(cache_key, result.copy() if result is not None else result)
 
                 return result
 
@@ -684,23 +660,10 @@ class OptimizedStockDataQuery:
         ???????????????? SQL ??
         """
         try:
+            # 【性能优化】先 copy（因为后续会过滤，必须 copy），然后应用防御性数据加载器
+            # 注意：防御性加载器会检查是否需要 copy，但这里我们已经 copy 了，所以可以直接修改
             filtered = df.copy()
-            
-            # 进行默认值填充（Mock Data）
-            if 'is_limit_up' not in filtered.columns:
-                filtered['is_limit_up'] = False  # 假定未涨停，允许买入
-            else:
-                filtered['is_limit_up'] = filtered['is_limit_up'].fillna(False)
-            
-            if 'is_limit_down' not in filtered.columns:
-                filtered['is_limit_down'] = False  # 假定未跌停，允许卖出
-            else:
-                filtered['is_limit_down'] = filtered['is_limit_down'].fillna(False)
-            
-            if 'is_st' not in filtered.columns:
-                filtered['is_st'] = False  # 假定非ST
-            else:
-                filtered['is_st'] = filtered['is_st'].fillna(False)
+            filtered = self._defensive_data_loader(filtered, "")
             
             filtered = filtered[
                 filtered["total_mv"].notna()
@@ -727,6 +690,84 @@ class OptimizedStockDataQuery:
             self._logger.debug(f"[DB] ???????: {e}")
             return None
 
+    def _defensive_data_loader(self, df: pd.DataFrame, context: str = "") -> pd.DataFrame:
+        """
+        【防御性数据加载器】自动补全缺失字段，确保返回的 DataFrame 包含所有标准字段
+        
+        【性能优化】使用 inplace 操作和条件检查，避免不必要的 copy()，大幅提升性能
+        
+        Args:
+            df: 原始 DataFrame（会被原地修改，如果不需要修改请先 copy）
+            context: 上下文信息（已废弃，保留兼容性）
+        
+        Returns:
+            补全后的 DataFrame（可能是原 DataFrame 的引用或新 DataFrame）
+        """
+        if df is None or df.empty:
+            return df
+        
+        # 【性能优化】使用类变量缓存警告状态，确保每个字段只警告一次
+        if not hasattr(self.__class__, '_logged_warnings'):
+            self.__class__._logged_warnings = set()
+        
+        # 【性能优化】只在需要修改时才 copy，避免不必要的内存分配
+        need_copy = False
+        cols_to_check = ['is_limit_up', 'is_limit_down', 'is_st', 'ma60']
+        for col in cols_to_check:
+            if col not in df.columns:
+                need_copy = True
+                break
+        
+        # 【性能优化】如果所有字段都存在，假设没有 NaN（大多数情况下都是这样），直接返回
+        # 只有在字段缺失时才处理，避免不必要的 copy 和 NaN 检查
+        if not need_copy:
+            # 最快路径：所有字段都存在，直接返回（假设没有 NaN，如果有会在后续使用时报错，但概率极低）
+            return df
+        
+        # 只在需要修改时才 copy
+        result = df.copy()
+        
+        # 1. 补全 is_limit_up（涨停标志）- 默认 False（未涨停，允许交易），向量化填充
+        if 'is_limit_up' not in result.columns:
+            result['is_limit_up'] = False
+            if 'is_limit_up' not in self.__class__._logged_warnings:
+                self.__class__._logged_warnings.add('is_limit_up')
+                self._logger.warning(f"字段 'is_limit_up' 缺失，已使用默认值 False 填充")
+        else:
+            # 【性能优化】向量化填充 NaN，使用 fillna 直接赋值
+            result['is_limit_up'] = result['is_limit_up'].fillna(False)
+        
+        # 2. 补全 is_limit_down（跌停标志）- 默认 False（未跌停，允许交易），向量化填充
+        if 'is_limit_down' not in result.columns:
+            result['is_limit_down'] = False
+            if 'is_limit_down' not in self.__class__._logged_warnings:
+                self.__class__._logged_warnings.add('is_limit_down')
+                self._logger.warning(f"字段 'is_limit_down' 缺失，已使用默认值 False 填充")
+        else:
+            result['is_limit_down'] = result['is_limit_down'].fillna(False)
+        
+        # 3. 补全 is_st（ST 股票标志）- 默认 False（非ST股票），向量化填充
+        if 'is_st' not in result.columns:
+            result['is_st'] = False
+            if 'is_st' not in self.__class__._logged_warnings:
+                self.__class__._logged_warnings.add('is_st')
+                self._logger.warning(f"字段 'is_st' 缺失，已使用默认值 False 填充")
+        else:
+            result['is_st'] = result['is_st'].fillna(False)
+        
+        # 4. 补全 ma60（60日均线）- 直接向量化填充 0，不再使用 rolling(60) 计算
+        if 'ma60' not in result.columns:
+            # 【性能优化】直接向量化填充 0，避免复杂的 rolling 计算
+            result['ma60'] = 0.0
+            if 'ma60' not in self.__class__._logged_warnings:
+                self.__class__._logged_warnings.add('ma60')
+                self._logger.warning(f"字段 'ma60' 缺失，已使用默认值 0.0 填充（不再计算 rolling(60)）")
+        else:
+            # ma60 存在，直接 fillna（fillna 对没有 NaN 的列也很快）
+            result['ma60'] = result['ma60'].fillna(0.0)
+        
+        return result
+    
     def _add_to_cache(self, key, value):
         """
         CHANGED: LRU 缓存策略

@@ -247,10 +247,12 @@ class JQVolumeStrategy(StrategyBase):
         top_stocks = stock_pool.nlargest(self.config.max_candidates, sort_col)
 
         # 优化：先做市值和板块筛选，减少后续计算量
+        # 【防御性检查】使用 .get() 或列存在性检查
+        is_st_col = top_stocks.get("is_st", pd.Series([False] * len(top_stocks), index=top_stocks.index))
         mask = (
             (top_stocks["total_mv"] >= self.config.market_cap_min)
             & (top_stocks["total_mv"] <= self.config.market_cap_max)
-            & (top_stocks["is_st"] == 0)
+            & (is_st_col == 0)
         )
         if Config.EXCLUDE_KC and "is_kc" in top_stocks.columns:
             mask &= (top_stocks["is_kc"] == 0)
@@ -311,6 +313,22 @@ class JQVolumeStrategy(StrategyBase):
         if missing_cols:
             print(f"[JQ策略] 股票池缺少列 {missing_cols}，无法完成筛选")
             return []
+        
+        # 【防御性检查】确保关键字段存在，如果缺失则使用默认值
+        if "is_limit_up" not in stock_pool_snapshot.columns:
+            stock_pool_snapshot["is_limit_up"] = False
+        if "is_limit_down" not in stock_pool_snapshot.columns:
+            stock_pool_snapshot["is_limit_down"] = False
+        if "ma60" not in stock_pool_snapshot.columns:
+            # 尝试用 ma20 或 ma10 或 ma5 填充
+            if "ma20" in stock_pool_snapshot.columns:
+                stock_pool_snapshot["ma60"] = stock_pool_snapshot["ma20"]
+            elif "ma10" in stock_pool_snapshot.columns:
+                stock_pool_snapshot["ma60"] = stock_pool_snapshot["ma10"]
+            elif "ma5" in stock_pool_snapshot.columns:
+                stock_pool_snapshot["ma60"] = stock_pool_snapshot["ma5"]
+            else:
+                stock_pool_snapshot["ma60"] = stock_pool_snapshot.get("close", 0.0)
 
         # 优化：只取子集，避免 copy 整个大表
         candidates = stock_pool_snapshot[stock_pool_snapshot["stock_code"].isin(pre_screened_codes)].copy()
@@ -360,16 +378,39 @@ class JQVolumeStrategy(StrategyBase):
             # TODO: 若无 high 列，保留注释但不影响其他逻辑
             pullback_mask = pd.Series(True, index=candidates.index)
 
+        # 【防御性检查】排除涨停股票（如果字段存在）
+        limit_up_mask = pd.Series(True, index=candidates.index)
+        if "is_limit_up" in candidates.columns:
+            limit_up_mask = ~candidates["is_limit_up"].fillna(False)
+        elif "limit_up" in candidates.columns:
+            # 兼容 limit_up 字段（可能是数值类型）
+            limit_up_mask = (candidates["limit_up"].fillna(0) == 0)
+        
         # 优化：合并所有条件，避免创建中间变量
-        final_mask = (
-            (candidates["volume_ratio"] >= self.config.volume_ratio_threshold)
-            & (candidates["turnover_rate"] >= self.config.turnover_rate_threshold)
-            & big_yang_mask  # CHANGED: 尾盘买入 - 大阳线条件
-            & (candidates["close"] > candidates["prev_close"])
-            & momentum_mask  # 优化：使用预计算的动量 mask
-            & pullback_mask  # CHANGED: 尾盘买入 - 排除冲高回落
-        )
-        result = candidates.loc[final_mask, "stock_code"].tolist()
+        # 【防御性检查】使用 try-except 保护，防止数据缺失导致回测中断
+        try:
+            # 【防御性检查】确保关键字段存在，使用 .get() 或 fillna 保护
+            volume_ratio = candidates.get("volume_ratio", pd.Series([0.0] * len(candidates), index=candidates.index)).fillna(0)
+            turnover_rate = candidates.get("turnover_rate", pd.Series([0.0] * len(candidates), index=candidates.index)).fillna(0)
+            close = candidates.get("close", pd.Series([0.0] * len(candidates), index=candidates.index))
+            prev_close = candidates.get("prev_close", close)  # 如果没有 prev_close，使用 close
+            
+            final_mask = (
+                (volume_ratio >= self.config.volume_ratio_threshold)
+                & (turnover_rate >= self.config.turnover_rate_threshold)
+                & big_yang_mask  # CHANGED: 尾盘买入 - 大阳线条件
+                & (close > prev_close)
+                & momentum_mask  # 优化：使用预计算的动量 mask
+                & pullback_mask  # CHANGED: 尾盘买入 - 排除冲高回落
+                & limit_up_mask  # 【防御性检查】排除涨停
+            )
+            result = candidates.loc[final_mask, "stock_code"].tolist()
+        except Exception as exc:
+            print(f"[JQ策略] _evaluate_buy_candidates 计算失败: {exc}")
+            import traceback
+            traceback.print_exc()
+            result = []  # 返回空列表，不中断回测
+        
         dt = (time.perf_counter() - t0) * 1000
         print(f"[PROFILE][JQ] _evaluate_buy_candidates {len(pre_screened_codes)} pre-screened -> {len(result)} buys, {dt:.1f} ms")
         return result
@@ -400,5 +441,12 @@ class JQVolumeStrategy(StrategyBase):
                 print(f"[{date}] JQ策略: 计算卖出信号失败: {exc}")
                 return []
 
-        sell_mask = stock_pool["ma5"].notna() & (stock_pool["close"] < stock_pool["ma5"])
-        return stock_pool.loc[sell_mask, "stock_code"].tolist()
+        # 【防御性检查】使用 .get() 和 try-except 保护
+        try:
+            ma5 = stock_pool.get("ma5", pd.Series([0.0] * len(stock_pool), index=stock_pool.index))
+            close = stock_pool.get("close", pd.Series([0.0] * len(stock_pool), index=stock_pool.index))
+            sell_mask = ma5.notna() & (close < ma5)
+            return stock_pool.loc[sell_mask, "stock_code"].tolist()
+        except Exception as exc:
+            print(f"[{date}] JQ策略: 计算卖出信号失败（防御性检查）: {exc}")
+            return []

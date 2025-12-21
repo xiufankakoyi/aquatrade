@@ -1,359 +1,274 @@
-import torch
-from transformers import pipeline, AutoTokenizer, AutoModel
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import time
+import json
+import re
+import random
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+import requests
+# === 配置区域 ===
+CHROME_DRIVER_PATH = r"I:\\chromedriver-win64\\chromedriver.exe"
 
-class ModelCompetition:
-    def __init__(self):
-        self.device = 0 if torch.cuda.is_available() else -1
-        self.device_str = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # === 四个参赛模型配置 ===
-        self.models_config = [
-            {
-                "name": "RoBERTa-wwm", 
-                "path": "hfl/chinese-roberta-wwm-ext", 
-                "type": "fill-mask"
-            },
-            {
-                "name": "MacBERT", 
-                "path": "hfl/chinese-macbert-base", 
-                "type": "fill-mask"
-            },
-            {
-                "name": "BERT-wwm", 
-                "path": "hfl/chinese-bert-wwm", 
-                "type": "fill-mask"
-            },
-            {
-                "name": "BGE-large-zh",
-                "path": "BAAI/bge-large-zh-v1.5",
-                "type": "embedding"
-            }
-        ]
-        
-        self.pipelines = []
-        self.embedding_model = None
-        self.embedding_tokenizer = None
-        self.load_models()
-        
-        self.pos_token = "涨"
-        self.neg_token = "跌"
-        
-        # BGE 模型的参考文本（用于相似度计算）
-        self.pos_reference = "股价会上涨，后市看涨，趋势向上"
-        self.neg_reference = "股价会下跌，后市看跌，趋势向下"
-
-    def load_models(self):
-        print(f"🚀 初始化四个模型参赛系统...")
-        
-        # 加载所有模型
-        for cfg in self.models_config:
-            try:
-                print(f"  🔄 加载 {cfg['name']}...", end="")
-                if cfg['type'] == 'fill-mask':
-                    pipe = pipeline('fill-mask', model=cfg['path'], device=self.device)
-                    self.pipelines.append({
-                        "pipe": pipe,
-                        "name": cfg['name'],
-                        "type": "fill-mask"
-                    })
-                elif cfg['type'] == 'embedding':
-                    self.embedding_tokenizer = AutoTokenizer.from_pretrained(cfg['path'])
-                    self.embedding_model = AutoModel.from_pretrained(cfg['path'])
-                    self.embedding_model.to(self.device_str)
-                    self.embedding_model.eval()
-                    self.pipelines.append({
-                        "name": cfg['name'],
-                        "type": "embedding"
-                    })
-                print(" ✅")
-            except Exception as e:
-                print(f" ❌ 失败 ({e})")
-        
-        if len(self.pipelines) == 0:
-            raise ValueError("❌ 没有任何模型加载成功，无法运行！")
-        
-        print(f"✅ 成功加载 {len(self.pipelines)} 个模型，准备比赛！\n")
+def create_driver():
+    options = webdriver.ChromeOptions()
+    # 禁用自动化特征，防止简单的反爬
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
     
-    def _encode_texts(self, texts):
-        """使用 BGE 模型编码文本列表，返回嵌入向量"""
-        if self.embedding_model is None:
-            return None
-        
-        with torch.no_grad():
-            encoded_input = self.embedding_tokenizer(
-                texts, 
-                padding=True, 
-                truncation=True, 
-                max_length=512,
-                return_tensors='pt'
-            ).to(self.device_str)
-            
-            model_output = self.embedding_model(**encoded_input)
-            # BGE 模型使用 [CLS] token 的嵌入，并进行归一化
-            embeddings = model_output[0][:, 0]  # [batch_size, hidden_size]
-            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
-            return embeddings.cpu().numpy()
-
-    def _analyze_single_model(self, model_item, texts, batch_size=32):
-        """单个模型独立分析"""
-        if not texts: return []
-        
-        n_samples = len(texts)
-        results = []
-        
-        if model_item['type'] == 'fill-mask':
-            # Fill-Mask 模型分析
-            pipe = model_item['pipe']
-            masked_texts = [f"股民评论「{t}」，这意味着股价后市会{pipe.tokenizer.mask_token}。" for t in texts]
-            
-            try:
-                pipe_results = pipe(masked_texts, batch_size=batch_size)
-                
-                for idx, res_list in enumerate(pipe_results):
-                    p_up = 0.0
-                    p_down = 0.0
-                    
-                    for res in res_list:
-                        token = res['token_str'].replace(" ", "")
-                        if token == self.pos_token:
-                            p_up = res['score']
-                        elif token == self.neg_token:
-                            p_down = res['score']
-                    
-                    prob_diff = p_up - p_down
-                    label = 0
-                    if prob_diff > 0.03:
-                        label = 1
-                    elif prob_diff < -0.03:
-                        label = -1
-                    
-                    results.append({
-                        "label": label,
-                        "prob_up": p_up,
-                        "prob_down": p_down,
-                        "diff": prob_diff
-                    })
-            except Exception as e:
-                print(f"⚠️ 模型 {model_item['name']} 推理失败: {e}")
-                return None
-                
-        elif model_item['type'] == 'embedding':
-            # BGE 嵌入模型分析
-            if self.embedding_model is None:
-                return None
-            
-            try:
-                text_embeddings = self._encode_texts(texts)
-                pos_emb = self._encode_texts([self.pos_reference])[0]
-                neg_emb = self._encode_texts([self.neg_reference])[0]
-                
-                pos_similarities = cosine_similarity(text_embeddings, pos_emb.reshape(1, -1)).flatten()
-                neg_similarities = cosine_similarity(text_embeddings, neg_emb.reshape(1, -1)).flatten()
-                
-                # 归一化相似度为概率
-                pos_probs = (pos_similarities + 1) / 2
-                neg_probs = (neg_similarities + 1) / 2
-                total_probs = pos_probs + neg_probs
-                pos_probs = pos_probs / (total_probs + 1e-8)
-                neg_probs = neg_probs / (total_probs + 1e-8)
-                
-                for idx in range(n_samples):
-                    prob_diff = pos_probs[idx] - neg_probs[idx]
-                    label = 0
-                    if prob_diff > 0.03:
-                        label = 1
-                    elif prob_diff < -0.03:
-                        label = -1
-                    
-                    results.append({
-                        "label": label,
-                        "prob_up": pos_probs[idx],
-                        "prob_down": neg_probs[idx],
-                        "diff": prob_diff
-                    })
-            except Exception as e:
-                print(f"⚠️ 模型 {model_item['name']} 推理失败: {e}")
-                return None
-        
-        return results
+    options.add_argument('--disable-gpu')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
     
-    def compete(self, texts, true_labels, batch_size=32):
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    options.add_experimental_option("prefs", prefs)
+    
+    service = Service(CHROME_DRIVER_PATH)
+    driver = webdriver.Chrome(service=service, options=options)
+    
+    # 注入JS移除webdriver属性
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+        "source": """
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined
+            })
         """
-        四个模型比赛，返回每个模型的准确率
+    })
+    
+    return driver
+
+# # ==========================================
+# # 1. 解析人气榜 (修复错位：使用锚点定位法)
+# # ==========================================
+# def extract_rank_list(driver):
+#     url = "https://guba.eastmoney.com/rank/"
+#     print(f"\n[1/4] 正在抓取人气榜: {url}")
+#     driver.get(url)
+    
+#     try:
+#         WebDriverWait(driver, 10).until(
+#             EC.presence_of_element_located((By.CSS_SELECTOR, "tr, .listitem"))
+#         )
+#     except:
+#         print("  -> 等待超时，尝试直接解析...")
+
+#     data_list = []
+#     # 获取页面所有行
+#     rows = driver.find_elements(By.CSS_SELECTOR, "tr, .listitem")
+#     print(f"  -> 找到 {len(rows)} 行数据，开始全量提取...")
+    
+#     # === 修改开始：使用 enumerate 生成排名，并提取更多字段 ===
+#     for i, row in enumerate(rows): 
+#         # 1. 解决排名问题：直接用 (索引+1) 作为排名，不依赖网页文本
+#         current_rank = str(i)
         
-        Args:
-            texts: 测试文本列表
-            true_labels: 真实标签列表 (1=看涨, -1=看跌, 0=中性)
-            batch_size: 批处理大小
-        """
-        print("=" * 80)
-        print("🏆 四个模型准确率比赛开始！")
-        print("=" * 80)
+#         text = row.text.replace('\n', ' ')
+#         if not text: continue
         
-        model_results = {}
+#         parts = text.split()
         
-        # 每个模型独立分析
-        for model_item in self.pipelines:
-            model_name = model_item['name']
-            print(f"\n📊 {model_name} 正在分析 {len(texts)} 条文本...")
-            
-            predictions = self._analyze_single_model(model_item, texts, batch_size)
-            
-            if predictions is None:
-                print(f"  ❌ {model_name} 分析失败，跳过")
-                continue
-            
-            # 提取预测标签
-            pred_labels = [p['label'] for p in predictions]
-            
-            # 计算准确率指标
-            accuracy = accuracy_score(true_labels, pred_labels)
-            
-            # 计算精确率、召回率、F1（只考虑非中性样本）
-            non_neutral_mask = np.array(true_labels) != 0
-            if non_neutral_mask.sum() > 0:
-                y_true_binary = np.array(true_labels)[non_neutral_mask]
-                y_pred_binary = np.array(pred_labels)[non_neutral_mask]
-                # 转换为二分类（1 vs -1）
-                y_true_binary = (y_true_binary > 0).astype(int)
-                y_pred_binary = (y_pred_binary > 0).astype(int)
+#         # --- 核心修复：基于“代码”的位置向左右寻找 ---
+#         code_index = -1
+#         stock_code = ""
+        
+#         # 先找到由6位数字组成的股票代码，这是唯一的“锚点”
+#         for idx, part in enumerate(parts):
+#             if re.match(r'^\d{6}$', part):
+#                 code_index = idx
+#                 stock_code = part
+#                 break
+        
+#         if code_index != -1:
+#             try:
+#                 # A. 股票名称：代码的右边一个
+#                 name = parts[code_index + 1] if (code_index + 1) < len(parts) else ""
                 
-                precision = precision_score(y_true_binary, y_pred_binary, average='binary', zero_division=0)
-                recall = recall_score(y_true_binary, y_pred_binary, average='binary', zero_division=0)
-                f1 = f1_score(y_true_binary, y_pred_binary, average='binary', zero_division=0)
-            else:
-                precision = recall = f1 = 0.0
-            
-            # 混淆矩阵
-            cm = confusion_matrix(true_labels, pred_labels, labels=[-1, 0, 1])
-            
-            model_results[model_name] = {
-                "accuracy": accuracy,
-                "precision": precision,
-                "recall": recall,
-                "f1": f1,
-                "predictions": pred_labels,
-                "confusion_matrix": cm
-            }
-            
-            print(f"  ✅ {model_name} 分析完成")
-            print(f"     准确率: {accuracy:.4f} ({accuracy*100:.2f}%)")
-            print(f"     精确率: {precision:.4f}")
-            print(f"     召回率: {recall:.4f}")
-            print(f"     F1分数: {f1:.4f}")
-        
-        # 排名
-        print("\n" + "=" * 80)
-        print("🏆 比赛结果排名（按准确率）")
-        print("=" * 80)
-        
-        sorted_models = sorted(model_results.items(), key=lambda x: x[1]['accuracy'], reverse=True)
-        
-        for rank, (model_name, metrics) in enumerate(sorted_models, 1):
-            medal = "🥇" if rank == 1 else "🥈" if rank == 2 else "🥉" if rank == 3 else "  "
-            print(f"{medal} 第{rank}名: {model_name}")
-            print(f"   准确率: {metrics['accuracy']:.4f} ({metrics['accuracy']*100:.2f}%)")
-            print(f"   精确率: {metrics['precision']:.4f} | 召回率: {metrics['recall']:.4f} | F1: {metrics['f1']:.4f}")
-            print(f"   混淆矩阵:")
-            print(f"   {metrics['confusion_matrix']}")
-            print()
-        
-        return model_results
+#                 # B. 排名较昨日变动：代码的左边一个
+#                 # 注意：如果是第1名，网页文本可能是 "↑3 002703"，代码在索引1，变动在索引0
+#                 rank_change = ""
+#                 if code_index > 0:
+#                     rank_change = parts[code_index - 1]
+#                     # 过滤掉可能的纯数字排名误判（防止把 "4" 当成变动）
+#                     # 通常变动包含 symbols 或者是较小的数字，或者是 "-"
+                
+#                 # C. 寻找百分比数据（新晋粉丝、铁杆粉丝）
+#                 # 策略：从列表末尾往回找，通常最后两个是粉丝数据
+#                 new_fans = ""
+#                 loyal_fans = ""
+                
+#                 percentages = [p for p in parts if "%" in p]
+#                 if len(percentages) >= 3:
+#                     # 通常顺序是：涨跌幅(9.99%) ... 新晋(83.11%) 铁杆(16.89%)
+#                     # 取最后两个
+#                     loyal_fans = percentages[-1]
+#                     new_fans = percentages[-2]
+#                     change_pct = percentages[-3] # 涨跌幅
+#                 else:
+#                     change_pct = ""
+
+#                 # D. 最新价：在名称后面找浮点数
+#                 price = ""
+#                 for j in range(code_index + 2, len(parts)):
+#                     if re.match(r'^-?\d+\.\d+$', parts[j]):
+#                         price = parts[j]
+#                         break
+
+#                 item = {
+#                     "排名": current_rank,         # 修复：使用生成的排名
+#                     "代码": stock_code,
+#                     "名称": name,
+#                     "最新价": price,
+#                     "涨跌幅": change_pct,
+#                     "排名变动": rank_change,      # 新增
+#                     "新晋粉丝": new_fans,         # 新增
+#                     "铁杆粉丝": loyal_fans        # 新增
+#                 }
+#                 data_list.append(item)
+#             except Exception as e:
+#                 continue
+#     # === 修改结束 ===
+
+#     # 打印完整数据，不截断
+#     print(json.dumps(data_list, indent=2, ensure_ascii=False))
 
 # ==========================================
-# 🧪 测试 Demo：四个模型比赛
+# 2. 解析个股人气详情 (保持不变)
+# ==========================================
+def extract_stock_rank_detail(driver):
+    code_num = "002703"
+    prefix = "sh" if code_num.startswith("6") else "sz"
+    full_code = f"{prefix}{code_num}"
+    
+    # 1. 使用你找到的正确 API 获取多空数据
+    api_url = f"https://eminterservice.eastmoney.com/UserData/GetWebTape?code={full_code}"
+    print(f"\n[2/4] 正在抓取个股详情 API: {api_url}")
+    
+    api_info = {}
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://guba.eastmoney.com/"
+        }
+        resp = requests.get(api_url, headers=headers, timeout=5)
+        
+        if resp.status_code == 200:
+            res_json = resp.json()
+            if res_json.get("Status") == 1:
+                d = res_json.get("Data", {})
+                # 转换小数为百分比
+                bull = float(d.get("TapeZ", 0)) * 100
+                bear = float(d.get("TapeD", 0)) * 100
+                api_info["多空日期"] = d.get("Date")
+                api_info["看涨比例"] = f"{bull:.2f}%"
+                api_info["看跌比例"] = f"{bear:.2f}%"
+                print(f"  -> [API成功] {api_info}")
+            else:
+                print(f"  -> [API返回] 状态非1: {res_json}")
+        else:
+            print(f"  -> [API失败] 状态码: {resp.status_code}")
+            
+    except Exception as e:
+        print(f"  -> [API报错] {e}")
+
+    # 2. 结合 Selenium 抓取页面文本
+    url = f"https://guba.eastmoney.com/rank/stock?code={code_num}&from="
+    driver.get(url)
+    time.sleep(1)
+    
+    page_info = {"API数据": api_info}
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+        match_rank = re.search(r'第\s*(\d+)\s*名', body_text)
+        if match_rank: page_info['当前排名'] = match_rank.group(1)
+        
+        match_fans = re.search(r'新晋粉丝.*?(\d+\.?\d*%)', body_text)
+        if match_fans: page_info['新晋粉丝'] = match_fans.group(1)
+    except: pass
+    
+    print(json.dumps(page_info, indent=2, ensure_ascii=False))
+
+# # ==========================================
+# # 3. 解析帖子列表 (移除截断，增加人工暂停)
+# # ==========================================
+# def extract_post_list(driver):
+#     url = "https://guba.eastmoney.com/list,000592.html"
+#     print(f"\n[3/4] 正在抓取帖子列表: {url}")
+#     driver.get(url)
+#     time.sleep(2)
+    
+#     posts = []
+    
+#     # 循环检查，给人工验证的机会
+#     max_retries = 3
+#     for attempt in range(max_retries):
+#         elements = driver.find_elements(By.CSS_SELECTOR, ".article-h, .listitem, tr.list-item")
+#         valid_elements = [e for e in elements if "阅读" not in e.text] # 过滤表头
+        
+#         if len(valid_elements) > 0:
+#             print(f"  -> 成功获取到 {len(valid_elements)} 行数据，开始全量提取...")
+#             for elem in valid_elements: # 移除切片，提取所有
+#                 try:
+#                     # 获取完整文本，不截断
+#                     full_text = elem.text.replace('\n', ' ')
+#                     posts.append(full_text)
+#                 except: continue
+#             break
+#         else:
+#             print(f"  ⚠️ 警告 (尝试 {attempt+1}/{max_retries}): 未提取到帖子，可能触发了验证码！")
+#             print("  >>> 请切换到浏览器窗口，手动完成滑块验证 <<<")
+#             print("  >>> 验证完成后，请回到这里按 [回车键] 继续... <<<")
+#             input() 
+#             time.sleep(2)
+
+#     if posts:
+#         # 打印完整列表，不截断
+#         print(json.dumps(posts, indent=2, ensure_ascii=False))
+#     else:
+#         print("  ❌ 未能获取帖子列表。")
+
+# # ==========================================
+# # 4. 解析帖子正文 (移除截断)
+# # ==========================================
+# def extract_post_content(driver):
+#     url = "https://guba.eastmoney.com/news,000592,1642061341.html"
+#     print(f"\n[4/4] 正在抓取帖子正文: {url}")
+#     driver.get(url)
+#     time.sleep(2)
+    
+#     result = {}
+#     try:
+#         candidates = driver.find_elements(By.CSS_SELECTOR, "div, p, article")
+#         longest_text = ""
+#         for cand in candidates:
+#             if not cand.is_displayed(): continue
+#             text = cand.text.strip()
+#             if len(text) > 50 and len(text) > len(longest_text):
+#                 longest_text = text
+        
+#         if longest_text:
+#             # 移除所有换行符以便在一行显示，或者保留原样
+#             # 这里保留原样，不做任何截断
+#             result["正文完整内容"] = longest_text
+#     except Exception as e:
+#         result["错误"] = str(e)
+
+#     print(json.dumps(result, indent=2, ensure_ascii=False))
+
+# ==========================================
+# 主程序
 # ==========================================
 if __name__ == "__main__":
-    analyzer = ModelCompetition()
-    
-    # 测试数据集（文本 + 真实标签）
-    # 标签: 1=看涨, -1=看跌, 0=中性
-    test_data = [
-        # 看涨样本 (label=1)
-        ("量价齐升，趋势走出来了", 1),
-        ("主力回来了，这位置安全", 1),
-        ("洗盘而已，别被吓跑", 1),
-        ("这波不翻倍对不起庄家", 1),
-        ("资金开始说话了", 1),
-        ("底部放量，懂的都懂", 1),
-        ("趋势不破，继续拿", 1),
-        ("北向连续加仓", 1),
-        ("这种走势明显有预期差", 1),
-        ("不买真的后悔", 1),
-        ("现在不上车就晚了", 1),
-        ("最后一次上车机会", 1),
-        ("已经没有下跌空间了", 1),
-        ("再跌我吃键盘", 1),
-        ("错过这波就是一年", 1),
-        
-        # 看跌样本 (label=-1)
-        ("完了，又站岗", -1),
-        ("这票已经废了", -1),
-        ("每天一个新低，服了", -1),
-        ("主力跑路了还不信", -1),
-        ("拉高出货太明显", -1),
-        ("不割不行了", -1),
-        ("这走势一看就是骗炮", -1),
-        ("再买就是送钱", -1),
-        ("庄家吃相太难看", -1),
-        ("关灯吃面", -1),
-        ("埋了", -1),
-        ("被套在山顶", -1),
-        ("抬走，下一个", -1),
-        ("割肉止损", -1),
-        ("韭菜集合地", -1),
-        ("这走势真漂亮，一路向下", -1),
-        ("每天跌一点，细水长流", -1),
-        ("稳得很，稳稳地亏", -1),
-        ("这不是下跌，是自由落体", -1),
-        ("利好出来反而跌，老套路了", -1),
-        
-        # 中性样本 (label=0)
-        ("感觉不太对，但又说不上来", 0),
-        ("总觉得后面有戏", 0),
-        ("这票有点东西", 0),
-        ("说不清楚，反正不敢买", 0),
-        ("看着像要拉，又不像", 0),
-        ("应该快了吧", 0),
-        ("主力明显在等散户走", 0),
-        ("看看再说", 0),
-        ("路过", 0),
-        ("坐等收盘", 0),
-        ("今天人不多啊", 0),
-        ("评论区真热闹", 0),
-        ("不懂这个票", 0),
-        ("说是利好，怎么一点反应没有", 0),
-        ("不涨我认了，别天天阴跌", 0),
-        ("被套了，但感觉还能救", 0),
-        ("割了又怕它涨", 0),
-        ("拿着难受，卖了更难受", 0),
-        ("这位置不涨才奇怪", 0),
-        ("涨不动也不至于跌成这样", 0),
-        ("说洗盘吧，有点狠", 0),
-        ("说出货吧，又不像", 0),
-        ("反正散户永远是最后知道的", 0),
-    ]
-    
-    # 分离文本和标签
-    test_texts = [item[0] for item in test_data]
-    true_labels = [item[1] for item in test_data]
-    
-    # 开始比赛
-    results = analyzer.compete(test_texts, true_labels, batch_size=8)
-    
-    print("\n" + "=" * 80)
-    print("📋 详细预测对比（前10条）")
-    print("=" * 80)
-    
-    for i in range(min(10, len(test_texts))):
-        print(f"\n文本 {i+1}: 【{test_texts[i]}】")
-        print(f"真实标签: {'🔴 看涨' if true_labels[i] == 1 else '🟢 看跌' if true_labels[i] == -1 else '⚪ 中性'}")
-        print("各模型预测:")
-        for model_name, metrics in results.items():
-            pred = metrics['predictions'][i]
-            pred_str = '🔴 看涨' if pred == 1 else '🟢 看跌' if pred == -1 else '⚪ 中性'
-            correct = "✅" if pred == true_labels[i] else "❌"
-            print(f"  {model_name:15s}: {pred_str} {correct}")
+    driver = create_driver()
+    try:
+        #extract_rank_list(driver)
+        extract_stock_rank_detail(driver)
+        extract_post_list(driver)
+        extract_post_content(driver)
+    except Exception as e:
+        print(f"发生未知错误: {e}")
+    finally:
+        print("\n全部流程结束。")
+        # driver.quit() # 建议保留浏览器开启以便观察

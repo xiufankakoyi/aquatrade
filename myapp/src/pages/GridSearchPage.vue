@@ -1372,8 +1372,8 @@ onUnmounted(() => {
             </div>
             <div class="rounded-2xl border border-slate-800/60 bg-slate-950/40 p-4 flex flex-col justify-between hover:border-red-500/30 transition-colors">
               <div class="text-xs text-slate-500 font-medium uppercase tracking-wider">训练收益</div>
-              <div class="mt-2 text-xl font-bold font-mono" :class="(finalSelected?.train_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
-                 {{ finalSelected?.train_metrics?.annual_return ? formatPercent(finalSelected.train_metrics.annual_return) : '—' }}
+              <div class="mt-2 text-xl font-bold font-mono" :class="((finalSelected?.train_metrics?.totalReturn ?? finalSelected?.train_metrics?.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400')">
+                 {{ (finalSelected?.train_metrics?.totalReturn !== undefined && finalSelected?.train_metrics?.totalReturn !== null) || (finalSelected?.train_metrics?.total_return !== undefined && finalSelected?.train_metrics?.total_return !== null) ? formatPercent(finalSelected.train_metrics.totalReturn ?? finalSelected.train_metrics.total_return) : '—' }}
               </div>
             </div>
             <div class="rounded-2xl border border-slate-800/60 bg-slate-950/40 p-4 flex flex-col justify-between hover:border-rose-500/30 transition-colors">
@@ -1481,15 +1481,15 @@ onUnmounted(() => {
                   </thead>
                   <tbody class="divide-y divide-slate-800/40">
                     <tr class="hover:bg-slate-800/20 transition-colors">
-                      <td class="py-2.5 px-4 text-slate-400">年化收益</td>
-                      <td class="py-2.5 px-4 text-right font-mono font-medium" :class="(finalSelected?.train_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
-                        {{ finalSelected?.train_metrics?.annual_return ? formatPercent(finalSelected.train_metrics.annual_return) : '—' }}
+                      <td class="py-2.5 px-4 text-slate-400">期间收益</td>
+                      <td class="py-2.5 px-4 text-right font-mono font-medium" :class="((finalSelected?.train_metrics?.totalReturn ?? finalSelected?.train_metrics?.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400')">
+                        {{ (finalSelected?.train_metrics?.totalReturn !== undefined && finalSelected?.train_metrics?.totalReturn !== null) || (finalSelected?.train_metrics?.total_return !== undefined && finalSelected?.train_metrics?.total_return !== null) ? formatPercent(finalSelected.train_metrics.totalReturn ?? finalSelected.train_metrics.total_return) : '—' }}
                       </td>
-                      <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="(finalSelected?.val_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
-                        {{ finalSelected?.val_metrics?.annual_return ? formatPercent(finalSelected.val_metrics.annual_return) : '—' }}
+                      <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="((finalSelected?.val_metrics?.totalReturn ?? finalSelected?.val_metrics?.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400')">
+                        {{ (finalSelected?.val_metrics?.totalReturn !== undefined && finalSelected?.val_metrics?.totalReturn !== null) || (finalSelected?.val_metrics?.total_return !== undefined && finalSelected?.val_metrics?.total_return !== null) ? formatPercent(finalSelected.val_metrics.totalReturn ?? finalSelected.val_metrics.total_return) : '—' }}
                       </td>
-                      <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="(finalSelected?.test_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
-                        {{ finalSelected?.test_metrics?.annual_return ? formatPercent(finalSelected.test_metrics.annual_return) : '—' }}
+                      <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="((finalSelected?.test_metrics?.totalReturn ?? finalSelected?.test_metrics?.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400')">
+                        {{ (finalSelected?.test_metrics?.totalReturn !== undefined && finalSelected?.test_metrics?.totalReturn !== null) || (finalSelected?.test_metrics?.total_return !== undefined && finalSelected?.test_metrics?.total_return !== null) ? formatPercent(finalSelected.test_metrics.totalReturn ?? finalSelected.test_metrics.total_return) : '—' }}
                       </td>
                     </tr>
                     <tr class="hover:bg-slate-800/20 transition-colors">
@@ -1758,15 +1758,15 @@ onUnmounted(() => {
                 </thead>
                 <tbody class="divide-y divide-slate-800/40">
                   <tr class="hover:bg-slate-800/20">
-                    <td class="py-2.5 px-4 text-slate-400">年化收益</td>
-                    <td class="py-2.5 px-4 text-right font-mono font-medium" :class="(candidateDetail.train_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
-                      {{ candidateDetail.train_metrics?.annual_return ? formatPercent(candidateDetail.train_metrics.annual_return) : '—' }}
+                      <td class="py-2.5 px-4 text-slate-400">期间收益</td>
+                    <td class="py-2.5 px-4 text-right font-mono font-medium" :class="((candidateDetail.train_metrics?.totalReturn ?? candidateDetail.train_metrics?.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400')">
+                      {{ (candidateDetail.train_metrics?.totalReturn !== undefined && candidateDetail.train_metrics?.totalReturn !== null) || (candidateDetail.train_metrics?.total_return !== undefined && candidateDetail.train_metrics?.total_return !== null) ? formatPercent(candidateDetail.train_metrics.totalReturn ?? candidateDetail.train_metrics.total_return) : '—' }}
                     </td>
-                    <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="(candidateDetail.val_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
-                      {{ candidateDetail.val_metrics?.annual_return ? formatPercent(candidateDetail.val_metrics.annual_return) : '—' }}
+                    <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="((candidateDetail.val_metrics?.totalReturn ?? candidateDetail.val_metrics?.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400')">
+                      {{ (candidateDetail.val_metrics?.totalReturn !== undefined && candidateDetail.val_metrics?.totalReturn !== null) || (candidateDetail.val_metrics?.total_return !== undefined && candidateDetail.val_metrics?.total_return !== null) ? formatPercent(candidateDetail.val_metrics.totalReturn ?? candidateDetail.val_metrics.total_return) : '—' }}
                     </td>
-                    <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="(candidateDetail.test_metrics?.annual_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400'">
-                      {{ candidateDetail.test_metrics?.annual_return ? formatPercent(candidateDetail.test_metrics.annual_return) : '—' }}
+                    <td class="py-2.5 px-4 text-right font-mono font-medium border-l border-slate-800/50" :class="((candidateDetail.test_metrics?.totalReturn ?? candidateDetail.test_metrics?.total_return ?? 0) >= 0 ? 'text-red-400' : 'text-green-400')">
+                      {{ (candidateDetail.test_metrics?.totalReturn !== undefined && candidateDetail.test_metrics?.totalReturn !== null) || (candidateDetail.test_metrics?.total_return !== undefined && candidateDetail.test_metrics?.total_return !== null) ? formatPercent(candidateDetail.test_metrics.totalReturn ?? candidateDetail.test_metrics.total_return) : '—' }}
                     </td>
                   </tr>
                   <tr class="hover:bg-slate-800/20">
