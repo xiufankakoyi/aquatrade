@@ -27,6 +27,7 @@ from threading import Event
 from datetime import timedelta
 import time
 import os
+from pathlib import Path
 
 
 class OptimizedBacktestEngine:
@@ -55,6 +56,17 @@ class OptimizedBacktestEngine:
             self.commission_rate = commission_rate
         self._portfolio_value_cache = {}
         self.latest_factors = {}  # 存储回测结束时的最新复权因子
+        
+        # 【新增】可交易性过滤层：缓存 stock_limit_status 数据
+        self._limit_status_cache: Optional[pd.DataFrame] = None
+        self._limit_status_file_path = None
+        # 【新增】过滤统计：记录因各过滤条件被拦截的买入次数
+        self._filter_stats = {
+            'limit_up_blocked': 0,      # 因涨停(未开板)被拦截
+            'limit_down_blocked': 0,    # 因跌停被拦截
+            'suspended_blocked': 0,     # 因停牌被拦截
+            'total_blocked': 0          # 总拦截次数
+        }
         
 
     def _validate_dates(self, start_date, end_date) -> Tuple[str, str]:
@@ -212,6 +224,71 @@ class OptimizedBacktestEngine:
         
         return new_portfolio, new_cash
 
+    def _load_limit_status_data(self, date: str) -> Optional[pd.DataFrame]:
+        """
+        【新增】加载指定日期的股票涨跌停和停牌状态数据
+        
+        Args:
+            date: 交易日期字符串
+            
+        Returns:
+            DataFrame with columns: stock_code, trade_date, is_limit_up, is_limit_down, is_opened, is_suspended
+            如果文件不存在或加载失败，返回 None
+        """
+        from utils.logger import get_logger
+        logger = get_logger(__name__)
+        
+        # 确定 parquet 文件路径
+        if self._limit_status_file_path is None:
+            # 优先从 data_query 获取 parquet_dir，否则使用默认路径
+            parquet_dir = getattr(self.data_query, 'parquet_dir', None)
+            if parquet_dir is None:
+                parquet_dir = os.getenv('PARQUET_DIR', 'parquet_data')
+            
+            limit_status_path = Path(parquet_dir) / 'stock_limit_status.parquet'
+            self._limit_status_file_path = str(limit_status_path)
+        
+        # 检查文件是否存在
+        if not os.path.exists(self._limit_status_file_path):
+            logger.warning(f"stock_limit_status.parquet 文件不存在: {self._limit_status_file_path}，跳过可交易性过滤")
+            return None
+        
+        try:
+            # 如果已缓存全部数据，直接过滤
+            if self._limit_status_cache is not None:
+                date_df = self._limit_status_cache[
+                    self._limit_status_cache['trade_date'] == date
+                ]
+                return date_df if not date_df.empty else None
+            
+            # 否则，尝试加载指定日期的数据
+            # 使用 DuckDB 或 pandas 读取（优先使用 DuckDB，性能更好）
+            try:
+                import duckdb
+                conn = duckdb.connect()
+                parquet_str = self._limit_status_file_path.replace('\\', '/')
+                query = f"""
+                    SELECT stock_code, trade_date, is_limit_up, is_limit_down, is_opened, is_suspended
+                    FROM parquet_scan('{parquet_str}')
+                    WHERE trade_date = '{date}'
+                """
+                result = conn.execute(query).df()
+                conn.close()
+                
+                if not result.empty:
+                    return result
+                else:
+                    return None
+            except ImportError:
+                # 如果没有 duckdb，使用 pandas 读取
+                limit_status_df = pd.read_parquet(self._limit_status_file_path)
+                date_df = limit_status_df[limit_status_df['trade_date'] == date]
+                return date_df if not date_df.empty else None
+                
+        except Exception as e:
+            logger.warning(f"加载 stock_limit_status 数据失败 ({date}): {e}，跳过可交易性过滤")
+            return None
+    
     def _load_latest_factors_robust(self):
         """
         鲁棒方法加载最新复权因子
@@ -432,6 +509,14 @@ class OptimizedBacktestEngine:
         cash = self.initial_capital
         results_list = []
         all_trades_log = []
+        
+        # 【新增】重置过滤统计
+        self._filter_stats = {
+            'limit_up_blocked': 0,
+            'limit_down_blocked': 0,
+            'suspended_blocked': 0,
+            'total_blocked': 0
+        }
         
         # 【修复3】待执行的信号队列（解决未来函数问题：今日出信号，明日开盘买入）
         pending_signals: Dict[str, str] = {}  # {stock_code: signal}
@@ -707,6 +792,13 @@ class OptimizedBacktestEngine:
         # 7. 【产出】完成信号
         yield {"type": "stream_complete"}
         
+        # 【新增】输出可交易性过滤统计信息
+        logger.info("=== 可交易性过滤统计 ===")
+        logger.info(f"因涨停(未开板)被拦截: {self._filter_stats['limit_up_blocked']} 次")
+        logger.info(f"因跌停被拦截: {self._filter_stats['limit_down_blocked']} 次")
+        logger.info(f"因停牌被拦截: {self._filter_stats['suspended_blocked']} 次")
+        logger.info(f"总拦截次数: {self._filter_stats['total_blocked']} 次")
+        
         if use_preload:
             self.data_query.clear_preloaded_data()
     # --- 【【新增结束】】 ---
@@ -883,6 +975,66 @@ class OptimizedBacktestEngine:
 
         # === 2. 处理买入 ===
         buy_signals = [code for code, signal in signals.items() if signal == 'buy']
+        
+        # 【新增】可交易性过滤层：过滤掉不可交易的股票
+        if buy_signals:
+            limit_status_df = self._load_limit_status_data(date)
+            if limit_status_df is not None and not limit_status_df.empty:
+                # 创建状态映射字典，提高查找效率
+                status_map = {}
+                for _, row in limit_status_df.iterrows():
+                    code = str(row['stock_code'])
+                    status_map[code] = {
+                        'is_limit_up': bool(row.get('is_limit_up', 0)),
+                        'is_limit_down': bool(row.get('is_limit_down', 0)),
+                        'is_opened': bool(row.get('is_opened', 0)),
+                        'is_suspended': bool(row.get('is_suspended', 0))
+                    }
+                
+                # 过滤逻辑：
+                # 1. 过滤涨停且未开板：is_limit_up=True 且 is_opened=False
+                # 2. 过滤跌停：is_limit_down=True
+                # 3. 过滤停牌：is_suspended=True
+                # 4. 允许涨停但开过板：is_limit_up=True 且 is_opened=True（可以交易）
+                filtered_buy_signals = []
+                for code in buy_signals:
+                    code_str = str(code)
+                    if code_str not in status_map:
+                        # 如果找不到状态数据，默认允许交易（保守策略）
+                        filtered_buy_signals.append(code)
+                        continue
+                    
+                    status = status_map[code_str]
+                    blocked = False
+                    block_reason = None
+                    
+                    # 检查停牌
+                    if status['is_suspended']:
+                        blocked = True
+                        block_reason = 'suspended'
+                        self._filter_stats['suspended_blocked'] += 1
+                    
+                    # 检查跌停
+                    elif status['is_limit_down']:
+                        blocked = True
+                        block_reason = 'limit_down'
+                        self._filter_stats['limit_down_blocked'] += 1
+                    
+                    # 检查涨停（未开板）
+                    elif status['is_limit_up'] and not status['is_opened']:
+                        blocked = True
+                        block_reason = 'limit_up'
+                        self._filter_stats['limit_up_blocked'] += 1
+                    
+                    # 涨停但开过板：允许交易（is_limit_up=True 且 is_opened=True）
+                    # 这种情况不需要特殊处理，直接通过
+                    
+                    if not blocked:
+                        filtered_buy_signals.append(code)
+                    else:
+                        self._filter_stats['total_blocked'] += 1
+                
+                buy_signals = filtered_buy_signals
         
         # 【修复2+用户需求】仓位管理：策略参数优先，未提供则全仓买入所有信号
         # 检查策略是否提供了仓位管理参数
@@ -1082,6 +1234,14 @@ class OptimizedBacktestEngine:
         if abs(max_drawdown_v) > 1e-8:
             calmar_ratio_v = annualized_return_v / abs(max_drawdown_v)
 
+        # 【新增】添加可交易性过滤统计
+        filter_stats = {
+            "limitUpBlocked": self._filter_stats['limit_up_blocked'],
+            "limitDownBlocked": self._filter_stats['limit_down_blocked'],
+            "suspendedBlocked": self._filter_stats['suspended_blocked'],
+            "totalBlocked": self._filter_stats['total_blocked']
+        }
+        
         return {
             "totalReturn": round(total_return_v, 2),
             "annualizedReturn": round(annualized_return_v, 2),
@@ -1096,6 +1256,7 @@ class OptimizedBacktestEngine:
             "avgTradeReturn": 0, # 简化
             "maxWinningStreak": 0,
             "maxLosingStreak": 0,
+            "filterStats": filter_stats  # 【新增】可交易性过滤统计
         }
 
         
