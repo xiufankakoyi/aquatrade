@@ -110,6 +110,108 @@ class OptimizedBacktestEngine:
                 
         return df
 
+    def _handle_corporate_actions(
+        self, 
+        date: str, 
+        portfolio: Dict, 
+        cash: float, 
+        stock_pool_raw: Optional[pd.DataFrame]
+    ) -> Tuple[Dict, float]:
+        """
+        【核心修复 P1】处理除权除息事件（保守策略）
+        
+        问题：adj_factor 的变化可能由送股（Split）或分红（Dividend）引起，无法直接区分。
+        
+        保守策略：
+        1. 检测 adj_factor 变化和 Raw Price 变化的比例关系
+        2. 如果 Close_T / Close_T-1 ≈ 1 / Factor_Ratio，判定为拆股/送股，调整持仓股数
+        3. 否则，判定为分红或其他，直接忽略（保守原则：宁可少算分红，也不错误增加股数）
+        
+        Args:
+            date: 当前日期
+            portfolio: 当前持仓
+            cash: 当前现金
+            stock_pool_raw: 原始（不复权）股票池数据
+            
+        Returns:
+            (更新后的持仓, 更新后的现金)
+        """
+        if not portfolio or stock_pool_raw is None or stock_pool_raw.empty:
+            return portfolio, cash
+        
+        if 'adj_factor' not in stock_pool_raw.columns:
+            return portfolio, cash
+        
+        new_portfolio = portfolio.copy()
+        new_cash = cash
+        
+        # 获取持仓股票的 adj_factor 和价格
+        for stock_code in list(new_portfolio.keys()):
+            stock_data = stock_pool_raw[stock_pool_raw['stock_code'] == stock_code]
+            if stock_data.empty:
+                continue
+            
+            current_factor = stock_data.iloc[0]['adj_factor']
+            current_close = stock_data.iloc[0].get('close')
+            current_prev_close = stock_data.iloc[0].get('prev_close')
+            
+            if pd.isna(current_factor) or current_factor <= 0:
+                continue
+            
+            position = new_portfolio[stock_code]
+            entry_factor = position.get('entry_adj_factor', current_factor)  # 记录买入时的因子
+            entry_close = position.get('entry_close', current_close)  # 记录买入时的收盘价
+            
+            # 检测除权除息事件：如果当前因子与买入时因子不同，说明发生了除权除息
+            if abs(current_factor - entry_factor) > 1e-6:
+                # 计算复权比率
+                factor_ratio = current_factor / entry_factor if entry_factor > 0 else 1.0
+                
+                # 【保守策略】尝试区分送股和分红
+                # 送股特征：价格按比例下降，因子按比例上升，价格变化比例 ≈ 1 / 因子变化比例
+                is_likely_split = False
+                
+                if current_close is not None and entry_close is not None and entry_close > 0:
+                    price_ratio = current_close / entry_close
+                    expected_price_ratio = 1.0 / factor_ratio if factor_ratio > 0 else 1.0
+                    
+                    # 允许 5% 的误差（考虑市场波动）
+                    price_diff_ratio = abs(price_ratio - expected_price_ratio) / expected_price_ratio
+                    
+                    # 如果价格变化比例与因子变化比例匹配，判定为送股
+                    if factor_ratio > 1.0 and price_diff_ratio < 0.05:
+                        is_likely_split = True
+                
+                # 处理送股：按比例增加持仓股数
+                if is_likely_split and factor_ratio > 1.0:
+                    current_shares = position.get('shares', 0)
+                    if current_shares > 0:
+                        # 送股：持仓股数按比例增加
+                        new_shares = int(current_shares * factor_ratio)
+                        position['shares'] = new_shares
+                        # 更新持仓成本价（保持不变，因为送股不影响成本）
+                        # entry_price 保持不变
+                        from utils.logger import get_logger
+                        logger = get_logger(__name__)
+                        logger.info(
+                            f"[{date}] {stock_code} 送股事件：因子 {entry_factor:.4f} -> {current_factor:.4f}, "
+                            f"持仓 {current_shares} -> {new_shares} 股"
+                        )
+                
+                # 处理分红：保守策略 - 直接忽略
+                # 原因：
+                # 1. 无法准确区分分红和送股（仅靠 adj_factor 不够）
+                # 2. 错误地将分红当作送股会导致股数虚增，人为放大收益
+                # 3. 保守原则：宁可少算分红收益，也不错误增加股数
+                # TODO: 如果后续有 dividend_yield 或专门的除权除息表，可以精确处理分红
+                
+                # 更新持仓的 adj_factor 和收盘价记录
+                position['entry_adj_factor'] = current_factor
+                if current_close is not None:
+                    position['entry_close'] = current_close
+        
+        return new_portfolio, new_cash
+
     def _load_latest_factors_robust(self):
         """
         鲁棒方法加载最新复权因子
@@ -352,16 +454,22 @@ class OptimizedBacktestEngine:
                 # 4a. 获取当日股票池
                 t0 = time.time()
                 if use_preload:
-                    stock_pool = self.data_query.get_stock_pool_from_preloaded(current_date)
-                    if stock_pool is None:
-                        stock_pool = self.data_query.get_stock_pool(current_date)
+                    stock_pool_raw = self.data_query.get_stock_pool_from_preloaded(current_date)
+                    if stock_pool_raw is None:
+                        stock_pool_raw = self.data_query.get_stock_pool(current_date)
                 else:
-                    stock_pool = self.data_query.get_stock_pool(current_date)
+                    stock_pool_raw = self.data_query.get_stock_pool(current_date)
                 
+                # 【核心修复】分离信号层和交易层的价格使用
+                # 1. 保存原始（不复权）股票池，用于交易撮合和资金扣款
+                stock_pool_for_trading = stock_pool_raw.copy() if stock_pool_raw is not None and not stock_pool_raw.empty else None
+                
+                # 2. 对股票池应用前复权，用于信号生成（保证技术指标连续）
+                stock_pool = stock_pool_raw
                 if stock_pool is not None and not stock_pool.empty:
                     # 验证 adj_factor
                     if 'adj_factor' in stock_pool.columns:
-                        # 【核心修复】应用正确的前复权逻辑
+                        # 【核心修复】应用正确的前复权逻辑（仅用于信号生成）
                         stock_pool = self._apply_qfq(stock_pool)
                     else:
                         logger.warning(f"{current_date}: stock_pool 中缺少 adj_factor 列，无法进行复权转换")
@@ -396,16 +504,18 @@ class OptimizedBacktestEngine:
                     if pending_signals:
                         price_map_exec: Dict[str, Dict[str, float]] = {}
                         stock_codes_needed_exec = set(pending_signals.keys()) | set(portfolio.keys())
-                        if stock_codes_needed_exec and stock_pool is not None and not stock_pool.empty:
-                            mask = stock_pool['stock_code'].isin(stock_codes_needed_exec)
+                        # 【核心修复】使用原始（不复权）价格进行交易撮合
+                        pool_for_price = stock_pool_for_trading if stock_pool_for_trading is not None and not stock_pool_for_trading.empty else stock_pool
+                        if stock_codes_needed_exec and pool_for_price is not None and not pool_for_price.empty:
+                            mask = pool_for_price['stock_code'].isin(stock_codes_needed_exec)
                             if mask.any():
                                 cols = ['stock_code']
-                                if 'open' in stock_pool.columns:
+                                if 'open' in pool_for_price.columns:
                                     cols.append('open')
-                                if 'close' in stock_pool.columns:
+                                if 'close' in pool_for_price.columns:
                                     cols.append('close')
                                 
-                                price_df = stock_pool.loc[mask, cols].drop_duplicates(subset=['stock_code'])
+                                price_df = pool_for_price.loc[mask, cols].drop_duplicates(subset=['stock_code'])
                                 
                                 codes = price_df['stock_code'].to_numpy()
                                 opens = price_df['open'].to_numpy() if 'open' in price_df.columns else None
@@ -416,6 +526,7 @@ class OptimizedBacktestEngine:
                                     c = closes[i] if closes is not None else None
                                     if o is None: o = c
                                     if c is None: c = o
+                                    # 【核心修复】使用原始（不复权）价格进行交易撮合和资金扣款
                                     price_map_exec[str(code)] = {
                                         'open': float(o) if o is not None else None,
                                         'close': float(c) if c is not None else None,
@@ -423,7 +534,8 @@ class OptimizedBacktestEngine:
                         
                         try:
                             portfolio, cash, daily_trades = self.execute_trades(
-                                current_date, pending_signals, portfolio, cash, price_map_exec, strategy
+                                current_date, pending_signals, portfolio, cash, price_map_exec, strategy,
+                                stock_pool_raw=stock_pool_for_trading
                             )
                         except Exception as e:
                             logger.error(f"执行上一交易日信号失败 ({current_date}): {e}")
@@ -436,16 +548,18 @@ class OptimizedBacktestEngine:
                         # 准备价格映射（使用当日开盘价执行交易）
                         price_map_exec: Dict[str, Dict[str, float]] = {}
                         stock_codes_needed_exec = set(signals.keys()) | set(portfolio.keys())
-                        if stock_codes_needed_exec and stock_pool is not None and not stock_pool.empty:
-                            mask = stock_pool['stock_code'].isin(stock_codes_needed_exec)
+                        # 【核心修复】使用原始（不复权）价格进行交易撮合
+                        pool_for_price = stock_pool_for_trading if stock_pool_for_trading is not None and not stock_pool_for_trading.empty else stock_pool
+                        if stock_codes_needed_exec and pool_for_price is not None and not pool_for_price.empty:
+                            mask = pool_for_price['stock_code'].isin(stock_codes_needed_exec)
                             if mask.any():
                                 cols = ['stock_code']
-                                if 'open' in stock_pool.columns:
+                                if 'open' in pool_for_price.columns:
                                     cols.append('open')
-                                if 'close' in stock_pool.columns:
+                                if 'close' in pool_for_price.columns:
                                     cols.append('close')
                                 
-                                price_df = stock_pool.loc[mask, cols].drop_duplicates(subset=['stock_code'])
+                                price_df = pool_for_price.loc[mask, cols].drop_duplicates(subset=['stock_code'])
                                 
                                 codes = price_df['stock_code'].to_numpy()
                                 opens = price_df['open'].to_numpy() if 'open' in price_df.columns else None
@@ -456,7 +570,7 @@ class OptimizedBacktestEngine:
                                     c = closes[i] if closes is not None else None
                                     if o is None: o = c
                                     if c is None: c = o
-                                    # 使用开盘价执行交易（避免偷价）
+                                    # 【核心修复】使用原始（不复权）价格进行交易撮合和资金扣款
                                     price_map_exec[str(code)] = {
                                         'open': float(o) if o is not None else None,
                                         'close': float(c) if c is not None else None,
@@ -464,27 +578,37 @@ class OptimizedBacktestEngine:
                         
                         try:
                             portfolio, cash, daily_trades = self.execute_trades(
-                                current_date, signals, portfolio, cash, price_map_exec, strategy
+                                current_date, signals, portfolio, cash, price_map_exec, strategy,
+                                stock_pool_raw=stock_pool_for_trading
                             )
                         except Exception as e:
                             logger.error(f"执行当日信号失败 ({current_date}): {e}")
                             daily_trades = []
                 t_exec_duration = time.time() - t_exec
 
-                # 4d. 准备价格映射（用于市值计算，使用收盘价）
+                # 4d. 处理除权除息事件（在市值计算之前）
+                # 【核心修复】检测并处理除权除息事件
+                portfolio, cash = self._handle_corporate_actions(
+                    current_date, portfolio, cash, stock_pool_for_trading
+                )
+                
+                # 4e. 准备价格映射（用于市值计算，必须使用原始收盘价）
                 t2 = time.time()
                 price_map: Dict[str, Dict[str, float]] = {}
                 stock_codes_needed = set(portfolio.keys())  # 只需要持仓股票的价格用于市值计算
-                if stock_codes_needed and stock_pool is not None and not stock_pool.empty:
-                    mask = stock_pool['stock_code'].isin(stock_codes_needed)
+                # 【核心修复 P0】市值计算必须使用原始价格（Raw Price）
+                # 持仓股数是真实的物理股数，必须乘以真实收盘价，这才是账户里真金白银的钱
+                pool_for_market_value = stock_pool_for_trading if stock_pool_for_trading is not None and not stock_pool_for_trading.empty else stock_pool
+                if stock_codes_needed and pool_for_market_value is not None and not pool_for_market_value.empty:
+                    mask = pool_for_market_value['stock_code'].isin(stock_codes_needed)
                     if mask.any():
                         cols = ['stock_code']
-                        if 'open' in stock_pool.columns:
+                        if 'open' in pool_for_market_value.columns:
                             cols.append('open')
-                        if 'close' in stock_pool.columns:
+                        if 'close' in pool_for_market_value.columns:
                             cols.append('close')
                         
-                        price_df = stock_pool.loc[mask, cols].drop_duplicates(subset=['stock_code'])
+                        price_df = pool_for_market_value.loc[mask, cols].drop_duplicates(subset=['stock_code'])
                         
                         codes = price_df['stock_code'].to_numpy()
                         opens = price_df['open'].to_numpy() if 'open' in price_df.columns else None
@@ -495,6 +619,8 @@ class OptimizedBacktestEngine:
                             c = closes[i] if closes is not None else None
                             if o is None: o = c
                             if c is None: c = o
+                            # 【核心修复 P0】市值计算必须使用原始价格（Raw Price）
+                            # Market Value = Real Shares * Raw Close Price
                             price_map[str(code)] = {
                                 'open': float(o) if o is not None else None,
                                 'close': float(c) if c is not None else None,
@@ -639,7 +765,8 @@ class OptimizedBacktestEngine:
         portfolio: Dict, 
         cash: float, 
         price_map: Dict[str, float],
-        strategy=None
+        strategy=None,
+        stock_pool_raw: Optional[pd.DataFrame] = None
     ) -> Tuple[Dict, float, List[Dict]]:
         """
         执行交易
@@ -838,11 +965,24 @@ class OptimizedBacktestEngine:
                         available_cash -= cost
                         position_id = f"{stock_code}_{date}"
                         
+                        # 【核心修复 P1】记录买入时的 adj_factor 和收盘价，用于后续除权除息处理
+                        entry_adj_factor = None
+                        entry_close = None
+                        if stock_pool_raw is not None and not stock_pool_raw.empty:
+                            stock_data = stock_pool_raw[stock_pool_raw['stock_code'] == stock_code]
+                            if not stock_data.empty:
+                                if 'adj_factor' in stock_data.columns:
+                                    entry_adj_factor = stock_data.iloc[0]['adj_factor']
+                                if 'close' in stock_data.columns:
+                                    entry_close = stock_data.iloc[0]['close']
+                        
                         new_portfolio[stock_code] = {
                             "shares": shares,
                             "entry_price": current_price,
                             "entry_date": date,
                             "position_id": position_id,
+                            "entry_adj_factor": entry_adj_factor,  # 记录买入时的复权因子
+                            "entry_close": entry_close,  # 记录买入时的收盘价（用于区分送股和分红）
                         }
                         
                         daily_trades.append({

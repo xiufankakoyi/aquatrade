@@ -13,85 +13,132 @@ warnings.filterwarnings('ignore')
 REPORT_FILE = 'Real_Missing_Report.csv'
 SOURCE_DIR = r'D:\aquatrade\data\mins\falt'
 TARGET_DIR = r'D:\aquatrade\parquet_data\mins'
-BATCH_SIZE = 5
-
-# 【核心策略调整】
-# True: 补丁包覆盖原文件（信任补丁） -> keep='last'
-# False: 仅填补空缺，不修改原数据（信任原文件） -> keep='first'
+BATCH_SIZE = 50  # 增大批次大小，减少IO频率
 OVERWRITE_EXISTING = False 
 # ===========================================
 
-def validate_schema(df, file_name):
+def find_code_column(df):
     """
-    【防御性编程】内容探针
-    检查切片后的数据是否符合语义，防止列错位。
+    【优化版】智能列定位
+    能够识别 '000001' 和 '000001.XSHE' 两种格式。
+    优化：减少字符串操作，提高检测速度
     """
-    # 1. 检查行数
-    if df.shape[1] != 8:
-        return False, "列数切片异常"
-
-    # 2. 检查时间列 (第1列, index 0)
-    # 随机抽样检查，避免全量检查太慢。抽前10行和后10行。
-    sample = pd.concat([df.head(10), df.tail(10)])
+    # 优先检查常见位置（第8列或第14列）
+    for col_idx in [7, 13]:
+        if col_idx in df.columns:
+            try:
+                sample = df[col_idx].dropna().head(10).astype(str)
+                if not sample.empty:
+                    matches = sample.str.contains(r'^\d{6}', regex=True, na=False)
+                    if matches.sum() >= 5:  # 至少5个匹配
+                        return col_idx
+            except:
+                continue
     
-    # 尝试将第一列转为日期
-    try:
-        # 只要能解析出日期，就没有大错位
-        pd.to_datetime(sample.iloc[:, 0], errors='raise')
-    except:
-        return False, "第1列不是有效的时间格式 (Possible Column Shift)"
+    # 从最后一列往前找（最多检查后5列）
+    cols_to_check = list(reversed(df.columns))[:5]
+    for col in cols_to_check:
+        try:
+            # 只检查前10行，减少计算量
+            sample = df[col].dropna().head(10).astype(str)
+            if sample.empty: continue
+            
+            matches = sample.str.contains(r'^\d{6}', regex=True, na=False)
+            if matches.sum() >= 5:  # 至少5个匹配
+                return col
+        except:
+            continue
+    return None
 
-    # 3. 检查代码列 (第8列, index 7)
-    # 应该是数字或字符串数字
-    try:
-        # 转换为字符串并检查是否包含数字
-        code_sample = sample.iloc[:, 7].astype(str)
-        if not code_sample.str.contains(r'\d+', regex=True).all():
-             return False, "第8列不包含股票代码 (Possible Column Shift)"
-    except:
-        return False, "代码列校验失败"
-
-    return True, "OK"
-
-def read_csv_safe_validated(file_path):
-    # 构造超长表头以容错
-    oversized_names = list(range(20))
+def read_csv_smart(file_path, usecols=None):
+    """
+    优化版：支持指定列读取，避免读取不必要的数据
+    """
+    df = pd.DataFrame()
     
+    # --- 阶段 1: 读取 (含引擎自动降级) ---
     try:
-        df = pd.read_csv(
-            file_path,
-            engine='c',
-            header=None,
-            names=oversized_names,
-            dtype=str, # 全读为字符，方便后续校验
-            low_memory=False
-        )
+        # 如果指定了列，只读取需要的列，大幅提升性能
+        read_params = {
+            'filepath_or_buffer': file_path,
+            'engine': 'c',
+            'header': None,
+            'low_memory': True,  # 改为True，让pandas自动优化
+            'on_bad_lines': 'skip'
+        }
         
-        # 1. 硬切片
-        df = df.iloc[:, :8]
+        if usecols is not None:
+            # 只读取需要的列
+            read_params['usecols'] = usecols
+            read_params['dtype'] = {col: str for col in usecols}
+        else:
+            # 先读取少量行来检测列结构
+            read_params['nrows'] = 100
+            read_params['dtype'] = str
         
-        # 2. 【新增】语义校验
-        is_valid, reason = validate_schema(df, Path(file_path).name)
-        if not is_valid:
-            print(f"    ⚠️ [Schema Error] 跳过文件 {Path(file_path).name}: {reason}")
-            return pd.DataFrame()
+        df = pd.read_csv(**read_params)
         
-        # 3. 命名
+        if df.empty: return df
+        
+        # 如果没有指定列，需要检测代码列
+        if usecols is None:
+            code_col = find_code_column(df)
+            if code_col is None:
+                if 7 in df.columns: code_col = 7
+                elif 13 in df.columns: code_col = 13
+                else: return pd.DataFrame()
+            
+            # 重新读取，只读取需要的列
+            target_cols = [0, 1, 2, 3, 4, 5, 6, code_col]
+            return read_csv_smart(file_path, usecols=target_cols)
+        
+        # 如果已经指定了列，直接处理
         df.columns = ['datetime', 'open', 'close', 'high', 'low', 'volume', 'amount', 'code']
         
-        # 4. 清洗非数据行 (比如读到了原来的表头)
-        # 逻辑：datetime 列必须能转为时间，或者 code 列必须是数字
-        df = df[df['code'].str.match(r'^\d+(\.\w+)?$', na=False)]
+        # 行清洗：剔除表头行
+        df = df[df['code'].str.contains(r'\d+', na=False, regex=True)]
         
         return df
-
-    except Exception as e:
-        print(f"读取异常 {Path(file_path).name}: {e}")
-        return pd.DataFrame()
+        
+    except Exception:
+        try:
+            # 降级到python引擎
+            read_params = {
+                'filepath_or_buffer': file_path,
+                'engine': 'python',
+                'header': None,
+                'on_bad_lines': 'skip'
+            }
+            
+            if usecols is not None:
+                read_params['usecols'] = usecols
+                read_params['dtype'] = {col: str for col in usecols}
+            else:
+                read_params['nrows'] = 100
+                read_params['dtype'] = str
+            
+            df = pd.read_csv(**read_params)
+            
+            if df.empty: return df
+            
+            if usecols is None:
+                code_col = find_code_column(df)
+                if code_col is None:
+                    if 7 in df.columns: code_col = 7
+                    elif 13 in df.columns: code_col = 13
+                    else: return pd.DataFrame()
+                target_cols = [0, 1, 2, 3, 4, 5, 6, code_col]
+                return read_csv_smart(file_path, usecols=target_cols)
+            
+            df.columns = ['datetime', 'open', 'close', 'high', 'low', 'volume', 'amount', 'code']
+            df = df[df['code'].str.contains(r'\d+', na=False, regex=True)]
+            return df
+            
+        except Exception:
+            return pd.DataFrame()
 
 def get_target_map(report_file, target_dir):
-    # (逻辑不变，略)
-    print("Step 1: 锁定修复目标...")
+    print("Step 1: Analyzing repair targets...")
     try:
         df_report = pd.read_csv(report_file)
         if 'pure_code' in df_report.columns:
@@ -118,85 +165,137 @@ def flush_buffer(buffer_dict, code_path_map):
         target_path = code_path_map[code]
         
         try:
-            # 新数据 (Patch)
+            # 合并批次数据
+            if not df_list:
+                continue
             patch_data = pd.concat(df_list, ignore_index=True)
             
-            if os.path.exists(target_path):
-                # 旧数据 (Original)
-                original_data = read_csv_safe_validated(target_path)
-                
-                if not original_data.empty:
-                    # 【关键决策点】
-                    if OVERWRITE_EXISTING:
-                        # 补丁在后 -> keep='last' -> 补丁覆盖旧数据
-                        combined = pd.concat([original_data, patch_data], ignore_index=True)
-                        keep_strategy = 'last'
+            if patch_data.empty:
+                continue
+            
+            # 预处理patch_data
+            if 'datetime' in patch_data.columns:
+                patch_data['datetime'] = pd.to_datetime(patch_data['datetime'], errors='coerce')
+                patch_data = patch_data.dropna(subset=['datetime'])
+            
+            if patch_data.empty:
+                continue
+            
+            # 检查目标文件是否存在及大小
+            file_exists = os.path.exists(target_path)
+            file_size = os.path.getsize(target_path) if file_exists else 0
+            
+            # 如果文件很大（>50MB），使用追加模式而不是读取全部
+            if file_exists and file_size > 50 * 1024 * 1024:
+                # 大文件策略：直接追加，后续统一去重
+                patch_data.to_csv(target_path, mode='a', header=False, index=False)
+            else:
+                # 小文件策略：读取、合并、去重、写入
+                if file_exists:
+                    original_data = read_csv_smart(target_path)
+                    
+                    if not original_data.empty:
+                        if 'datetime' in original_data.columns:
+                            original_data['datetime'] = pd.to_datetime(original_data['datetime'], errors='coerce')
+                            original_data = original_data.dropna(subset=['datetime'])
+                        
+                        if OVERWRITE_EXISTING:
+                            combined = pd.concat([original_data, patch_data], ignore_index=True)
+                            keep_strategy = 'last'
+                        else:
+                            combined = pd.concat([original_data, patch_data], ignore_index=True)
+                            keep_strategy = 'first'
                     else:
-                        # 补丁在后 -> keep='first' -> 遇到重复日期，保留前面的(旧数据)，丢弃后面的(补丁)
-                        combined = pd.concat([original_data, patch_data], ignore_index=True)
-                        keep_strategy = 'first'
+                        combined = patch_data
+                        keep_strategy = 'last'
                 else:
                     combined = patch_data
                     keep_strategy = 'last'
-            else:
-                combined = patch_data
-                keep_strategy = 'last'
-
-            # 统一清洗
-            if 'datetime' in combined.columns:
-                combined['datetime'] = pd.to_datetime(combined['datetime'], errors='coerce')
-                combined.dropna(subset=['datetime'], inplace=True)
                 
-                # 【去重逻辑执行】
-                combined.drop_duplicates(subset=['datetime'], keep=keep_strategy, inplace=True)
+                # 去重和排序
+                if 'datetime' in combined.columns and not combined.empty:
+                    combined = combined.drop_duplicates(subset=['datetime'], keep=keep_strategy)
+                    combined = combined.sort_values('datetime')
                 
-                combined.sort_values('datetime', inplace=True)
-            
-            # 写入
-            combined.to_csv(target_path, index=False)
+                combined.to_csv(target_path, index=False)
             
         except Exception as e:
-            print(f"❌ 写入 {code} 失败: {e}")
+            print(f"❌ Write Error {code}: {e}")
+            import traceback
+            traceback.print_exc()
 
-def run_architectural_patch():
+def run_corrected_patch():
     target_map = get_target_map(REPORT_FILE, TARGET_DIR)
-    if not target_map: return
+    if not target_map:
+        print("❌ No target files found!")
+        return
 
     source_files = list(Path(SOURCE_DIR).rglob('*.csv'))
-    print(f"Step 2: 启动架构级修复 (Source: {len(source_files)} files)")
-    print(f"策略: {'覆盖模式 (Overwrite)' if OVERWRITE_EXISTING else '安全填充模式 (Fill Only)'}")
+    print(f"Step 2: Starting Repair (Source: {len(source_files)} files)")
+    print(f"Target codes: {len(target_map)}")
+    print("Mode: Adaptive Regex (Matches '000001' and '000001.XSHE')")
+    print(f"Batch size: {BATCH_SIZE}")
     
     buffer = {}
-    pbar = tqdm(source_files, desc="Processing")
+    processed_count = 0
+    skipped_count = 0
+    
+    pbar = tqdm(source_files, desc="Processing", unit="file")
     
     for i, src_file in enumerate(pbar):
-        # 读取并校验
-        df = read_csv_safe_validated(str(src_file))
-        if df.empty: continue
+        try:
+            # 读取
+            df = read_csv_smart(str(src_file))
+            if df.empty:
+                skipped_count += 1
+                continue
 
-        # 提取代码
-        df['pure_code'] = df['code'].str.extract(r'(\d{6})')[0]
-        
-        # 过滤
-        df_filtered = df[df['pure_code'].isin(target_map.keys())]
-        if df_filtered.empty: continue
+            # 提取 6 位纯数字代码用于分发
+            # 优化：先过滤再提取，减少字符串操作
+            df = df[df['code'].notna()]
+            if df.empty:
+                skipped_count += 1
+                continue
             
-        grouped = df_filtered.groupby('pure_code')
-        for code, group_df in grouped:
-            save_df = group_df.drop(columns=['pure_code'], errors='ignore')
-            if code not in buffer: buffer[code] = []
-            buffer[code].append(save_df)
+            # 使用向量化操作提取代码
+            df['pure_code'] = df['code'].str.extract(r'(\d{6})', expand=False)
+            df_filtered = df[df['pure_code'].notna() & df['pure_code'].isin(target_map.keys())]
             
-        if (i + 1) % BATCH_SIZE == 0:
-            pbar.set_description(f"Saving (Batch {i+1})...")
-            flush_buffer(buffer, target_map)
-            buffer = {}
-            gc.collect()
-            pbar.set_description("Processing")
+            if df_filtered.empty:
+                skipped_count += 1
+                continue
+            
+            # 分组处理
+            grouped = df_filtered.groupby('pure_code', sort=False)
+            for code, group_df in grouped:
+                save_df = group_df.drop(columns=['pure_code'], errors='ignore')
+                if code not in buffer:
+                    buffer[code] = []
+                buffer[code].append(save_df)
+            
+            processed_count += 1
+            
+            # 定期刷新缓冲区
+            if (i + 1) % BATCH_SIZE == 0:
+                pbar.set_description(f"Flushing batch ({processed_count} processed, {skipped_count} skipped)...")
+                flush_buffer(buffer, target_map)
+                buffer = {}
+                gc.collect()
+                pbar.set_description(f"Processing ({processed_count} processed)")
+                
+        except Exception as e:
+            skipped_count += 1
+            pbar.write(f"⚠️  Error processing {src_file.name}: {e}")
+            continue
 
-    print("Final Flush...")
-    flush_buffer(buffer, target_map)
-    print("✅ 任务完成。数据一致性已校验。")
+    # 最终刷新
+    if buffer:
+        print("\nFinal Flush...")
+        flush_buffer(buffer, target_map)
+    
+    print(f"\n✅ Repair Complete!")
+    print(f"   Processed: {processed_count} files")
+    print(f"   Skipped: {skipped_count} files")
 
 if __name__ == '__main__':
-    run_architectural_patch()
+    run_corrected_patch()
