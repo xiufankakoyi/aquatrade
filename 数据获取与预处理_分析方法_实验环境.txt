@@ -50,3 +50,4 @@
 
 实验环境：Windows 10操作系统，Python 3.8+，主要库包括Selenium 4.0+（用于网页爬取）、Pandas 1.3+（用于数据处理）、NumPy 1.20+（用于数值计算）、Scikit-learn 1.0+（用于K-Means聚类）、Gensim 4.0+（用于LDA主题建模）、SnowNLP 0.12+（用于情感分析）、Transformers 4.0+（用于RoBERTa模型）、Matplotlib 3.5+（用于后端可视化）、ECharts 5.0+（用于前端可视化）等。数据库采用SQLite存储结构化数据，前端框架采用Vue.js 3.0+，后端框架采用Flask 2.0+。
 
+
