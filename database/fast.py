@@ -13,8 +13,9 @@ warnings.filterwarnings('ignore')
 REPORT_FILE = 'Real_Missing_Report.csv'
 SOURCE_DIR = r'D:\aquatrade\data\mins\falt'
 TARGET_DIR = r'D:\aquatrade\parquet_data\mins'
-BATCH_SIZE = 50  # 增大批次大小，减少IO频率
+BATCH_SIZE = 10  # 减小批次，避免内存爆炸
 OVERWRITE_EXISTING = False 
+MEMORY_SAFE_MODE = True  # 内存安全模式：所有文件都使用追加，避免读取大文件
 # ===========================================
 
 def find_code_column(df):
@@ -158,6 +159,9 @@ def get_target_map(report_file, target_dir):
     return code_path_map
 
 def flush_buffer(buffer_dict, code_path_map):
+    """
+    内存安全版本：所有文件都使用追加模式，避免读取大文件导致内存爆炸
+    """
     if not buffer_dict: return
     
     for code, df_list in buffer_dict.items():
@@ -165,15 +169,37 @@ def flush_buffer(buffer_dict, code_path_map):
         target_path = code_path_map[code]
         
         try:
-            # 合并批次数据
             if not df_list:
                 continue
-            patch_data = pd.concat(df_list, ignore_index=True)
+            
+            # 分批合并，避免一次性concat太多数据
+            # 每次只合并少量数据，减少内存峰值
+            chunk_size = 5  # 每次合并5个DataFrame
+            all_chunks = []
+            
+            for i in range(0, len(df_list), chunk_size):
+                chunk = df_list[i:i+chunk_size]
+                if chunk:
+                    merged_chunk = pd.concat(chunk, ignore_index=True)
+                    all_chunks.append(merged_chunk)
+                    del chunk
+                    gc.collect()
+            
+            # 如果只有一个chunk，直接使用；否则再次合并
+            if len(all_chunks) == 1:
+                patch_data = all_chunks[0]
+            elif len(all_chunks) > 1:
+                patch_data = pd.concat(all_chunks, ignore_index=True)
+            else:
+                continue
+            
+            del all_chunks
+            gc.collect()
             
             if patch_data.empty:
                 continue
             
-            # 预处理patch_data
+            # 预处理patch_data（只处理datetime列，不加载其他数据）
             if 'datetime' in patch_data.columns:
                 patch_data['datetime'] = pd.to_datetime(patch_data['datetime'], errors='coerce')
                 patch_data = patch_data.dropna(subset=['datetime'])
@@ -181,44 +207,62 @@ def flush_buffer(buffer_dict, code_path_map):
             if patch_data.empty:
                 continue
             
-            # 检查目标文件是否存在及大小
+            # 内存安全模式：所有文件都使用追加模式
+            # 不读取现有文件，避免内存爆炸
+            # 后续可以单独运行去重脚本
             file_exists = os.path.exists(target_path)
-            file_size = os.path.getsize(target_path) if file_exists else 0
             
-            # 如果文件很大（>50MB），使用追加模式而不是读取全部
-            if file_exists and file_size > 50 * 1024 * 1024:
-                # 大文件策略：直接追加，后续统一去重
-                patch_data.to_csv(target_path, mode='a', header=False, index=False)
-            else:
-                # 小文件策略：读取、合并、去重、写入
+            if MEMORY_SAFE_MODE:
+                # 直接追加，不读取现有文件
                 if file_exists:
-                    original_data = read_csv_smart(target_path)
-                    
-                    if not original_data.empty:
-                        if 'datetime' in original_data.columns:
-                            original_data['datetime'] = pd.to_datetime(original_data['datetime'], errors='coerce')
-                            original_data = original_data.dropna(subset=['datetime'])
-                        
-                        if OVERWRITE_EXISTING:
-                            combined = pd.concat([original_data, patch_data], ignore_index=True)
-                            keep_strategy = 'last'
-                        else:
-                            combined = pd.concat([original_data, patch_data], ignore_index=True)
-                            keep_strategy = 'first'
-                    else:
-                        combined = patch_data
-                        keep_strategy = 'last'
+                    # 追加模式，不读取原文件
+                    patch_data.to_csv(target_path, mode='a', header=False, index=False)
                 else:
-                    combined = patch_data
-                    keep_strategy = 'last'
-                
-                # 去重和排序
-                if 'datetime' in combined.columns and not combined.empty:
-                    combined = combined.drop_duplicates(subset=['datetime'], keep=keep_strategy)
-                    combined = combined.sort_values('datetime')
-                
-                combined.to_csv(target_path, index=False)
+                    # 新文件，写入header
+                    patch_data.to_csv(target_path, mode='w', header=True, index=False)
+            else:
+                # 旧模式（仅用于小文件）
+                file_size = os.path.getsize(target_path) if file_exists else 0
+                if file_exists and file_size > 10 * 1024 * 1024:  # 10MB阈值
+                    patch_data.to_csv(target_path, mode='a', header=False, index=False)
+                else:
+                    if file_exists:
+                        original_data = read_csv_smart(target_path)
+                        if not original_data.empty:
+                            if 'datetime' in original_data.columns:
+                                original_data['datetime'] = pd.to_datetime(original_data['datetime'], errors='coerce')
+                                original_data = original_data.dropna(subset=['datetime'])
+                            
+                            keep_strategy = 'last' if OVERWRITE_EXISTING else 'first'
+                            combined = pd.concat([original_data, patch_data], ignore_index=True)
+                            combined = combined.drop_duplicates(subset=['datetime'], keep=keep_strategy)
+                            combined = combined.sort_values('datetime')
+                            combined.to_csv(target_path, index=False)
+                            del original_data, combined
+                        else:
+                            patch_data.to_csv(target_path, index=False)
+                    else:
+                        patch_data.to_csv(target_path, index=False)
             
+            del patch_data
+            gc.collect()
+            
+        except MemoryError as e:
+            print(f"❌ Memory Error {code}: {e}")
+            print(f"   Trying to write directly without merge...")
+            # 如果内存不足，尝试直接写入每个DataFrame
+            try:
+                file_exists = os.path.exists(target_path)
+                for idx, df in enumerate(df_list):
+                    if not df.empty:
+                        if file_exists and idx == 0:
+                            df.to_csv(target_path, mode='a', header=False, index=False)
+                        elif not file_exists and idx == 0:
+                            df.to_csv(target_path, mode='w', header=True, index=False)
+                        else:
+                            df.to_csv(target_path, mode='a', header=False, index=False)
+            except Exception as e2:
+                print(f"❌ Write Error {code}: {e2}")
         except Exception as e:
             print(f"❌ Write Error {code}: {e}")
             import traceback
