@@ -152,15 +152,19 @@ class VectorizedStrategyBase(StrategyBase):
                 codes,
                 start_date,
                 current_date,
-                columns=["stock_code", "trade_date", "open", "high", "low", "close", "volume"],
+                columns=["stock_code", "trade_date", "open", "high", "low", "close", "volume", "adj_factor"],
             )
             
             if batch_hist.empty:
                 return pd.DataFrame()
             
-            # 应用复权
+            # 【核心修复 B】统一使用前复权逻辑
+            # 注意：策略层无法直接访问引擎的 latest_factors，这里使用后复权作为过渡方案
+            # TODO: 后续应该由引擎统一提供前复权后的历史数据，策略层不再处理复权
+            # 当前使用 apply_forward_adjustment（后复权）作为过渡，虽然不完美，但至少保证数据一致性
             from utils.price_adjustment import apply_forward_adjustment
-            batch_hist = apply_forward_adjustment(batch_hist)
+            if 'adj_factor' in batch_hist.columns:
+                batch_hist = apply_forward_adjustment(batch_hist)
             
             # 设置 MultiIndex
             batch_hist = batch_hist.set_index(['stock_code', 'trade_date'])

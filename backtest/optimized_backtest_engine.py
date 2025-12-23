@@ -114,11 +114,14 @@ class OptimizedBacktestEngine:
         # 5. 计算前复权比率
         qfq_ratio = df['adj_factor'] / latest_factor_series
         
-        # 6. 应用比率到价格列
-        price_cols = ['open', 'high', 'low', 'close', 'prev_close']
+        # 6. 应用比率到价格列（包括所有价格相关的预计算指标）
+        # 【核心修复】不仅调整 O/H/L/C，必须同时调整 ma5, ma10, ma20 以及所有价格相关的预计算指标
+        price_cols = ['open', 'high', 'low', 'close', 'prev_close', 
+                      'ma5', 'ma10', 'ma20', 'ma60',  # 均线指标
+                      'ma3_avg_price', 'ma5_avg_price', 'ma10_avg_price']  # 其他价格相关指标
         for col in price_cols:
             if col in df.columns:
-                df[col] = df[col] * qfq_ratio
+                df[col] = pd.to_numeric(df[col], errors='coerce') * qfq_ratio
                 
         return df
 
@@ -599,12 +602,15 @@ class OptimizedBacktestEngine:
                                     cols.append('open')
                                 if 'close' in pool_for_price.columns:
                                     cols.append('close')
+                                if 'limit_down' in pool_for_price.columns:
+                                    cols.append('limit_down')
                                 
                                 price_df = pool_for_price.loc[mask, cols].drop_duplicates(subset=['stock_code'])
                                 
                                 codes = price_df['stock_code'].to_numpy()
                                 opens = price_df['open'].to_numpy() if 'open' in price_df.columns else None
                                 closes = price_df['close'].to_numpy() if 'close' in price_df.columns else None
+                                limit_downs = price_df['limit_down'].to_numpy() if 'limit_down' in price_df.columns else None
 
                                 for i, code in enumerate(codes):
                                     o = opens[i] if opens is not None else None
@@ -616,6 +622,9 @@ class OptimizedBacktestEngine:
                                         'open': float(o) if o is not None else None,
                                         'close': float(c) if c is not None else None,
                                     }
+                                    # 【核心修复】保留 limit_down 用于撮合校验
+                                    if limit_downs is not None:
+                                        price_map_exec[str(code)]['limit_down'] = float(limit_downs[i]) if not pd.isna(limit_downs[i]) else None
                         
                         try:
                             portfolio, cash, daily_trades = self.execute_trades(
@@ -643,12 +652,15 @@ class OptimizedBacktestEngine:
                                     cols.append('open')
                                 if 'close' in pool_for_price.columns:
                                     cols.append('close')
+                                if 'limit_down' in pool_for_price.columns:
+                                    cols.append('limit_down')
                                 
                                 price_df = pool_for_price.loc[mask, cols].drop_duplicates(subset=['stock_code'])
                                 
                                 codes = price_df['stock_code'].to_numpy()
                                 opens = price_df['open'].to_numpy() if 'open' in price_df.columns else None
                                 closes = price_df['close'].to_numpy() if 'close' in price_df.columns else None
+                                limit_downs = price_df['limit_down'].to_numpy() if 'limit_down' in price_df.columns else None
 
                                 for i, code in enumerate(codes):
                                     o = opens[i] if opens is not None else None
@@ -660,6 +672,9 @@ class OptimizedBacktestEngine:
                                         'open': float(o) if o is not None else None,
                                         'close': float(c) if c is not None else None,
                                     }
+                                    # 【核心修复】保留 limit_down 用于撮合校验
+                                    if limit_downs is not None:
+                                        price_map_exec[str(code)]['limit_down'] = float(limit_downs[i]) if not pd.isna(limit_downs[i]) else None
                         
                         try:
                             portfolio, cash, daily_trades = self.execute_trades(
@@ -907,6 +922,16 @@ class OptimizedBacktestEngine:
                     position = new_portfolio[stock_code]
                     current_price = resolve_price(stock_code, 'sell')
                     if current_price is None or current_price <= 0: continue
+                    
+                    # 【核心修复 C】跌停板风控：检查是否跌停，跌停时禁止卖出
+                    price_data = price_map.get(stock_code)
+                    if isinstance(price_data, dict):
+                        limit_down_price = price_data.get('limit_down')
+                        if limit_down_price is not None and current_price <= limit_down_price:
+                            logger.warning(f"[{date}] {stock_code} 跌停锁死（当前价 {current_price:.2f} <= 跌停价 {limit_down_price:.2f}），无法卖出")
+                            self._filter_stats['limit_down_blocked'] += 1
+                            self._filter_stats['total_blocked'] += 1
+                            continue  # 禁止交易
                     
                     # T+1 检查
                     entry_date = position.get('entry_date')

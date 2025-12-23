@@ -555,7 +555,7 @@ class OptimizedStockDataQuery:
                 "s.prev_close", "s.volume", "s.amount", "s.total_mv", "s.float_mv",
                 "s.turnover_rate", "s.turnover_free", "s.volume_ratio",
                 "s.ma5", "s.ma10", "s.ma20", "s.volume_ma5",
-                "s.adj_factor",
+                "s.adj_factor", "s.limit_up", "s.limit_down",
                 "i.is_st", "i.is_kc", "i.is_cy", "i.list_date",
             ]
         columns = self._filter_existing_columns(columns)

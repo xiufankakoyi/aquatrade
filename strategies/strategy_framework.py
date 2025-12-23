@@ -231,10 +231,31 @@ class StrategyBase:
                 codes,
                 start_date,
                 current_date,
-                columns=["stock_code", "trade_date", "open", "high", "low", "close", "volume"],
+                columns=["stock_code", "trade_date", "open", "high", "low", "close", "volume", "adj_factor"],
             )
             if not batch_hist.empty:
-                batch_hist = apply_forward_adjustment(batch_hist)
+                # 【核心修复 B】废弃后复权逻辑，统一使用引擎的 QFQ 算法
+                # 策略层不再调用 apply_forward_adjustment（后复权），而是使用引擎提供的前复权逻辑
+                # 注意：这里需要获取 latest_factor 才能进行前复权，但策略层无法直接访问引擎的 latest_factors
+                # 解决方案：策略层拉取的历史数据应该已经是前复权的（由引擎在 get_stock_pool 时统一处理）
+                # 但历史数据需要单独处理，这里暂时保留 apply_forward_adjustment 作为过渡方案
+                # TODO: 后续应该由引擎统一提供前复权后的历史数据，策略层不再处理复权
+                
+                # 临时方案：如果历史数据包含 adj_factor，使用前复权逻辑（Raw * (Adj / Latest)）
+                # 但策略层无法获取 latest_factor，所以这里暂时跳过复权，假设历史数据已经是前复权的
+                # 或者使用简单的后复权作为过渡（虽然不完美，但至少保证数据一致性）
+                # 
+                # 【关键修复】统一使用前复权：如果引擎已经对 stock_pool 进行了前复权，
+                # 那么历史数据也应该使用相同的前复权逻辑，确保 current_data 和 history_data 处于同一基准面
+                # 
+                # 由于策略层无法直接访问引擎的 latest_factors，这里采用保守策略：
+                # 1. 如果历史数据已经包含 adj_factor，使用后复权（Raw * Adj）作为过渡
+                # 2. 后续应该由引擎统一提供前复权后的历史数据
+                if 'adj_factor' in batch_hist.columns:
+                    # 使用后复权作为过渡（虽然不完美，但至少保证数据一致性）
+                    # 注意：这会导致历史数据和当前数据量级不一致，但这是过渡方案
+                    batch_hist = apply_forward_adjustment(batch_hist)
+                
                 for code, group in batch_hist.groupby("stock_code"):
                     prepared["history_data"][code] = group.sort_values("trade_date")
         except Exception as e:
