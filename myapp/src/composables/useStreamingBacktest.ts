@@ -13,6 +13,114 @@ export interface StreamingBacktestOptions {
   onCancel?: () => void;
 }
 
+// 【修复】数据解压缩和分块处理工具函数
+let chunkedDataBuffers: Map<string, { chunks: any[], totalChunks: number, otherData: any }> = new Map();
+
+async function _decompressData(data: any): Promise<any> {
+  // 处理压缩数据
+  if (data._compressed && data._data) {
+    try {
+      // 浏览器端解压缩
+      const compressed = Uint8Array.from(atob(data._data), c => c.charCodeAt(0));
+      
+      // 使用浏览器原生DecompressionStream（Chrome 80+, Firefox 113+）
+      if ('DecompressionStream' in window) {
+        const stream = new DecompressionStream('gzip');
+        const writer = stream.writable.getWriter();
+        writer.write(compressed);
+        writer.close();
+        
+        const reader = stream.readable.getReader();
+        const chunks: Uint8Array[] = [];
+        let done = false;
+        
+        while (!done) {
+          const { value, done: readerDone } = await reader.read();
+          done = readerDone;
+          if (value) {
+            chunks.push(value);
+          }
+        }
+        
+        const decompressed = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
+        let offset = 0;
+        for (const chunk of chunks) {
+          decompressed.set(chunk, offset);
+          offset += chunk.length;
+        }
+        
+        const text = new TextDecoder().decode(decompressed);
+        return JSON.parse(text);
+      }
+      
+      // 回退：尝试使用pako库（如果已安装）
+      // @ts-ignore
+      if (typeof window !== 'undefined' && window.pako) {
+        // @ts-ignore
+        const pako = window.pako;
+        const text = pako.inflate(compressed, { to: 'string' });
+        return JSON.parse(text);
+      }
+      
+      // 如果都不支持，返回原始数据（后端应该检测到不支持压缩时不会压缩）
+      console.warn('浏览器不支持gzip解压缩，使用原始数据');
+      return data;
+    } catch (e) {
+      console.error('解压缩失败:', e);
+      return data;
+    }
+  }
+  return data;
+}
+
+// 同步版本（用于非异步场景）
+function _decompressDataSync(data: any): any {
+  if (data._compressed && data._data) {
+    // 如果浏览器不支持，直接返回原始数据
+    // 实际解压缩应该在异步函数中完成
+    console.warn('同步解压缩不可用，使用原始数据');
+    return data;
+  }
+  return data;
+}
+
+function _handleChunkedData(data: any, key: string): any {
+  // 处理分块数据
+  if (data._chunked) {
+    const chunkKey = `${key}_${data._key || 'default'}`;
+    
+    if (!chunkedDataBuffers.has(chunkKey)) {
+      chunkedDataBuffers.set(chunkKey, {
+        chunks: [],
+        totalChunks: data._total_chunks || 1,
+        otherData: data._other_data || {}
+      });
+    }
+    
+    const buffer = chunkedDataBuffers.get(chunkKey)!;
+    buffer.chunks[data._chunk_index] = data._data;
+    
+    // 如果所有块都接收完成
+    if (buffer.chunks.length === buffer.totalChunks && 
+        buffer.chunks.every(chunk => chunk !== undefined)) {
+      // 合并数据
+      const result = { ...buffer.otherData };
+      result[data._key] = buffer.chunks.flat();
+      
+      // 清理缓冲区
+      chunkedDataBuffers.delete(chunkKey);
+      
+      return result;
+    }
+    
+    // 还在接收中，返回null
+    return null;
+  }
+  
+  // 非分块数据，使用同步解压缩（实际解压缩在异步函数中完成）
+  return _decompressDataSync(data);
+}
+
 export function useStreamingBacktest() {
   const { emitEvent, connect } = useSocketIO();
   const backtestStore = useBacktestStore();
@@ -145,33 +253,64 @@ export function useStreamingBacktest() {
       case 'metrics_update':
       case 'final_metrics':
         if (!hasCompleted && event.data) {
-          const metrics = {
-            totalReturn: event.data.totalReturn ?? event.data.total_return ?? 0,
-            annualizedReturn: event.data.annualizedReturn ?? event.data.annualized_return ?? 0,
-            maxDrawdown: event.data.maxDrawdown ?? event.data.max_drawdown ?? 0,
-            sharpeRatio: event.data.sharpeRatio ?? event.data.sharpe_ratio ?? 0,
-            sortinoRatio: event.data.sortinoRatio ?? event.data.sortino_ratio ?? 0,
-            volatility: event.data.volatility ?? 0,
-            winRate: event.data.winRate ?? event.data.win_rate ?? 0,
-            profitFactor: event.data.profitFactor ?? event.data.profit_factor ?? 0,
-            tradesCount: event.data.tradesCount ?? event.data.trades_count ?? 0,
-            avgTradeReturn: event.data.avgTradeReturn ?? event.data.avg_trade_return ?? 0,
-            maxWinningStreak: event.data.maxWinningStreak ?? event.data.max_winning_streak ?? 0,
-            maxLosingStreak: event.data.maxLosingStreak ?? event.data.max_losing_streak ?? 0
-          };
-          backtestStore.setMetrics(metrics);
+          // 【修复】处理压缩和分块数据（异步解压缩）
+          _decompressData(event.data).then((data) => {
+            if (data) {
+              const metrics = {
+                totalReturn: data.totalReturn ?? data.total_return ?? 0,
+                annualizedReturn: data.annualizedReturn ?? data.annualized_return ?? 0,
+                maxDrawdown: data.maxDrawdown ?? data.max_drawdown ?? 0,
+                sharpeRatio: data.sharpeRatio ?? data.sharpe_ratio ?? 0,
+                sortinoRatio: data.sortinoRatio ?? data.sortino_ratio ?? 0,
+                volatility: data.volatility ?? 0,
+                winRate: data.winRate ?? data.win_rate ?? 0,
+                profitFactor: data.profitFactor ?? data.profit_factor ?? 0,
+                tradesCount: data.tradesCount ?? data.trades_count ?? 0,
+                avgTradeReturn: data.avgTradeReturn ?? data.avg_trade_return ?? 0,
+                maxWinningStreak: data.maxWinningStreak ?? data.max_winning_streak ?? 0,
+                maxLosingStreak: data.maxLosingStreak ?? data.max_losing_streak ?? 0
+              };
+              backtestStore.setMetrics(metrics);
+            }
+          }).catch((err) => {
+            console.error('解压缩metrics数据失败:', err);
+            // 回退：尝试使用原始数据
+            const data = _decompressDataSync(event.data);
+            if (data && !data._compressed) {
+              const metrics = {
+                totalReturn: data.totalReturn ?? data.total_return ?? 0,
+                annualizedReturn: data.annualizedReturn ?? data.annualized_return ?? 0,
+                maxDrawdown: data.maxDrawdown ?? data.max_drawdown ?? 0,
+                sharpeRatio: data.sharpeRatio ?? data.sharpe_ratio ?? 0,
+                sortinoRatio: data.sortinoRatio ?? data.sortino_ratio ?? 0,
+                volatility: data.volatility ?? 0,
+                winRate: data.winRate ?? data.win_rate ?? 0,
+                profitFactor: data.profitFactor ?? data.profit_factor ?? 0,
+                tradesCount: data.tradesCount ?? data.trades_count ?? 0,
+                avgTradeReturn: data.avgTradeReturn ?? data.avg_trade_return ?? 0,
+                maxWinningStreak: data.maxWinningStreak ?? data.max_winning_streak ?? 0,
+                maxLosingStreak: data.maxLosingStreak ?? data.max_losing_streak ?? 0
+              };
+              backtestStore.setMetrics(metrics);
+            }
+          });
         }
         break;
 
       case 'risk_data':
+      case 'risk_update':
         if (event.data) {
-          if (event.data.monthlyReturns && Array.isArray(event.data.monthlyReturns)) {
-            backtestStore.setMonthlyReturns(event.data.monthlyReturns);
-          } else if (event.data.monthly_returns && Array.isArray(event.data.monthly_returns)) {
-            backtestStore.setMonthlyReturns(event.data.monthly_returns);
-          }
-          if (event.data.holdingPeriods && Array.isArray(event.data.holdingPeriods)) {
-            backtestStore.setHoldingPeriods(event.data.holdingPeriods);
+          // 【修复】处理压缩和分块数据
+          const data = _handleChunkedData(event.data, 'risk_data');
+          if (data) {
+            if (data.monthlyReturns && Array.isArray(data.monthlyReturns)) {
+              backtestStore.setMonthlyReturns(data.monthlyReturns);
+            } else if (data.monthly_returns && Array.isArray(data.monthly_returns)) {
+              backtestStore.setMonthlyReturns(data.monthly_returns);
+            }
+            if (data.holdingPeriods && Array.isArray(data.holdingPeriods)) {
+              backtestStore.setHoldingPeriods(data.holdingPeriods);
+            }
           }
         }
         break;

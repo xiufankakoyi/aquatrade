@@ -10,7 +10,6 @@ from threading import Event
 from database.optimized_data_query import OptimizedStockDataQuery
 from backtest.optimized_backtest_engine import OptimizedBacktestEngine
 from strategies.strategy_factory import StrategyFactory
-import sqlite3
 import os
 import sys
 from pathlib import Path
@@ -55,50 +54,65 @@ class BacktestVisualizationAPI:
             raise
 
     def _load_stock_info(self) -> Dict[str, str]:
+        """
+        【核心修复】使用 data_query 方法加载股票信息，支持 DuckDB + Parquet 后端
+        """
+        from utils.logger import get_logger
         try:
-            db_uri = f'file:{self.db_path}?mode=ro'
-            with sqlite3.connect(db_uri, uri=True) as conn:
-                cursor = conn.cursor()
-                # 检查列名是否存在，防止报错
-                cursor.execute("PRAGMA table_info(stock_info)")
-                columns = [info[1] for info in cursor.fetchall()]
-                
-                name_col = 'stock_name' if 'stock_name' in columns else 'name'
-                code_col = 'stock_code' if 'stock_code' in columns else 'symbol'
-                
-                if name_col not in columns or code_col not in columns:
-                    return {}
-
-                df = pd.read_sql_query(f"SELECT {code_col}, {name_col} FROM stock_info", conn)
-                # CHANGED: 确保 stock_code 是6位数字格式，作为字典的 key
-                # 这样在查找时可以使用统一的格式
-                stock_info_dict = {}
-                for _, row in df.iterrows():
-                    code = str(row[code_col]).strip()
-                    name = str(row[name_col]).strip()
-                    # 标准化为6位数字代码
-                    code_6 = code.zfill(6) if len(code) <= 6 else code[-6:]
-                    stock_info_dict[code_6] = name
-                logger = get_logger(__name__)
-                logger.debug(f"加载股票信息: {len(stock_info_dict)} 条记录")
-                return stock_info_dict
-        except Exception:
+            if self.data_query is None:
+                return {}
+            
+            # 使用 data_query 的 _query_df 方法，支持 DuckDB 和 SQLite
+            query = "SELECT stock_code, stock_name FROM stock_info"
+            df = self.data_query._query_df(query)
+            
+            if df.empty:
+                return {}
+            
+            # CHANGED: 确保 stock_code 是6位数字格式，作为字典的 key
+            stock_info_dict = {}
+            for _, row in df.iterrows():
+                code = str(row['stock_code']).strip()
+                name = str(row.get('stock_name', '')).strip()
+                # 标准化为6位数字代码
+                code_6 = code.zfill(6) if len(code) <= 6 else code[-6:]
+                stock_info_dict[code_6] = name
+            
+            logger = get_logger(__name__)
+            logger.debug(f"加载股票信息: {len(stock_info_dict)} 条记录")
+            return stock_info_dict
+        except Exception as e:
+            logger = get_logger(__name__)
+            logger.warning(f"加载股票信息失败: {e}")
             return {}
     def _get_global_latest_factor(self, symbol_code: str) -> float:
-        """【关键】获取该股票在数据库中最新（最后一天）的复权因子"""
+        """
+        【核心修复】获取该股票在数据库中最新（最后一天）的复权因子
+        使用 data_query 方法，支持 DuckDB + Parquet 后端
+        """
+        from utils.logger import get_logger
         try:
-            # 直接使用 SQL 查询，比 pandas 更快
-            db_uri = f'file:{self.db_path}?mode=ro'
-            with sqlite3.connect(db_uri, uri=True) as conn:
-                cursor = conn.cursor()
-                # 按日期倒序查第一条，确保拿到的是该股票整个生命周期里最新的因子
-                cursor.execute(
-                    "SELECT adj_factor FROM stock_daily WHERE stock_code = ? ORDER BY trade_date DESC LIMIT 1", 
-                    (symbol_code,)
-                )
-                row = cursor.fetchone()
-                return float(row[0]) if row and row[0] is not None else 1.0
-        except Exception:
+            if self.data_query is None:
+                return 1.0
+            
+            # 使用 data_query 的 _query_df 方法，支持 DuckDB 和 SQLite
+            query = """
+                SELECT adj_factor 
+                FROM stock_daily 
+                WHERE stock_code = ? 
+                ORDER BY trade_date DESC 
+                LIMIT 1
+            """
+            df = self.data_query._query_df(query, [symbol_code])
+            
+            if df.empty or 'adj_factor' not in df.columns:
+                return 1.0
+            
+            factor = df.iloc[0]['adj_factor']
+            return float(factor) if factor is not None and not pd.isna(factor) else 1.0
+        except Exception as e:
+            logger = get_logger(__name__)
+            logger.warning(f"获取最新复权因子失败 ({symbol_code}): {e}")
             return 1.0
     # --- 【【新增】】统一的前复权计算工具函数 ---
     def _calculate_qfq_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -339,35 +353,31 @@ class BacktestVisualizationAPI:
             self._ensure_initialized()
         
         try:
-            if not os.path.exists(self.db_path):
-                from utils.logger import get_logger
-                logger = get_logger(__name__)
-                logger.error(f"数据库文件未找到: {self.db_path}")
+            if self.data_query is None:
+                self._ensure_initialized()
+            
+            if self.data_query is None:
                 return pd.DataFrame()
-                
-            db_uri = f'file:{self.db_path}?mode=ro'
-            with sqlite3.connect(db_uri, uri=True) as conn:
-                # CHANGED: 应用只读连接的性能优化
-                from database.db_utils import apply_performance_pragmas
-                apply_performance_pragmas(conn, read_only=True)
-                
-                query = """
-                    SELECT date, close FROM benchmark_data
-                    WHERE code = ? AND date >= ? AND date <= ?
-                    ORDER BY date ASC
-                """
-                df = pd.read_sql_query(query, conn, params=(benchmark_code, start_date, end_date))
+            
+            # 【核心修复】使用 data_query 方法，支持 DuckDB + Parquet 后端
+            query = """
+                SELECT date, close FROM benchmark_data
+                WHERE code = ? AND date >= ? AND date <= ?
+                ORDER BY date ASC
+            """
+            df = self.data_query._query_df(query, [benchmark_code, start_date, end_date])
             
             if df.empty:
-                print(f"在数据库中未找到基准数据: code={benchmark_code}, start={start_date}, end={end_date}")
+                from utils.logger import get_logger
+                logger = get_logger(__name__)
+                logger.warning(f"在数据库中未找到基准数据: code={benchmark_code}, start={start_date}, end={end_date}")
                 
             return df
 
-        except sqlite3.OperationalError as e:
-            print(f"查询基准数据时发生数据库错误: {e}")
-            return pd.DataFrame()
         except Exception as e:
-            print(f"读取基准数据时发生未知错误: {e}")
+            from utils.logger import get_logger
+            logger = get_logger(__name__)
+            logger.warning(f"读取基准数据时发生错误: {e}")
             return pd.DataFrame()
 
     
@@ -438,44 +448,58 @@ class BacktestVisualizationAPI:
         latest_map = {}
         
         try:
-            db_uri = f'file:{self.db_path}?mode=ro'
-            with sqlite3.connect(db_uri, uri=True) as conn:
-                for code in set(normalized_codes):
-                    # 1. 获取全局最新因子（基准）
-                    base_factor = self._get_global_latest_factor(code)
+            if self.data_query is None:
+                return {}
+            
+            for code in set(normalized_codes):
+                # 1. 获取全局最新因子（基准）
+                base_factor = self._get_global_latest_factor(code)
 
-                    # 2. 查询目标日期的价格
-                    # 如果指定了 target_date，查那天的；没指定查最新一天的
-                    query_date_clause = "AND trade_date <= ?" if target_date else ""
-                    params = (code, target_date) if target_date else (code,)
-                    
-                    query = f"""
+                # 2. 查询目标日期的价格
+                # 如果指定了 target_date，查那天的；没指定查最新一天的
+                if target_date:
+                    query = """
                         SELECT trade_date, open, close, prev_close, adj_factor 
                         FROM stock_daily 
-                        WHERE stock_code = ? {query_date_clause}
+                        WHERE stock_code = ? AND trade_date <= ?
                         ORDER BY trade_date DESC 
                         LIMIT 1
                     """
-                    cursor = conn.execute(query, params)
-                    result = cursor.fetchone()
-                    
-                    if result:
-                        trade_date, raw_open, raw_close, raw_prev, current_factor = result
-                        current_factor = float(current_factor or 1.0)
-                        
-                        # 3. 前复权计算，优先使用开盘价；没有开盘价时回退收盘价
-                        raw_price = raw_open if raw_open is not None else raw_close
-                        if raw_price is None:
-                            continue
-                        ratio = current_factor / base_factor if base_factor else 1.0
-                        qfq_price = raw_price * ratio
-                        qfq_prev = (raw_prev * ratio) if raw_prev else raw_price
+                    params = [code, target_date]
+                else:
+                    query = """
+                        SELECT trade_date, open, close, prev_close, adj_factor 
+                        FROM stock_daily 
+                        WHERE stock_code = ?
+                        ORDER BY trade_date DESC 
+                        LIMIT 1
+                    """
+                    params = [code]
+                
+                df = self.data_query._query_df(query, params)
+                if df.empty:
+                    continue
+                
+                row = df.iloc[0]
+                trade_date = row['trade_date']
+                raw_open = row.get('open')
+                raw_close = row.get('close')
+                raw_prev = row.get('prev_close')
+                current_factor = float(row.get('adj_factor', 1.0) or 1.0)
+                
+                # 3. 前复权计算，优先使用开盘价；没有开盘价时回退收盘价
+                raw_price = raw_open if raw_open is not None and not pd.isna(raw_open) else raw_close
+                if raw_price is None or pd.isna(raw_price):
+                    continue
+                ratio = current_factor / base_factor if base_factor else 1.0
+                qfq_price = raw_price * ratio
+                qfq_prev = (raw_prev * ratio) if raw_prev is not None and not pd.isna(raw_prev) else qfq_price
 
-                        latest_map[code] = {
-                            "date": trade_date,
-                            "price": float(f"{qfq_price:.2f}"),
-                            "prev_close": float(f"{qfq_prev:.2f}")
-                        }
+                latest_map[code] = {
+                    "date": trade_date,
+                    "price": float(f"{qfq_price:.2f}"),
+                    "prev_close": float(f"{qfq_prev:.2f}")
+                }
         except Exception as e:
             print(f"获取最新价格失败: {e}")
         return latest_map
@@ -1188,98 +1212,90 @@ class BacktestVisualizationAPI:
         stock_info = {}
         
         try:
-            # 优先从数据库获取市值信息
-            db_uri = f'file:{self.db_path}?mode=ro'
-            with sqlite3.connect(db_uri, uri=True) as conn:
-                # CHANGED: 如果指定了需要的股票列表，只查询这些股票，大幅减少查询时间
-                if needed_symbols:
-                    # 提取6位股票代码
-                    stock_codes = []
-                    for sym in needed_symbols:
-                        # 处理 sz/sh 前缀
-                        if sym.startswith(('sz', 'sh')):
-                            code = sym[2:]  # 去掉 sz/sh 前缀
-                        else:
-                            code = sym
-                        # 提取6位数字代码
-                        if len(code) >= 6:
-                            code_6 = code[-6:].zfill(6)  # 确保是6位
-                            stock_codes.append(code_6)
-                        elif len(code) == 6:
-                            stock_codes.append(code.zfill(6))
-                    
-                    logger.debug(f"从 needed_symbols 提取的股票代码: {needed_symbols} -> {stock_codes}")
-                    
-                    if stock_codes:
-                        # 使用 IN 查询，只查询需要的股票
-                        placeholders = ','.join(['?' for _ in stock_codes])
-                        query = f"""
-                            SELECT 
-                                stock_code,
-                                MAX(total_mv) as market_cap
-                            FROM stock_daily
-                            WHERE total_mv IS NOT NULL
-                                AND stock_code IN ({placeholders})
-                            GROUP BY stock_code
-                        """
-                        df = pd.read_sql_query(query, conn, params=stock_codes)
-                        logger.debug(f"市值查询结果: {len(df)} 条记录")
+            # 【核心修复】使用 data_query 方法，支持 DuckDB + Parquet 后端
+            if self.data_query is None:
+                return {}
+            
+            # CHANGED: 如果指定了需要的股票列表，只查询这些股票，大幅减少查询时间
+            if needed_symbols:
+                # 提取6位股票代码
+                stock_codes = []
+                for sym in needed_symbols:
+                    # 处理 sz/sh 前缀
+                    if sym.startswith(('sz', 'sh')):
+                        code = sym[2:]  # 去掉 sz/sh 前缀
                     else:
-                        df = pd.DataFrame()
-                        logger.warning(f"无法从 needed_symbols 提取有效的股票代码: {needed_symbols}")
-                else:
-                    # 获取每只股票的最新市值（取最新交易日的市值）
-                    query = """
+                        code = sym
+                    # 提取6位数字代码
+                    if len(code) >= 6:
+                        code_6 = code[-6:].zfill(6)  # 确保是6位
+                        stock_codes.append(code_6)
+                    elif len(code) == 6:
+                        stock_codes.append(code.zfill(6))
+                
+                logger.debug(f"从 needed_symbols 提取的股票代码: {needed_symbols} -> {stock_codes}")
+                
+                if stock_codes:
+                    # 使用 IN 查询，只查询需要的股票
+                    placeholders = ','.join(['?' for _ in stock_codes])
+                    query = f"""
                         SELECT 
                             stock_code,
                             MAX(total_mv) as market_cap
                         FROM stock_daily
                         WHERE total_mv IS NOT NULL
+                            AND stock_code IN ({placeholders})
                         GROUP BY stock_code
                     """
-                    df = pd.read_sql_query(query, conn)
+                    df = self.data_query._query_df(query, stock_codes)
+                    logger.debug(f"市值查询结果: {len(df)} 条记录")
+                else:
+                    df = pd.DataFrame()
+                    logger.warning(f"无法从 needed_symbols 提取有效的股票代码: {needed_symbols}")
+            else:
+                # 获取每只股票的最新市值（取最新交易日的市值）
+                query = """
+                    SELECT 
+                        stock_code,
+                        MAX(total_mv) as market_cap
+                    FROM stock_daily
+                    WHERE total_mv IS NOT NULL
+                    GROUP BY stock_code
+                """
+                df = self.data_query._query_df(query)
+            
+            for _, row in df.iterrows():
+                symbol_code = str(row['stock_code']).zfill(6)
+                market_cap = float(row['market_cap'] or 0.0) / 10000.0  # 万元转亿元
                 
-                for _, row in df.iterrows():
-                    symbol_code = str(row['stock_code']).zfill(6)
-                    market_cap = float(row['market_cap'] or 0.0) / 10000.0  # 万元转亿元
-                    
-                    # 构建标准股票代码
-                    if symbol_code.startswith('0'):
-                        full_symbol = f"sz{symbol_code}"
-                    elif symbol_code.startswith('6'):
-                        full_symbol = f"sh{symbol_code}"
-                    else:
-                        full_symbol = symbol_code
-                    
-                    # CHANGED: 从 stock_info_map 获取名称（已加载）
-                    # stock_info_map 的 key 是 6位数字代码（如 '603099'），不是带前缀的格式
-                    stock_name = self.stock_info_map.get(symbol_code, '')
-                    
-                    # 如果 stock_info_map 中没有名称，尝试从数据库直接查询
-                    if not stock_name:
-                        try:
-                            # 尝试查询 name 列
-                            name_query = "SELECT name FROM stock_info WHERE stock_code = ?"
-                            name_df = pd.read_sql_query(name_query, conn, params=[symbol_code])
-                            if not name_df.empty:
-                                stock_name = str(name_df.iloc[0]['name']) if 'name' in name_df.columns else ''
-                            # 如果 name 列没有数据，尝试 stock_name 列
-                            if not stock_name:
-                                name_query2 = "SELECT stock_name FROM stock_info WHERE stock_code = ?"
-                                name_df2 = pd.read_sql_query(name_query2, conn, params=[symbol_code])
-                                if not name_df2.empty:
-                                    stock_name = str(name_df2.iloc[0]['stock_name']) if 'stock_name' in name_df2.columns else ''
-                        except Exception as e:
-                            logger.debug(f"查询股票名称失败: {symbol_code}, 错误: {e}")
-                            pass  # 如果查询失败，保持空名称
-                    
-                    logger.debug(f"股票信息: {full_symbol} (代码: {symbol_code}) -> 名称: {stock_name or '(空)'}")
-                    
-                    stock_info[full_symbol] = {
-                        'name': stock_name,
-                        'market_cap': market_cap,
-                        'original_code': symbol_code
-                    }
+                # 构建标准股票代码
+                if symbol_code.startswith('0'):
+                    full_symbol = f"sz{symbol_code}"
+                elif symbol_code.startswith('6'):
+                    full_symbol = f"sh{symbol_code}"
+                else:
+                    full_symbol = symbol_code
+                
+                # CHANGED: 从 stock_info_map 获取名称（已加载）
+                stock_name = self.stock_info_map.get(symbol_code, '')
+                
+                # 如果 stock_info_map 中没有名称，尝试从 data_query 查询
+                if not stock_name and self.data_query is not None:
+                    try:
+                        name_query = "SELECT stock_name FROM stock_info WHERE stock_code = ?"
+                        name_df = self.data_query._query_df(name_query, [symbol_code])
+                        if not name_df.empty and 'stock_name' in name_df.columns:
+                            stock_name = str(name_df.iloc[0]['stock_name']) or ''
+                    except Exception as e:
+                        logger.debug(f"查询股票名称失败: {symbol_code}, 错误: {e}")
+                
+                logger.debug(f"股票信息: {full_symbol} (代码: {symbol_code}) -> 名称: {stock_name or '(空)'}")
+                
+                stock_info[full_symbol] = {
+                    'name': stock_name,
+                    'market_cap': market_cap,
+                    'original_code': symbol_code
+                }
         except Exception as e:
             logger.warning(f"从数据库获取股票市值失败，尝试 Parquet: {e}")
             
@@ -1364,18 +1380,16 @@ class BacktestVisualizationAPI:
                                 else:
                                     full_symbol = symbol_code
                                 
-                                # 如果从 Parquet 获取的名称为空，尝试从 stock_info_map 或数据库获取
+                                # 如果从 Parquet 获取的名称为空，尝试从 stock_info_map 或 data_query 获取
                                 if not stock_name:
                                     stock_name = self.stock_info_map.get(symbol_code, '')
-                                    # 如果 stock_info_map 也没有，尝试从数据库查询
-                                    if not stock_name:
+                                    # 如果 stock_info_map 也没有，尝试从 data_query 查询
+                                    if not stock_name and self.data_query is not None:
                                         try:
-                                            db_uri = f'file:{self.db_path}?mode=ro'
-                                            with sqlite3.connect(db_uri, uri=True) as db_conn:
-                                                name_query = "SELECT name FROM stock_info WHERE stock_code = ?"
-                                                name_df = pd.read_sql_query(name_query, db_conn, params=[symbol_code])
-                                                if not name_df.empty:
-                                                    stock_name = str(name_df.iloc[0]['name']) if 'name' in name_df.columns else ''
+                                            name_query = "SELECT stock_name FROM stock_info WHERE stock_code = ?"
+                                            name_df = self.data_query._query_df(name_query, [symbol_code])
+                                            if not name_df.empty and 'stock_name' in name_df.columns:
+                                                stock_name = str(name_df.iloc[0]['stock_name']) or ''
                                         except Exception:
                                             pass  # 如果查询失败，保持空名称
                                 

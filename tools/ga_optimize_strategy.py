@@ -203,9 +203,30 @@ def run_single_backtest(
         # 没有结果：给一个很差的分数（惩罚）
         return -1e12, {"metrics": {}, "params": params}
 
-    # 你也可以换成 annualizedReturn / sharpeRatio 等
-    score = float(final_metrics.get("totalReturn", 0.0))
-
+    # 【修复】多目标适应度函数：避免过拟合到极端行情
+    # 综合考虑收益、夏普比率、最大回撤，防止只优化单一指标
+    total_return = float(final_metrics.get("totalReturn", 0.0))
+    annualized_return = float(final_metrics.get("annualizedReturn", 0.0))
+    sharpe_ratio = float(final_metrics.get("sharpeRatio", 0.0))
+    max_drawdown = float(final_metrics.get("maxDrawdown", 0.0))
+    
+    # 归一化处理（避免不同量纲的影响）
+    # 收益权重：0.4，夏普权重：0.4，回撤惩罚：0.2
+    # 回撤转换为正值（越小越好 -> 越大越好）
+    drawdown_score = max(0, 100 - abs(max_drawdown)) / 100.0  # 回撤0%得1分，回撤100%得0分
+    
+    # 综合得分（值越大越好）
+    # 如果夏普比率为负或收益为负，给予惩罚
+    if sharpe_ratio < 0 or total_return < 0:
+        score = total_return * 0.3 + sharpe_ratio * 0.2 - abs(max_drawdown) * 0.5
+    else:
+        # 正常情况：收益和夏普都为正
+        score = (
+            annualized_return * 0.4 +  # 年化收益权重
+            sharpe_ratio * 2.0 * 0.4 +  # 夏普比率权重（乘以2放大影响）
+            drawdown_score * 0.2  # 回撤控制权重
+        )
+    
     return score, {"metrics": final_metrics, "params": params}
 
 

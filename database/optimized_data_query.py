@@ -20,6 +20,7 @@ import os
 import time
 import sqlite3
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional, Dict, Tuple, FrozenSet, Any
 import pandas as pd
 try:
@@ -68,9 +69,9 @@ class OptimizedStockDataQuery:
         self._profile_verbose = os.getenv("DB_PROFILE_VERBOSE", "0") == "1"
         self._profile_threshold = float(os.getenv("DB_PROFILE_THRESHOLD", "0.02"))
 
-        # 新增：后端类型，默认 sqlite，可以通过环境变量切换到 duckdb
-        # Windows 下可用：set DB_BACKEND=duckdb
-        backend = os.getenv("DB_BACKEND", "sqlite").lower()
+        # 【核心修复】默认使用 DuckDB + Parquet 后端，不再使用 SQLite
+        # 可以通过环境变量 DB_BACKEND=sqlite 切换回 SQLite（不推荐）
+        backend = os.getenv("DB_BACKEND", "duckdb").lower()
         self._use_duckdb = backend == "duckdb"
 
         # --- DuckDB + Parquet 后端 ---
@@ -78,8 +79,15 @@ class OptimizedStockDataQuery:
             if duckdb is None:
                 raise RuntimeError("DB_BACKEND=duckdb，但未安装 duckdb，请先: pip install duckdb pyarrow")
 
-            # parquet 目录：默认 parquet_data，可用 PARQUET_DIR 覆盖
-            self.parquet_dir = os.getenv("PARQUET_DIR", "parquet_data")
+            # parquet 目录：默认 parquet_data（相对于项目根目录），可用 PARQUET_DIR 覆盖
+            # 支持绝对路径（如 D:\aquatrade\parquet_data）或相对路径（如 parquet_data）
+            parquet_dir_env = os.getenv("PARQUET_DIR", "parquet_data")
+            if os.path.isabs(parquet_dir_env):
+                self.parquet_dir = parquet_dir_env
+            else:
+                # 相对路径：相对于项目根目录
+                project_root = Path(__file__).parent.parent
+                self.parquet_dir = str(project_root / parquet_dir_env)
             self._logger.info(f"[DB] 使用 DuckDB + Parquet 后端: dir={self.parquet_dir}")
 
             # DuckDB 内存库
@@ -131,8 +139,12 @@ class OptimizedStockDataQuery:
         import os
 
         # 注意 Windows 路径要换成 /，DuckDB 对反斜杠比较敏感
-        daily_path = os.path.join(self.parquet_dir, "stock_daily.parquet").replace("\\", "/")
-        info_path = os.path.join(self.parquet_dir, "stock_info.parquet").replace("\\", "/")
+        daily_path = os.path.join(self.parquet_dir, "stock_daily.parquet")
+        info_path = os.path.join(self.parquet_dir, "stock_info.parquet")
+        
+        # 转换为绝对路径并标准化为 DuckDB 兼容格式
+        daily_path = os.path.abspath(daily_path).replace("\\", "/")
+        info_path = os.path.abspath(info_path).replace("\\", "/")
 
         if not os.path.exists(daily_path):
             self._logger.error(f"[DB] 找不到 {daily_path}，请确认 parquet 导出目录是否正确")
