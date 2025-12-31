@@ -287,3 +287,28 @@ for update in engine.run_backtest_streaming(start_date, end_date, strategy):
 建议新策略优先使用新架构，现有策略可以逐步迁移。
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
