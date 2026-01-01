@@ -64,6 +64,11 @@ parquet_data/
 *.csv
 *.parquet
 *.duckdb
+*.jsonl
+*.lance
+*.txn
+*.manifest
+Redis/
 
 # 构建产物
 dist/
@@ -119,10 +124,11 @@ $RECYCLE.BIN/
 
 # 缓存目录
 .cache/
+cache/
 *.cache
-.cache/
 .huggingface/
 .transformers/
+*.npy
 
 # 测试和覆盖率
 .pytest_cache/
@@ -139,6 +145,23 @@ coverage.xml
 .ipynb_checkpoints
 *.ipynb
 
+# 机器学习模型文件
+qwen_sentiment_lora/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.pkl
+*.joblib
+
+# 优化和实验存储
+optuna_storage/
+wandb/
+mlruns/
+.neptune/
+
 # 其他
 *.bak
 *.backup
@@ -148,3 +171,7 @@ assets/*.png
 *.bat
 !start.bat
 !stop.bat
+test_data.json
+1.txt
+2.txt
+3.txt

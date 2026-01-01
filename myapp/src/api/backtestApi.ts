@@ -1,6 +1,7 @@
 import type { Metrics, MonthlyReturn, Trade } from '../types/backtest';
 import type { BacktestResult, ParameterSearchResult, StrategyVersion } from '../store/strategyStore';
 import { useSocketIO } from '../composables/useSocketIO';
+import { decode } from '@msgpack/msgpack';
 
 const API_BASE_URL = 'http://localhost:5000/api';
 
@@ -15,6 +16,65 @@ const eventSubscribers: Set<(event: BacktestEvent) => void> = new Set();
 let isSubscribed = false;
 let socketIOInstance: ReturnType<typeof useSocketIO> | null = null;
 let unsubscribers: Array<() => void> = [];
+
+/**
+ * 解包 MsgPack 数据
+ * 后端发送的数据格式：{ _msgpack: true, _data: base64字符串或Uint8Array }
+ */
+function unpackMsgPackData(data: any): any {
+  // 检查是否是 MsgPack 打包的数据
+  if (data && typeof data === 'object' && data._msgpack === true && data._data !== undefined) {
+    try {
+      let binaryData: Uint8Array;
+      
+      // 处理 ArrayBuffer（Socket.IO 可能直接传输 ArrayBuffer）
+      if (data._data instanceof ArrayBuffer) {
+        binaryData = new Uint8Array(data._data);
+      } 
+      // 处理 base64 编码的字符串（Socket.IO 可能会将二进制数据转换为 base64）
+      else if (typeof data._data === 'string') {
+        // 将 base64 字符串转换为 Uint8Array
+        const binaryString = atob(data._data);
+        binaryData = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          binaryData[i] = binaryString.charCodeAt(i);
+        }
+      } 
+      // 处理 Uint8Array
+      else if (data._data instanceof Uint8Array) {
+        binaryData = data._data;
+      } 
+      // 处理数组格式
+      else if (Array.isArray(data._data)) {
+        binaryData = new Uint8Array(data._data);
+      } 
+      // 其他格式，尝试转换
+      else {
+        console.warn('[MsgPack] 无法识别的数据格式:', typeof data._data, data._data);
+        // 尝试直接使用（可能是已经解包的数据）
+        return data._data;
+      }
+      
+      // 使用 @msgpack/msgpack 解包
+      const unpacked = decode(binaryData);
+      // 调试：记录解包后的数据结构（仅记录关键字段，避免日志过多）
+      if (unpacked && typeof unpacked === 'object') {
+        const keys = Object.keys(unpacked);
+        if (keys.length > 0) {
+          console.log('[MsgPack] 成功解包数据，字段:', keys.slice(0, 5).join(', '), keys.length > 5 ? '...' : '');
+        }
+      }
+      return unpacked;
+    } catch (error) {
+      console.error('[MsgPack] 解包失败:', error, '原始数据:', data);
+      // 解包失败时返回原始数据
+      return data;
+    }
+  }
+  
+  // 不是 MsgPack 数据，直接返回
+  return data;
+}
 
 function normalizeEvent(eventName: string, data: any): BacktestEvent | null {
   const typeMap: Record<string, BacktestEventType> = {
@@ -35,7 +95,12 @@ function normalizeEvent(eventName: string, data: any): BacktestEvent | null {
   const type = typeMap[eventName];
   if (!type) return null;
   
-  return { type, data };
+  // 【修复】解包 MsgPack 数据（如果数据已经是解包后的，unpackMsgPackData 会直接返回）
+  // 注意：对于批量消息，data 已经是解包后的单个元素，不需要再次解包
+  const unpackedData = unpackMsgPackData(data);
+  
+  // 返回标准化的事件
+  return { type, data: unpackedData };
 }
 
 function subscribe(callback: (event: BacktestEvent) => void): () => void {
@@ -49,6 +114,27 @@ function subscribe(callback: (event: BacktestEvent) => void): () => void {
     
     events.forEach(eventName => {
       const unsub = socketIOInstance!.onEvent(eventName, (data: any) => {
+        // 【修复】处理批量消息：如果数据是批量消息（_batch: true），需要拆分为多个事件
+        // 注意：需要在解包前检查 _batch 标志，因为解包后标志会丢失
+        if (data && typeof data === 'object' && data._batch === true && data._msgpack === true) {
+          // 这是批量消息，先解包 MsgPack 数据
+          const unpackedData = unpackMsgPackData(data);
+          if (Array.isArray(unpackedData)) {
+            // 为数组中的每个元素触发一个事件
+            console.log(`[批量消息] 收到 ${unpackedData.length} 条 ${eventName} 事件`);
+            unpackedData.forEach((item: any) => {
+              const normalized = normalizeEvent(eventName, item);
+              if (normalized) {
+                eventSubscribers.forEach(fn => fn(normalized));
+              }
+            });
+            return;
+          } else {
+            console.warn(`[批量消息] 解包后不是数组:`, typeof unpackedData, unpackedData);
+          }
+        }
+        
+        // 单个消息或非批量消息，正常处理
         const normalized = normalizeEvent(eventName, data);
         if (normalized) {
           eventSubscribers.forEach(fn => fn(normalized));

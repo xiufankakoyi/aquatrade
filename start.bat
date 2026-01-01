@@ -32,7 +32,8 @@ start "Worker" cmd /k "set DB_BACKEND=lancedb&& set PARQUET_DIR=parquet_data&& p
 
 echo [4/5] 启动后端 (Granian)...
 :: 核心修正：这里指向 run:app_asgi，而不是 server.granian_entry
-start "Backend (Granian)" cmd /k "set DB_BACKEND=lancedb&& set PARQUET_DIR=parquet_data&& granian --interface asgi --host 0.0.0.0 --port 5000 run:app_asgi"
+:: 设置 Granian 日志级别为 info，减少 DEBUG 噪音（Scope received 等）
+start "Backend (Granian)" cmd /k "set DB_BACKEND=lancedb&& set PARQUET_DIR=parquet_data&& set GRANIAN_LOG_LEVEL=info&& granian --interface asgi --host 0.0.0.0 --port 5000 --log-level info run:app_asgi"
 
 echo [5/5] 启动前端...
 set "MCP_DIR="

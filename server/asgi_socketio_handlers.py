@@ -74,14 +74,7 @@ def register_handlers(sio):
         from config.logger import get_logger
         
         logger = get_logger(__name__)
-        
-        # #region agent log
-        import json, time
-        try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_streaming_backtest","message":"收到 run_streaming_backtest 事件","data":{"sid":sid,"data_keys":list(data.keys()) if isinstance(data, dict) else str(type(data))},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-        except: pass
-        # #endregion
+        logger.debug(f"收到 run_streaming_backtest 事件: sid={sid}, data_keys={list(data.keys()) if isinstance(data, dict) else str(type(data))}")
         
         try:
             strategy_name = data.get('strategy_name')
@@ -135,40 +128,14 @@ def register_handlers(sio):
             
             # 运行回测（在后台线程中）
             def run_backtest():
-                # #region agent log
-                import json, time
-                try:
-                    with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                        f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"开始执行回测","data":{"strategy_name":strategy_name,"start_date":start_date,"end_date":end_date},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-                except: pass
-                # #endregion
-                
+                import time
                 try:
                     logger.info(f"开始流式回测: {strategy_name} | {start_date}~{end_date} | 基准: {benchmark_code}")
-                    print(f"[BACKTEST] 开始流式回测: {strategy_name} | {start_date}~{end_date} | 基准: {benchmark_code}")
                     
-                    # #region agent log
-                    try:
-                        with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"创建 BacktestVisualizationAPI","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-                    except: pass
-                    # #endregion
-                    
-                    print(f"[BACKTEST] 创建 BacktestVisualizationAPI 实例...")
                     api = BacktestVisualizationAPI()
-                    print(f"[BACKTEST] 初始化 API...")
                     api._ensure_initialized()
-                    print(f"[BACKTEST] API 初始化完成，开始调用 stream_backtest...")
                     
-                    # #region agent log
-                    try:
-                        with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"开始调用 stream_backtest","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-                    except: pass
-                    # #endregion
-                    
-                    # 运行流式回测（使用正确的方法名 stream_backtest）
-                    print(f"[BACKTEST] 调用 stream_backtest: {strategy_name}, {start_date}~{end_date}")
+                    # 运行流式回测
                     update_count = 0
                     last_update_time = time.time()
                     generator = api.stream_backtest(
@@ -179,273 +146,303 @@ def register_handlers(sio):
                         stop_event=stop_event,
                         params=effective_params
                     )
-                    # #region agent log
-                    try:
-                        with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"generator创建完成，开始迭代","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"E"}) + "\n")
-                            f.flush()
-                    except: pass
-                    # #endregion
+                    
+                    # ==============================================================================
+                    # 【消息批处理/限流优化】实现缓冲发送机制，避免消息推送过载
+                    # 原问题：逐条发送导致网络拥塞和事件循环压力
+                    # 解决方案：使用缓冲池，每 100ms 或满 50条 发送一次
+                    # ==============================================================================
+                    BATCH_INTERVAL = 0.1  # 100ms 批处理间隔
+                    BATCH_SIZE = 50  # 每批最多 50 条消息
+                    
+                    # 缓冲池：按事件类型分类缓冲
+                    buffers = {
+                        'daily_equity': [],  # 每日权益数据
+                        'new_trade': [],     # 交易数据
+                        'signal': [],        # 信号数据
+                    }
+                    last_batch_send_time = time.time()
+                    
+                    # 立即发送的事件类型（不缓冲）
+                    immediate_events = {
+                        'error', 'cancelled', 'backtest_start', 'initializing', 
+                        'initialized', 'final_metrics', 'risk_data', 'stream_complete',
+                        'progress', 'backtest_end'
+                    }
+                    
+                    def flush_buffers():
+                        """刷新所有缓冲池，发送积攒的消息"""
+                        nonlocal last_batch_send_time
+                        # 事件类型到前端事件名称的映射
+                        event_name_map = {
+                            'daily_equity': 'daily_update',  # 前端期望的事件名称
+                            'new_trade': 'new_trade',
+                            'signal': 'signal'
+                        }
+                        
+                        for event_type, buffer in buffers.items():
+                            if buffer:
+                                try:
+                                    # 【数据序列化优化】确保核心数据路径使用严格定义的结构
+                                    # 对于高频事件（daily_equity, new_trade），优先使用 MsgPack
+                                    if MSGPACK_AVAILABLE and event_type in ['daily_equity', 'new_trade']:
+                                        try:
+                                            # 确保 buffer 是列表且每个元素都是字典
+                                            if isinstance(buffer, list) and all(isinstance(item, dict) for item in buffer):
+                                                packed = pack_backtest_result(buffer)
+                                                frontend_event = event_name_map.get(event_type, event_type)
+                                                asyncio.run_coroutine_threadsafe(
+                                                    sio.emit(frontend_event, {
+                                                        '_msgpack': True,
+                                                        '_data': packed,
+                                                        '_count': len(buffer),
+                                                        '_batch': True  # 标记为批量消息
+                                                    }, room=sid),
+                                                    loop
+                                                )
+                                            else:
+                                                # 数据结构不符合预期，回退到 JSON
+                                                logger.warning(f"批量数据格式不符合预期 ({event_type}): 期望 list[dict], 实际: {type(buffer)}")
+                                                frontend_event = event_name_map.get(event_type, event_type)
+                                                asyncio.run_coroutine_threadsafe(
+                                                    sio.emit(frontend_event, buffer, room=sid),
+                                                    loop
+                                                )
+                                        except Exception as e:
+                                            logger.warning(f"MsgPack 批量打包失败 ({event_type}): {e}")
+                                            # 回退到 JSON
+                                            frontend_event = event_name_map.get(event_type, event_type)
+                                            asyncio.run_coroutine_threadsafe(
+                                                sio.emit(frontend_event, buffer, room=sid),
+                                                loop
+                                            )
+                                    else:
+                                        # 直接发送 JSON（信号等低频事件）
+                                        frontend_event = event_name_map.get(event_type, event_type)
+                                        asyncio.run_coroutine_threadsafe(
+                                            sio.emit(frontend_event, buffer, room=sid),
+                                            loop
+                                        )
+                                    buffer.clear()
+                                except Exception as e:
+                                    logger.error(f"发送批量消息失败 ({event_type}): {e}", exc_info=True)
+                        last_batch_send_time = time.time()
+                    
                     for update in generator:
-                        # #region agent log
-                        if update_count == 0:
-                            try:
-                                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"开始迭代generator，收到第一个update","data":{"type":update.get('type') if isinstance(update, dict) else str(type(update))},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"E"}) + "\n")
-                                    f.flush()
-                            except: pass
-                        # #endregion
                         # 检查超时（如果超过30秒没有更新，记录警告）
                         current_time = time.time()
                         if current_time - last_update_time > 30:
-                            # #region agent log
-                            try:
-                                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"回测更新超时警告","data":{"last_update":update_count,"elapsed":current_time-last_update_time},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"L"}) + "\n")
-                            except: pass
-                            # #endregion
-                            print(f"[BACKTEST WARN] 超过30秒没有收到更新，最后更新: {update_count}")
+                            logger.warning(f"回测更新超时警告: 最后更新={update_count}, 耗时={current_time - last_update_time:.1f}s")
                         last_update_time = current_time
                         update_count += 1
-                        if update_count == 1:
-                            print(f"[BACKTEST] 收到第一个回测更新: {update.get('type')}")
-                        if update_count % 10 == 0:
-                            print(f"[BACKTEST] 已处理 {update_count} 个更新...")
-                        if update_count == 1:
-                            # #region agent log
-                            try:
-                                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"收到第一个回测更新","data":{"update_type":update.get('type')},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-                            except: pass
-                            # #endregion
+                        
                         if stop_event.is_set():
+                            # 停止前刷新所有缓冲
+                            flush_buffers()
                             break
                         
                         # 发送更新（需要在异步上下文中发送）
                         t = update.get('type')
                         update_data = update.get('data', {})
                         
-                        # 创建发送任务的辅助函数
+                        # 创建发送任务的辅助函数（优化：移除所有 debug.log 写入）
                         async def send_update(event_name, payload):
-                            # #region agent log
-                            import json, time
-                            try:
-                                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:send_update","message":"开始发送事件","data":{"event_name":event_name,"sid":sid,"has_payload":payload is not None},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"K"}) + "\n")
-                                    f.flush()
-                            except: pass
-                            # #endregion
                             try:
                                 await sio.emit(event_name, payload, room=sid)
-                                # #region agent log
-                                try:
-                                    with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                        f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:send_update","message":"事件发送完成","data":{"event_name":event_name,"sid":sid},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"K"}) + "\n")
-                                        f.flush()
-                                except: pass
-                                # #endregion
                             except Exception as e:
-                                # #region agent log
-                                try:
-                                    with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                        f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:send_update","message":"事件发送异常","data":{"event_name":event_name,"sid":sid,"error":str(e),"type":type(e).__name__},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"K"}) + "\n")
-                                        f.flush()
-                                except: pass
-                                # #endregion
-                                logger.error(f"发送事件 {event_name} 失败: {e}")
+                                logger.error(f"发送事件 {event_name} 失败: {e}", exc_info=True)
                                 raise
                         
+                        # ==============================================================================
+                        # 【消息批处理/限流优化】根据事件类型决定是否缓冲
+                        # ==============================================================================
+                        # 立即发送的事件（关键事件，不缓冲）
+                        # 立即发送的事件（关键事件，不缓冲）
                         if t == 'error':
                             asyncio.run_coroutine_threadsafe(
                                 send_update('backtest_error', update_data),
                                 loop
                             )
+                            flush_buffers()  # 停止前刷新缓冲
                             return
                         elif t == 'cancelled':
                             asyncio.run_coroutine_threadsafe(
                                 send_update('backtest_cancelled', update_data or {"message": "回测已取消"}),
                                 loop
                             )
+                            flush_buffers()  # 停止前刷新缓冲
                             return
-                        elif t == 'backtest_start':
-                            asyncio.run_coroutine_threadsafe(
-                                send_update('backtest_start', update_data),
-                                loop
-                            )
-                        elif t == 'progress':
-                            asyncio.run_coroutine_threadsafe(
-                                send_update('progress', update_data),
-                                loop
-                            )
-                        elif t == 'initializing':
-                            # #region agent log
-                            import json, time
-                            try:
-                                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:send_initializing","message":"准备发送 initializing 事件","data":{"sid":sid,"update_data_keys":list(update_data.keys()) if isinstance(update_data, dict) else "not_dict"},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"J"}) + "\n")
-                                    f.flush()
-                            except: pass
-                            # #endregion
-                            future = asyncio.run_coroutine_threadsafe(
-                                send_update('initializing', update_data),
-                                loop
-                            )
-                            # #region agent log
-                            try:
-                                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:send_initializing","message":"已调用 run_coroutine_threadsafe 发送 initializing","data":{"sid":sid,"future_done":future.done()},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"J"}) + "\n")
-                                    f.flush()
-                            except: pass
-                            # #endregion
-                            # 等待一小段时间，检查是否有异常
-                            try:
-                                future.result(timeout=0.1)  # 100ms 超时
-                                # #region agent log
-                                try:
-                                    with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                        f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:send_initializing","message":"initializing 事件发送成功","data":{"sid":sid},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"J"}) + "\n")
-                                        f.flush()
-                                except: pass
-                                # #endregion
-                            except Exception as e:
-                                # #region agent log
-                                try:
-                                    with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                        f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:send_initializing","message":"initializing 事件发送失败","data":{"sid":sid,"error":str(e),"type":type(e).__name__},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"J"}) + "\n")
-                                        f.flush()
-                                except: pass
-                                # #endregion
-                                logger.error(f"发送 initializing 事件失败: {e}")
-                        elif t == 'initialized':
-                            asyncio.run_coroutine_threadsafe(
-                                send_update('initialized', update_data),
-                                loop
-                            )
-                        elif t == 'daily_equity':
-                            # 映射为前端监听的 daily_update
-                            # 使用 MsgPack 打包
-                            if isinstance(update_data, dict):
-                                try:
-                                    packed = pack_backtest_result(update_data)
-                                    asyncio.run_coroutine_threadsafe(
-                                        send_update('daily_update', {
-                                            '_msgpack': True,
-                                            '_data': packed
-                                        }),
-                                        loop
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"MsgPack 打包失败: {e}")
-                                    asyncio.run_coroutine_threadsafe(
-                                        send_update('daily_update', update_data),
-                                        loop
-                                    )
-                            else:
+                        elif t in immediate_events:
+                            # 立即发送关键事件
+                            if t == 'backtest_start':
                                 asyncio.run_coroutine_threadsafe(
-                                    send_update('daily_update', update_data),
+                                    send_update('backtest_start', update_data),
                                     loop
                                 )
-                        elif t == 'new_trade':
-                            asyncio.run_coroutine_threadsafe(
-                                send_update('new_trade', update_data),
-                                loop
-                            )
-                        elif t == 'final_metrics':
-                            # 使用 MsgPack 打包
-                            if isinstance(update_data, dict):
+                            elif t == 'progress':
+                                asyncio.run_coroutine_threadsafe(
+                                    send_update('progress', update_data),
+                                    loop
+                                )
+                            elif t == 'initializing':
+                                future = asyncio.run_coroutine_threadsafe(
+                                    send_update('initializing', update_data),
+                                    loop
+                                )
                                 try:
-                                    packed = pack_backtest_result(update_data)
-                                    asyncio.run_coroutine_threadsafe(
-                                        send_update('metrics_update', {
-                                            '_msgpack': True,
-                                            '_data': packed
-                                        }),
-                                        loop
-                                    )
+                                    future.result(timeout=0.1)  # 100ms 超时
                                 except Exception as e:
-                                    logger.warning(f"MsgPack 打包失败: {e}")
+                                    logger.error(f"发送 initializing 事件失败: {e}")
+                            elif t == 'initialized':
+                                asyncio.run_coroutine_threadsafe(
+                                    send_update('initialized', update_data),
+                                    loop
+                                )
+                            elif t == 'final_metrics':
+                                # 【数据序列化优化】确保使用严格定义的结构
+                                if isinstance(update_data, dict):
+                                    try:
+                                        packed = pack_backtest_result(update_data)
+                                        asyncio.run_coroutine_threadsafe(
+                                            send_update('metrics_update', {
+                                                '_msgpack': True,
+                                                '_data': packed
+                                            }),
+                                            loop
+                                        )
+                                    except Exception as e:
+                                        logger.warning(f"MsgPack 打包失败，回退到 JSON: {e}")
+                                        asyncio.run_coroutine_threadsafe(
+                                            send_update('metrics_update', update_data),
+                                            loop
+                                        )
+                                else:
                                     asyncio.run_coroutine_threadsafe(
                                         send_update('metrics_update', update_data),
                                         loop
                                     )
-                            else:
-                                asyncio.run_coroutine_threadsafe(
-                                    send_update('metrics_update', update_data),
-                                    loop
-                                )
-                        elif t == 'risk_data':
-                            # 使用 MsgPack 打包
-                            if isinstance(update_data, dict):
-                                try:
-                                    packed = pack_backtest_result(update_data)
-                                    asyncio.run_coroutine_threadsafe(
-                                        send_update('risk_update', {
-                                            '_msgpack': True,
-                                            '_data': packed
-                                        }),
-                                        loop
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"MsgPack 打包失败: {e}")
+                            elif t == 'risk_data':
+                                # 【数据序列化优化】确保使用严格定义的结构
+                                if isinstance(update_data, dict):
+                                    try:
+                                        packed = pack_backtest_result(update_data)
+                                        asyncio.run_coroutine_threadsafe(
+                                            send_update('risk_update', {
+                                                '_msgpack': True,
+                                                '_data': packed
+                                            }),
+                                            loop
+                                        )
+                                    except Exception as e:
+                                        logger.warning(f"MsgPack 打包失败，回退到 JSON: {e}")
+                                        asyncio.run_coroutine_threadsafe(
+                                            send_update('risk_update', update_data),
+                                            loop
+                                        )
+                                else:
                                     asyncio.run_coroutine_threadsafe(
                                         send_update('risk_update', update_data),
                                         loop
                                     )
-                            else:
+                            elif t == 'stream_complete':
+                                flush_buffers()  # 完成前刷新所有缓冲
                                 asyncio.run_coroutine_threadsafe(
-                                    send_update('risk_update', update_data),
+                                    send_update('stream_complete', {"message": "回测完成"}),
                                     loop
                                 )
-                        elif t == 'stream_complete':
-                            asyncio.run_coroutine_threadsafe(
-                                send_update('stream_complete', {"message": "回测完成"}),
-                                loop
-                            )
-                            return
+                                return
+                        
+                        # ==============================================================================
+                        # 【消息批处理/限流优化】高频事件使用缓冲池
+                        # ==============================================================================
+                        elif t == 'daily_equity_engine':
+                            # 映射为 daily_equity，加入缓冲池
+                            buffers['daily_equity'].append(update_data)
+                            
+                            # 检查是否需要刷新缓冲（时间间隔或数量阈值）
+                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
+                                len(buffers['daily_equity']) >= BATCH_SIZE):
+                                flush_buffers()
+                        
+                        elif t == 'daily_equity':
+                            # 【修复】处理从 visualization_api.py 转换后的 daily_equity 事件
+                            # visualization_api.py 已经将 daily_equity_engine 转换为 daily_equity
+                            buffers['daily_equity'].append(update_data)
+                            
+                            # 调试：记录收到的 daily_equity 事件
+                            if update_count <= 3 or update_count % 50 == 0:
+                                logger.debug(f"[STREAM] 收到 daily_equity 事件 #{update_count}: date={update_data.get('date')}, equity={update_data.get('strategyReturn')}")
+                            
+                            # 检查是否需要刷新缓冲（时间间隔或数量阈值）
+                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
+                                len(buffers['daily_equity']) >= BATCH_SIZE):
+                                flush_buffers()
+                        
+                        elif t == 'new_trade_engine':
+                            # 加入交易缓冲池
+                            buffers['new_trade'].append(update_data)
+                            
+                            # 检查是否需要刷新缓冲
+                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
+                                len(buffers['new_trade']) >= BATCH_SIZE):
+                                flush_buffers()
+                        
+                        elif t == 'signal':
+                            # 加入信号缓冲池
+                            buffers['signal'].append(update_data)
+                            
+                            # 检查是否需要刷新缓冲
+                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
+                                len(buffers['signal']) >= BATCH_SIZE):
+                                flush_buffers()
+                        
+                        elif t == 'signal_batch':
+                            # 【优化】处理批量信号事件，拆分为单个signal事件加入缓冲池
+                            # 这样可以保持与现有批处理逻辑的兼容性
+                            # update_data 应该是信号数组（batch_signals）
+                            if isinstance(update_data, list):
+                                for signal_item in update_data:
+                                    buffers['signal'].append(signal_item)
+                            else:
+                                logger.warning(f"signal_batch 数据格式不正确: {type(update_data)}")
+                            
+                            # 检查是否需要刷新缓冲
+                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
+                                len(buffers['signal']) >= BATCH_SIZE):
+                                flush_buffers()
+                        
+                        else:
+                            # 未知事件类型，记录警告但不阻塞
+                            logger.debug(f"未知事件类型: {t}, 数据: {update_data}")
+                        
+                        # 定期刷新缓冲（即使未达到阈值）
+                        if current_time - last_batch_send_time >= BATCH_INTERVAL:
+                            flush_buffers()
                 except Exception as e:
-                    # #region agent log
                     import traceback
-                    try:
-                        with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"回测执行异常","data":{"error":str(e),"traceback":traceback.format_exc()[:500]},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-                    except: pass
-                    # #endregion
-                    print(f"[BACKTEST ERROR] 回测失败: {e}")
-                    import traceback
-                    print(f"[BACKTEST ERROR] 异常堆栈:\n{traceback.format_exc()}")
                     logger.error(f"回测失败: {e}", exc_info=True)
+                    # 停止前刷新所有缓冲
+                    try:
+                        flush_buffers()
+                    except Exception:
+                        pass
                     asyncio.run_coroutine_threadsafe(
                         sio.emit('backtest_error', {"message": str(e)}, room=sid),
                         loop
                     )
                 finally:
-                    # #region agent log
+                    # 确保所有缓冲都被刷新
                     try:
-                        with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_backtest","message":"回测执行完成（finally）","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-                    except: pass
-                    # #endregion
+                        flush_buffers()
+                    except Exception:
+                        pass
                     if sid in active_backtests:
                         del active_backtests[sid]
-            
-            # #region agent log
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_streaming_backtest","message":"准备在后台线程中运行回测","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-            except: pass
-            # #endregion
             
             # 在后台线程中运行
             await loop.run_in_executor(None, run_backtest)
             
         except Exception as e:
-            # #region agent log
-            import traceback
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"asgi_socketio_handlers.py:run_streaming_backtest","message":"启动回测失败（外层异常）","data":{"error":str(e),"traceback":traceback.format_exc()[:500]},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"F"}) + "\n")
-            except: pass
-            # #endregion
             logger.error(f"启动回测失败: {e}", exc_info=True)
             await sio.emit('backtest_error', {"message": str(e)}, room=sid)
             if sid in active_backtests:

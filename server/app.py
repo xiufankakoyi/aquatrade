@@ -10,6 +10,7 @@ import warnings
 import json
 import gzip
 import base64
+import logging
 # 高性能序列化
 try:
     import orjson
@@ -26,6 +27,9 @@ except ImportError:
     msgpack = None
 
 from server.performance_utils import json_response, pack_backtest_data
+from server.utils.system import _schedule_restart
+
+# 注意：路由和 Socket.IO 处理器注册函数的导入移到 socketio 创建之后，避免循环导入
 from utils.binary_packer import pack_backtest_result, estimate_size
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -323,12 +327,83 @@ socketio = SocketIO(app,
                     ping_interval=25000,  # 增加ping间隔
                     ping_timeout=60000)  # 增加ping超时
 active_backtests: Dict[str, Event] = {}
-_restart_lock = threading.Lock()
-_restart_scheduled = False
 
- # GA 任务管理
-ga_tasks: Dict[str, Dict] = {}  # 内存任务表，用于存储异步GA优化任务
+# GA 任务管理（已移动到 server.logic.optimization）
+# 保留导入以保持向后兼容
+from server.logic.optimization import ga_tasks, ga_worker
+
 active_optimizations: Dict[str, Event] = {}  # 用于存储活跃的优化任务及其停止事件
+
+# ========== 日志分层过滤配置 ==========
+# 在 Flask 和 SocketIO 创建之后，注册路由之前配置日志级别
+# 目标：过滤框架层噪音，保持业务层详细输出
+# 
+# 注意：Granian 的日志可能由 Rust 层控制，需要通过环境变量 GRANIAN_LOG_LEVEL=info 来控制
+# 如果仍然看到大量 "Scope received" 日志，请检查环境变量设置
+
+# 1. 屏蔽 Granian 和底层 ASGI 噪音
+logging.getLogger("granian").setLevel(logging.INFO)
+logging.getLogger("granian.runtime").setLevel(logging.INFO)
+logging.getLogger("granian.log").setLevel(logging.INFO)
+
+# 2. 屏蔽 Socket.IO 和 Engine.IO 的详细日志
+logging.getLogger("socketio").setLevel(logging.WARNING)
+logging.getLogger("engineio").setLevel(logging.WARNING)
+logging.getLogger("engineio.server").setLevel(logging.WARNING)
+logging.getLogger("engineio.client").setLevel(logging.WARNING)
+
+# 3. 屏蔽 ASGI 相关库的详细日志
+logging.getLogger("asgiref").setLevel(logging.WARNING)
+logging.getLogger("asgiref.wsgi").setLevel(logging.WARNING)
+
+# 4. 屏蔽 Flask 的详细日志（可选，根据需要调整）
+logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+# 5. 保持业务逻辑的详细输出
+# server 模块：DEBUG 级别（可以看到路由注册、回测启动等）
+logging.getLogger("server").setLevel(logging.DEBUG)
+# core.backtest 模块：DEBUG 级别（可以看到回测详情、性能监控等）
+logging.getLogger("core.backtest").setLevel(logging.DEBUG)
+# data_svc 模块：DEBUG 级别（可以看到数据查询详情）
+logging.getLogger("data_svc").setLevel(logging.DEBUG)
+# tools 模块：DEBUG 级别（可以看到策略执行详情）
+logging.getLogger("tools").setLevel(logging.DEBUG)
+# config 模块：DEBUG 级别（可以看到配置加载详情）
+logging.getLogger("config").setLevel(logging.DEBUG)
+
+# 6. 其他第三方库：设置为 INFO 或 WARNING
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)  # Pillow 图像库
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
+logging.getLogger("numba").setLevel(logging.WARNING)  # Numba JIT 编译日志
+
+# ======================================
+
+# 注册路由和 Socket.IO 处理器
+# 注意：必须在 socketio 和 app 创建之后调用，延迟导入避免循环依赖
+# 关键：分离错误处理，确保路由注册和 Socket.IO 注册独立，互不影响
+
+# 1. 注册路由（独立错误处理）
+from config.logger import get_logger
+logger = get_logger(__name__)
+
+try:
+    from server.routes import register_routes
+    register_routes(app)
+    logger.info("路由注册成功")
+except Exception as e:
+    logger.error(f"注册路由失败: {e}", exc_info=True)
+    # 路由注册失败是严重错误，但不阻止服务器启动
+
+# 2. 注册 Socket.IO 处理器（独立错误处理）
+try:
+    from server.socketio_handlers import register_socketio_handlers
+    register_socketio_handlers(socketio)
+    logger.info("Socket.IO 处理器注册成功")
+except Exception as e:
+    logger.error(f"注册 Socket.IO 处理器失败: {e}", exc_info=True)
+    # Socket.IO 注册失败不影响 HTTP 路由的正常工作
 
 # 【健壮性加固】全局数据查询实例（统一数据访问入口）
 _global_data_query = None
@@ -480,33 +555,9 @@ def _sanitize_json_data(data):
         return data
 
 
-def _schedule_restart(delay: float = 1.0) -> None:
-    """
-    在单独的线程里延迟执行 os.execl，实现平滑重启。
-    """
-    global _restart_scheduled
-    with _restart_lock:
-        if _restart_scheduled:
-            return
-        _restart_scheduled = True
-
-    def _restart():
-        time.sleep(delay)
-        python = sys.executable
-        os.execl(python, python, *sys.argv)
-
-    threading.Thread(target=_restart, daemon=True).start()
-
 # ---------------- REST API ---------------- #
-
-@app.route('/')
-def index():
-    """根路径路由"""
-    # 移除 DEBUG 日志
-    response = jsonify({"success": True, "message": "服务器正在运行"})
-    response.headers.add('Content-Type', 'application/json')
-    return response
-
+# 注意：大部分路由已迁移到 server/routes/ 目录下的独立文件
+# 以下路由保留在 app.py 中，因为它们需要直接访问 app 实例或特殊处理
 
 @app.route('/api/strategies', methods=['GET'])
 def get_strategies():
@@ -585,65 +636,22 @@ def get_strategy_params(strategy_id: str):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/run_backtest', methods=['POST'])
-def run_backtest():
-    """非流式备选接口"""
-    try:
-        data = request.get_json() or {}
-        strategy_name = data.get('strategy_name')
-        start_date = data.get('start_date')
-        end_date = data.get('end_date')
-        profile_id = data.get('profile_id')
-        override_params = data.get('override_params') or {}
+# 以下路由已迁移到 server/routes/ 目录：
+# - /api/run_backtest -> server/routes/backtest_routes.py
+# - /api/direct_test -> server/routes/system_routes.py
+# - /api/restart-backend -> server/routes/system_routes.py
+# - /api/kline -> server/routes/data_routes.py
+# - /api/latest_price -> server/routes/data_routes.py
+# - /api/stock_sentiment -> server/routes/sentiment_routes.py
+# - /api/stock_sentiment_words -> server/routes/sentiment_routes.py
+# - /api/stock_sentiment_timeline -> server/routes/sentiment_routes.py
+# - /api/sentiment_trends -> server/routes/sentiment_routes.py
+# - /api/lda_topics -> server/routes/sentiment_routes.py
+# - /api/scatter_data -> server/routes/scatter_routes.py
+# - /api/ga_optimize/start -> server/routes/optimization_routes.py
+# - /api/ga_optimize/status/<task_id> -> server/routes/optimization_routes.py
 
-        # 如果提供了 profile_id，则从 DuckDB 中加载对应的参数预设
-        if profile_id is not None:
-            from core.profiles.profile_repository import get_profile as load_profile
-
-            profile = load_profile(int(profile_id))
-            if profile is None:
-                return jsonify({"success": False, "error": f"Profile {profile_id} 不存在"}), 400
-            # 合并 profile 参数和本次请求的覆盖参数
-            params_from_profile = profile.get("params") or {}
-            if not isinstance(params_from_profile, dict):
-                params_from_profile = {}
-            if not isinstance(override_params, dict):
-                override_params = {}
-            effective_params = {**params_from_profile, **override_params}
-        else:
-            # 不使用 Profile，直接使用请求体中的参数
-            effective_params = data.get('params') or {}
-
-        result = get_api().run_backtest_and_get_data(
-            strategy_name,
-            start_date,
-            end_date,
-            params=effective_params,
-        )
-        # 使用 orjson 加速响应
-        return json_response({"success": True, "data": result})
-    except Exception as e:
-        return json_response({"success": False, "error": str(e)}, status_code=500)
-
-
-@app.route('/api/direct_test', methods=['GET'])
-def direct_test():
-    """全新的、完全独立的测试端点，用于调试路由和响应处理"""
-    # 这个端点不使用任何外部依赖，直接返回硬编码数据
-    test_data = {"success": True, "data": [{"id": "test1", "name": "测试数据1"}]}
-    # 移除 DEBUG 日志
-    return jsonify(test_data)
-
-@app.route('/api/restart-backend', methods=['POST'])
-def restart_backend():
-    """
-    触发后端自我重启：立即给前端成功响应，再在后台调用 os.execl 重新拉起进程。
-    """
-    _schedule_restart()
-    return jsonify({"success": True, "message": "后端正在重启，请稍候 1-2 秒"}), 202
-
-@app.route('/api/kline', methods=['GET'])
-def get_kline_data():
+# 以下路由保留在 app.py 中（需要直接访问 app 实例或特殊处理）：
     """
     HTTP 接口：返回指定标的在时间区间内的 K 线数据
     """
@@ -1461,279 +1469,9 @@ def handle_disconnect():
         logger.error(f"Socket.IO 断开处理失败: {e}")
 
 # ---------------- 大数据传输优化工具函数 ---------------- #
-
-def _estimate_data_size(data: Any) -> int:
-    """估算数据大小（字节）"""
-    try:
-        json_str = json.dumps(data, ensure_ascii=False)
-        return len(json_str.encode('utf-8'))
-    except Exception:
-        return 0
-
-
-def _compress_data(data: Any) -> str:
-    """
-    压缩数据为base64字符串
-    
-    Args:
-        data: 要压缩的数据（可JSON序列化）
-    
-    Returns:
-        base64编码的压缩数据字符串
-    """
-    try:
-        json_str = json.dumps(data, ensure_ascii=False)
-        compressed = gzip.compress(json_str.encode('utf-8'), compresslevel=6)
-        return base64.b64encode(compressed).decode('utf-8')
-    except Exception as e:
-        # 压缩失败时返回原始数据
-        return json.dumps(data, ensure_ascii=False)
-
-
-def _chunk_large_array(arr: List[Any], chunk_size: int = 1000) -> List[List[Any]]:
-    """将大数组分块"""
-    return [arr[i:i + chunk_size] for i in range(0, len(arr), chunk_size)]
-
-
-def _emit_large_data(socketio, sid: str, event_name: str, data: Dict[str, Any], logger):
-    """
-    【修复】大数据传输优化：自动分块和压缩
-    
-    策略：
-    1. 如果数据小于1MB，直接发送
-    2. 如果数据大于1MB但小于10MB，压缩后发送
-    3. 如果数据大于10MB，分块发送（每块最大5MB）
-    
-    Args:
-        socketio: SocketIO实例
-        sid: 会话ID
-        event_name: 事件名称
-        data: 要发送的数据
-        logger: 日志记录器
-    """
-    try:
-        # 估算数据大小
-        data_size = _estimate_data_size(data)
-        size_mb = data_size / (1024 * 1024)
-        
-        # 阈值定义
-        COMPRESS_THRESHOLD = 1 * 1024 * 1024  # 1MB
-        CHUNK_THRESHOLD = 10 * 1024 * 1024  # 10MB
-        MAX_CHUNK_SIZE = 5 * 1024 * 1024  # 5MB per chunk
-        
-        if data_size < COMPRESS_THRESHOLD:
-            # 小数据：直接发送
-            socketio.emit(event_name, data, to=sid)
-            logger.debug(f"直接发送 {event_name} (大小: {size_mb:.2f}MB)")
-        
-        elif data_size < CHUNK_THRESHOLD:
-            # 中等数据：压缩后发送
-            try:
-                compressed_data = _compress_data(data)
-                socketio.emit(event_name, {
-                    '_compressed': True,
-                    '_data': compressed_data
-                }, to=sid)
-                logger.info(f"压缩发送 {event_name} (原始: {size_mb:.2f}MB, 压缩后: {len(compressed_data)/1024/1024:.2f}MB)")
-            except Exception as e:
-                # 压缩失败，回退到直接发送
-                logger.warning(f"压缩失败，回退到直接发送: {e}")
-                socketio.emit(event_name, data, to=sid)
-        
-        else:
-            # 大数据：分块发送
-            # 识别可能的大数组字段
-            large_arrays = {}
-            other_data = {}
-            
-            for key, value in data.items():
-                if isinstance(value, list) and len(value) > 100:
-                    # 可能是大数组
-                    large_arrays[key] = value
-                else:
-                    other_data[key] = value
-            
-            if not large_arrays:
-                # 没有大数组，但整体很大，尝试压缩
-                try:
-                    compressed_data = _compress_data(data)
-                    socketio.emit(event_name, {
-                        '_compressed': True,
-                        '_data': compressed_data
-                    }, to=sid)
-                    logger.info(f"压缩发送 {event_name} (原始: {size_mb:.2f}MB)")
-                except Exception:
-                    # 压缩失败，直接发送（可能会失败，但至少尝试）
-                    socketio.emit(event_name, data, to=sid)
-                    logger.warning(f"大数据直接发送 {event_name} (可能失败)")
-            else:
-                # 分块发送大数组
-                total_chunks = 0
-                for key, arr in large_arrays.items():
-                    chunks = _chunk_large_array(arr, chunk_size=1000)  # 每块1000条
-                    total_chunks += len(chunks)
-                    
-                    # 发送元数据
-                    socketio.emit(event_name, {
-                        '_chunked': True,
-                        '_key': key,
-                        '_total_chunks': len(chunks),
-                        '_chunk_index': 0,
-                        '_other_data': other_data,
-                        '_data': chunks[0] if chunks else []
-                    }, to=sid)
-                    
-                    # 发送后续块
-                    for idx, chunk in enumerate(chunks[1:], start=1):
-                        socketio.sleep(0.01)  # 避免阻塞
-                        socketio.emit(event_name, {
-                            '_chunked': True,
-                            '_key': key,
-                            '_total_chunks': len(chunks),
-                            '_chunk_index': idx,
-                            '_data': chunk
-                        }, to=sid)
-                
-                logger.info(f"分块发送 {event_name} (原始: {size_mb:.2f}MB, {total_chunks}块)")
-    
-    except Exception as e:
-        logger.error(f"发送大数据失败 {event_name}: {e}", exc_info=True)
-        # 失败时尝试直接发送（作为最后手段）
-        try:
-            socketio.emit(event_name, data, to=sid)
-        except Exception:
-            logger.error(f"直接发送也失败 {event_name}")
-
-
-# ---------------- 真正的后台回测任务（不要加装饰器！） ---------------- #
-
-def run_backtest_background(sid, strategy_name, start_date, end_date, benchmark_code, stop_event: Event, params=None):
-    """
-    在后台线程/协程里跑流式回测，并不断通过 socketio.emit 推送给前端
-    """
-    # 使用 logger 记录重要信息（INFO 级别）
-    from config.logger import get_logger
-    logger = get_logger(__name__)
-    logger.info(f"开始流式回测: {strategy_name} | 基准: {benchmark_code or 'None'}")
-
-    try:
-        # 调用 API 层的 stream_backtest（它会包含 daily_equity_engine -> daily_equity 等）
-        for update in get_api().stream_backtest(
-            strategy_name,
-            start_date,
-            end_date,
-            benchmark_code,
-            stop_event=stop_event,
-            params=params,
-        ):
-
-            # 使用 socketio.sleep 让出控制权，避免阻塞（0.001 秒即可）
-            socketio.sleep(0.001)
-
-            t = update.get('type')
-            data = update.get('data', {})
-
-            if stop_event.is_set():
-                try:
-                    socketio.emit('backtest_cancelled', {"message": "回测已取消"}, to=sid)
-                except Exception:
-                    pass  # SocketIO 推送失败不影响主流程
-                break
-
-            # 【健壮性加固】所有 SocketIO 推送都包裹异常捕获
-            try:
-                if t == 'error':
-                    socketio.emit('backtest_error', data, to=sid)
-                    logger.error(f"后台回测错误: {data}")
-                    return
-
-                elif t == 'cancelled':
-                    socketio.emit('backtest_cancelled', data or {"message": "回测已取消"}, to=sid)
-                    return
-
-                elif t == 'backtest_start':
-                    socketio.emit('backtest_start', data, to=sid)
-
-                elif t == 'progress':
-                    socketio.emit('progress', data, to=sid)
-
-                elif t == 'initializing':
-                    socketio.emit('initializing', data, to=sid)
-
-                elif t == 'initialized':
-                    socketio.emit('initialized', data, to=sid)
-
-                elif t == 'daily_equity':
-                    # 映射为前端监听的 daily_update
-                    # 使用 MsgPack 二进制打包（最优性能）
-                    if isinstance(data, dict):
-                        try:
-                            # 使用优化的打包函数
-                            packed = pack_backtest_result(data)
-                            # 发送二进制数据（SocketIO 支持二进制）
-                            socketio.emit('daily_update', {
-                                '_msgpack': True,
-                                '_data': packed
-                            }, to=sid)
-                            logger.info(f"✓ 发送 daily_update (MsgPack: {len(packed)} bytes, date: {data.get('date', 'N/A')})")
-                        except Exception as e:
-                            logger.warning(f"MsgPack 打包失败，回退到 JSON: {e}")
-                            socketio.emit('daily_update', data, to=sid)
-                            logger.info(f"✓ 发送 daily_update (JSON, date: {data.get('date', 'N/A')})")
-                    else:
-                        socketio.emit('daily_update', data, to=sid)
-                        logger.info(f"✓ 发送 daily_update (raw data)")
-
-                elif t == 'new_trade':
-                    # 交易数据通常较小，直接发送
-                    socketio.emit('new_trade', data, to=sid)
-
-                elif t == 'final_metrics':
-                    # 使用 MsgPack 二进制打包（替代 JSON + 压缩）
-                    if isinstance(data, dict):
-                        try:
-                            packed = pack_backtest_result(data)
-                            size_info = estimate_size(data)
-                            logger.info(f"发送 metrics_update (MsgPack: {len(packed)} bytes, "
-                                      f"压缩比: {size_info['compression_ratio']:.2%})")
-                            socketio.emit('metrics_update', {
-                                '_msgpack': True,
-                                '_data': packed
-                            }, to=sid)
-                        except Exception as e:
-                            logger.warning(f"MsgPack 打包失败，回退到分块发送: {e}")
-                            _emit_large_data(socketio, sid, 'metrics_update', data, logger)
-                    else:
-                        _emit_large_data(socketio, sid, 'metrics_update', data, logger)
-                
-                elif t == 'risk_data':
-                    # 使用 MsgPack 二进制打包
-                    if isinstance(data, dict):
-                        try:
-                            packed = pack_backtest_result(data)
-                            socketio.emit('risk_update', {
-                                '_msgpack': True,
-                                '_data': packed
-                            }, to=sid)
-                        except Exception as e:
-                            logger.warning(f"MsgPack 打包失败，回退到分块发送: {e}")
-                            _emit_large_data(socketio, sid, 'risk_update', data, logger)
-                    else:
-                        _emit_large_data(socketio, sid, 'risk_update', data, logger)
-
-                elif t == 'stream_complete':
-                    socketio.emit('stream_complete', {"message": "回测完成"}, to=sid)
-                    logger.info("后台线程回测完成")
-                    return
-            except Exception as emit_err:
-                # SocketIO 推送失败不影响主流程，只记录日志
-                logger.warning(f"SocketIO 推送失败 (type={t}): {emit_err}")
-
-    except Exception as e:
-        logger.error(f"后台流式回测失败: {e}", exc_info=True)
-        socketio.emit('backtest_error', {"message": str(e)}, to=sid)
-    finally:
-        active_backtests.pop(sid, None)
+# 注意：这些函数已移动到 server.logic.backtest 模块
+# 保留导入以保持向后兼容（如果其他地方直接导入）
+from server.logic.backtest import _emit_large_data
 
 # ---------------- 前端触发回测的事件处理handler ---------------- #
 
@@ -1786,9 +1524,14 @@ def handle_streaming_backtest(data):
         stop_event = Event()
         active_backtests[sid] = stop_event
 
+        # 使用逻辑层的回测函数
+        from server.logic.backtest import run_backtest_background
         socketio.start_background_task(
             run_backtest_background,
-            sid, strategy_name, start_date, end_date, benchmark_code, stop_event, effective_params
+            socketio,  # 传递 socketio 实例
+            sid, strategy_name, start_date, end_date, benchmark_code, stop_event, effective_params,
+            get_api,  # 传递 get_api 函数
+            active_backtests  # 传递 active_backtests 字典
         )
 
     except Exception as e:
@@ -2163,35 +1906,8 @@ def handle_run_optimization(data):
         emit('optimization_error', {"message": str(e)})
 
 # ---------------- GA 优化异步任务处理 ---------------- #
-
-def ga_worker(task_id: str, args: dict):
-    """
-    GA优化工作线程
-    在后台执行GA优化并更新任务状态
-    """
-    from config.logger import get_logger
-    logger = get_logger(__name__)
-    ga_tasks[task_id]["status"] = "running"
-    try:
-        # 导入run_ga_optimization函数
-        from tools.ga_optimize_strategy import run_ga_optimization
-        
-        # 执行GA优化
-        result = run_ga_optimization(**args)
-        
-        # 更新任务状态和结果
-        ga_tasks[task_id]["status"] = "finished"
-        ga_tasks[task_id]["result"] = result
-        logger.info(f"GA优化任务完成 (task_id: {task_id})")
-        
-    except Exception as e:
-        # 捕获错误并更新任务状态
-        ga_tasks[task_id]["status"] = "error"
-        ga_tasks[task_id]["error"] = str(e)
-        logger.error(f"GA优化任务失败 (task_id: {task_id}): {e}", exc_info=True)
-        import traceback
-        traceback.print_exc()
-
+# 注意：ga_worker 和 ga_tasks 已移动到 server.logic.optimization
+# 保留导入以保持向后兼容
 
 @app.route("/api/ga_optimize/start", methods=["POST"])
 def api_ga_start():

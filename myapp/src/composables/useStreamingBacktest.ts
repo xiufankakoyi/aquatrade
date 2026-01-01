@@ -193,6 +193,8 @@ export function useStreamingBacktest() {
         break;
       
       case 'backtest_start':
+        // 【关键修复】确保加载动画已关闭（作为备用，主要应该在 initialized 事件中关闭）
+        backtestStore.setInitializing(false);
         hasReceivedFirstDailyUpdate = false;
         hasCompleted = false;
         backtestStore.setRunning(true);

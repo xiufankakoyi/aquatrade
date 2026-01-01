@@ -7,6 +7,7 @@ except ImportError:
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Generator
 from threading import Event
+from functools import lru_cache
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
 from core.backtest.optimized_backtest_engine import OptimizedBacktestEngine
 from core.strategies.strategy_factory import StrategyFactory
@@ -1016,18 +1017,35 @@ class BacktestVisualizationAPI:
         3. 调用流式引擎
         4. 包装引擎数据，添加基准和实时指标
         """
-        # #region agent log
-        import json, time
-        print(f"[STREAM_BACKTEST] 方法开始执行: {strategy_name}, {start_date}~{end_date}")
-        try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"stream_backtest方法开始","data":{"strategy":strategy_name,"start":start_date,"end":end_date,"benchmark":benchmark_code},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"O"}) + "\n")
-                f.flush()
-        except Exception as e:
-            print(f"[DEBUG] 日志写入失败: {e}")
-        # #endregion
+        import time
+        # 性能监控：记录各模块耗时
+        perf_timings = {
+            'total': 0,
+            'initialization': 0,
+            'get_trading_dates': 0,
+            'get_benchmark_data': 0,
+            'benchmark_processing': 0,
+            'strategy_creation': 0,
+            'backtest_execution': 0,
+            'data_processing': 0,
+            'risk_calculation': 0,
+        }
+        total_start = time.perf_counter()
+        
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.debug(f"stream_backtest 方法开始: {strategy_name}, {start_date}~{end_date}")
+        
+        # ==============================================================================
+        # 【并发安全修复】为每个请求创建独立的引擎实例，避免并发请求导致状态污染
+        # 原问题：所有请求共享同一个 self.backtest_engine，导致并发时数据交叉污染
+        # 解决方案：在 stream_backtest 内部创建局部实例，确保线程安全
+        # ==============================================================================
+        local_data_query = None
+        local_engine = None
         
         # CHANGED: 确保数据库已初始化（懒加载）
+        init_start = time.perf_counter()
         if not self._initialized:
             # 发送初始化开始事件
             yield {
@@ -1040,6 +1058,7 @@ class BacktestVisualizationAPI:
             
             try:
                 self._ensure_initialized()
+                perf_timings['initialization'] = (time.perf_counter() - init_start) * 1000  # ms
                 # 发送初始化完成事件
                 yield {
                     "type": "initialized",
@@ -1057,47 +1076,39 @@ class BacktestVisualizationAPI:
                     }
                 }
                 return
+        else:
+            perf_timings['initialization'] = (time.perf_counter() - init_start) * 1000  # ms
         
-        initial_capital = self.backtest_engine.initial_capital
-        
-        # #region agent log
-        import json, time
+        # 【并发安全修复】创建独立的查询对象和引擎对象
         try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"开始准备基准数据","data":{"start":start_date,"end":end_date,"benchmark":benchmark_code},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"N"}) + "\n")
-                f.flush()
-        except: pass
-        # #endregion
+            local_data_query = OptimizedStockDataQuery(self.db_path)
+            local_engine = OptimizedBacktestEngine(local_data_query)
+            initial_capital = local_engine.initial_capital
+            logger.debug(f"创建独立的引擎实例完成，初始资金: {initial_capital}")
+        except Exception as e:
+            logger.error(f"创建独立引擎实例失败: {e}", exc_info=True)
+            yield {
+                "type": "error",
+                "data": {"message": f"创建回测引擎失败: {e}"}
+            }
+            return
         
         # 1. (准备基准数据 - 这仍然是一次性加载)
-        _t_dates_start = time.perf_counter()
-        dates = self.data_query.get_trading_dates(start_date, end_date)
-        _t_dates_end = time.perf_counter()
-        # #region agent log
-        try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"获取交易日期完成","data":{"elapsed":_t_dates_end-_t_dates_start,"dates_count":len(dates)},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"N"}) + "\n")
-                f.flush()
-        except: pass
-        # #endregion
+        t_dates_start = time.perf_counter()
+        dates = local_data_query.get_trading_dates(start_date, end_date)
+        perf_timings['get_trading_dates'] = (time.perf_counter() - t_dates_start) * 1000  # ms
+        logger.debug(f"获取交易日期完成: {len(dates)} 个日期, 耗时 {perf_timings['get_trading_dates']:.2f}ms")
         
         benchmark_curve = []
         if benchmark_code:
-            # #region agent log
-            _t_benchmark_start = time.perf_counter()
-            # #endregion
+            t_benchmark_start = time.perf_counter()
             benchmark_df = self._get_benchmark_data_from_db(benchmark_code, start_date, end_date)
-            # #region agent log
-            _t_benchmark_end = time.perf_counter()
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"获取基准数据完成","data":{"elapsed":_t_benchmark_end-_t_benchmark_start,"rows":len(benchmark_df) if benchmark_df is not None and not benchmark_df.empty else 0},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"N"}) + "\n")
-                    f.flush()
-            except: pass
-            # #endregion
+            perf_timings['get_benchmark_data'] = (time.perf_counter() - t_benchmark_start) * 1000  # ms
+            logger.debug(f"获取基准数据完成: {len(benchmark_df) if benchmark_df is not None and not benchmark_df.empty else 0} 行, 耗时 {perf_timings['get_benchmark_data']:.2f}ms")
         else:
             benchmark_df = pd.DataFrame() 
 
+        t_benchmark_proc_start = time.perf_counter()
         if benchmark_code and not benchmark_df.empty:
             try:
                 strategy_dates_df = pd.DataFrame({'date': dates})
@@ -1115,6 +1126,7 @@ class BacktestVisualizationAPI:
         
         if not benchmark_curve:
             benchmark_curve = [initial_capital] * len(dates)
+        perf_timings['benchmark_processing'] = (time.perf_counter() - t_benchmark_proc_start) * 1000  # ms
             
         # (将基准数据转换为 日期 -> 值 的映射，以便快速查找)
         benchmark_map = dict(zip(dates, benchmark_curve))
@@ -1126,81 +1138,32 @@ class BacktestVisualizationAPI:
         equity_records = []
         
         try:
-            # #region agent log
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"准备调用run_backtest_streaming","data":{"strategy":strategy_name},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"N"}) + "\n")
-                    f.flush()
-            except: pass
-            # #endregion
-            
-            # 调用流式引擎
+            # 调用流式引擎（使用局部引擎实例）
+            t_strategy_start = time.perf_counter()
             creation_kwargs: Dict[str, Any] = params or {}
             strategy = StrategyFactory.create_strategy(strategy_name, use_simple=True, **creation_kwargs)
+            perf_timings['strategy_creation'] = (time.perf_counter() - t_strategy_start) * 1000  # ms
+            logger.debug(f"策略创建完成，耗时 {perf_timings['strategy_creation']:.2f}ms")
             
-            # #region agent log
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"策略创建完成，开始调用run_backtest_streaming","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"N"}) + "\n")
-                    f.flush()
-            except: pass
-            # #endregion
-            
-            engine_generator = self.backtest_engine.run_backtest_streaming(
+            t_backtest_start = time.perf_counter()
+            # 【并发安全修复】使用局部引擎实例，而不是共享的 self.backtest_engine
+            engine_generator = local_engine.run_backtest_streaming(
                 start_date, end_date, strategy, stop_event=stop_event
             )
-            # #region agent log
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"engine_generator创建完成，开始迭代","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"E"}) + "\n")
-                    f.flush()
-            except: pass
-            # #endregion
-            
-            # #region agent log
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"run_backtest_streaming返回生成器，开始循环","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"N"}) + "\n")
-                    f.flush()
-            except: pass
-            # #endregion
+            logger.debug("engine_generator 创建完成，开始迭代")
 
             # 3. 循环遍历引擎的【产出】
             update_count = 0
-            # #region agent log
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"进入for循环，准备迭代engine_generator","data":{},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"E"}) + "\n")
-                    f.flush()
-            except: pass
-            # #endregion
+            data_processing_time = 0
             for update in engine_generator:
                 update_count += 1
-                # #region agent log
-                if update_count <= 5 or update_count % 10 == 0:
-                    try:
-                        with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:stream_backtest","message":"收到引擎更新","data":{"count":update_count,"type":update.get('type') if isinstance(update, dict) else str(type(update))},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"E"}) + "\n")
-                            f.flush()
-                    except: pass
-                # #endregion
+                t_data_start = time.perf_counter()
                 if stop_event and stop_event.is_set():
                     yield {
                         "type": "cancelled",
                         "data": {"message": "回测已取消"}
                     }
                     break
-                
-                # #region agent log - 检查 update 类型
-                update_type = update.get('type') if isinstance(update, dict) else None
-                if update_type == 'initializing':
-                    try:
-                        import json, time
-                        with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                            f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:check_initializing","message":"检测到 initializing 事件，准备进入条件判断","data":{"count":update_count,"update_type":update_type,"is_dict":isinstance(update, dict),"update_keys":list(update.keys()) if isinstance(update, dict) else "not_dict"},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"M"}) + "\n")
-                            f.flush()
-                    except: pass
-                # #endregion
                 
                 # A. 如果是交易或错误，直接转发
                 if update['type'] == 'new_trade_engine':
@@ -1237,6 +1200,7 @@ class BacktestVisualizationAPI:
                             "holding_days": trade_data.get('holding_days')
                         }
                     }
+                    data_processing_time += (time.perf_counter() - t_data_start) * 1000  # ms
                 # 修改后: 添加 initializing 和 initialized
                 elif update['type'] in [
                     'initializing',   # 新增: 通知前端开始加载数据
@@ -1250,17 +1214,9 @@ class BacktestVisualizationAPI:
                     'stream_complete',
                     'progress'
                 ]:
-                    # #region agent log
-                    if update['type'] == 'initializing':
-                        try:
-                            import json, time
-                            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:yield_initializing","message":"准备yield initializing事件","data":{"count":update_count,"progress":update.get('data', {}).get('progress', 'N/A'),"update_type":update.get('type'),"in_list":update.get('type') in ['initializing', 'initialized', 'backtest_start', 'daily_update', 'order_update', 'backtest_end', 'error', 'final_metrics', 'stream_complete', 'progress']},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"M"}) + "\n")
-                                f.flush()
-                        except: pass
-                    # #endregion
                     if update['type'] == 'stream_complete':
                         # 回测结束，计算最终风险指标
+                        t_risk_start = time.perf_counter()
                         if equity_records:
                             try:
                                 results_df = pd.DataFrame(equity_records)
@@ -1271,24 +1227,54 @@ class BacktestVisualizationAPI:
                                 }
                             except Exception as e:
                                 print(f"计算风险数据失败: {e}")
+                        perf_timings['risk_calculation'] = (time.perf_counter() - t_risk_start) * 1000  # ms
+                        
+                        # 计算回测执行总耗时
+                        perf_timings['backtest_execution'] = (time.perf_counter() - t_backtest_start) * 1000  # ms
+                        perf_timings['data_processing'] = data_processing_time
+                        perf_timings['total'] = (time.perf_counter() - total_start) * 1000  # ms
+                        
+                        # 输出性能报告（使用 sys.stderr 确保输出到控制台）
+                        import sys
+                        sys.stderr.write("\n" + "="*60 + "\n")
+                        sys.stderr.write("[PERF] 回测性能分析报告\n")
+                        sys.stderr.write("="*60 + "\n")
+                        sys.stderr.write(f"[PERF] 总耗时: {perf_timings['total']:.2f} ms ({perf_timings['total']/1000:.2f} s)\n")
+                        sys.stderr.write(f"[PERF]   - 初始化: {perf_timings['initialization']:.2f} ms ({perf_timings['initialization']/perf_timings['total']*100:.1f}%)\n")
+                        sys.stderr.write(f"[PERF]   - 获取交易日期: {perf_timings['get_trading_dates']:.2f} ms ({perf_timings['get_trading_dates']/perf_timings['total']*100:.1f}%)\n")
+                        sys.stderr.write(f"[PERF]   - 获取基准数据: {perf_timings['get_benchmark_data']:.2f} ms ({perf_timings['get_benchmark_data']/perf_timings['total']*100:.1f}%)\n")
+                        sys.stderr.write(f"[PERF]   - 基准数据处理: {perf_timings['benchmark_processing']:.2f} ms ({perf_timings['benchmark_processing']/perf_timings['total']*100:.1f}%)\n")
+                        sys.stderr.write(f"[PERF]   - 策略创建: {perf_timings['strategy_creation']:.2f} ms ({perf_timings['strategy_creation']/perf_timings['total']*100:.1f}%)\n")
+                        sys.stderr.write(f"[PERF]   - 回测执行: {perf_timings['backtest_execution']:.2f} ms ({perf_timings['backtest_execution']/perf_timings['total']*100:.1f}%)\n")
+                        # 如果有更详细的回测执行数据，在这里输出
+                        if 'backtest_details' in perf_timings:
+                            details = perf_timings['backtest_details']
+                            sys.stderr.write(f"[PERF]      - 数据加载: {details.get('data_loading', 0):.2f} ms\n")
+                            sys.stderr.write(f"[PERF]      - 指标计算: {details.get('indicator_calculation', 0):.2f} ms\n")
+                            sys.stderr.write(f"[PERF]      - 信号生成: {details.get('signal_generation', 0):.2f} ms\n")
+                            sys.stderr.write(f"[PERF]      - 交易执行: {details.get('trade_execution', 0):.2f} ms\n")
+                            sys.stderr.write(f"[PERF]      - 结果产出: {details.get('result_output', 0):.2f} ms\n")
+                        sys.stderr.write(f"[PERF]   - 数据处理: {perf_timings['data_processing']:.2f} ms ({perf_timings['data_processing']/perf_timings['total']*100:.1f}%)\n")
+                        sys.stderr.write(f"[PERF]   - 风险计算: {perf_timings['risk_calculation']:.2f} ms ({perf_timings['risk_calculation']/perf_timings['total']*100:.1f}%)\n")
+                        sys.stderr.write(f"[PERF] 处理更新数: {update_count}\n")
+                        if update_count > 0:
+                            sys.stderr.write(f"[PERF] 平均每个更新耗时: {perf_timings['data_processing']/update_count:.2f} ms\n")
+                        sys.stderr.write("="*60 + "\n\n")
+                        sys.stderr.flush()
+                        
                         yield update
                         return
                     else:
-                        # #region agent log
-                        if update['type'] == 'initializing':
-                            try:
-                                import json, time
-                                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"visualization_api.py:yield_initializing","message":"已yield initializing事件","data":{"count":update_count},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"M"}) + "\n")
-                                    f.flush()
-                            except: pass
-                        # #endregion
                         yield update
+                        data_processing_time += (time.perf_counter() - t_data_start) * 1000  # ms
                 elif update['type'] == 'daily_equity_engine':
                     engine_data = update['data']
                     current_date = engine_data['date']
                     equity = engine_data['strategyReturn']
                     
+                    # 调试：记录收到的 daily_equity_engine 事件
+                    if update_count <= 3 or update_count % 50 == 0:
+                        logger.debug(f"[STREAM] visualization_api 收到 daily_equity_engine: date={current_date}, equity={equity:.2f}")
                     
                     # (计算实时指标)
                     current_total_return = (equity / initial_capital - 1) * 100
@@ -1306,7 +1292,7 @@ class BacktestVisualizationAPI:
                     })
                     
                     # (打包成前端需要的 'daily_update' 格式)
-                    yield {
+                    daily_equity_data = {
                         "type": "daily_equity", # (这是 app.py 认识的名字)
                         "data": {
                             "date": current_date,
@@ -1316,6 +1302,13 @@ class BacktestVisualizationAPI:
                             "currentDrawdown": current_drawdown  
                         }
                     }
+                    
+                    # 调试：记录即将 yield 的 daily_equity 事件
+                    if update_count <= 3 or update_count % 50 == 0:
+                        logger.debug(f"[STREAM] visualization_api 准备 yield daily_equity: date={current_date}")
+                    
+                    yield daily_equity_data
+                    data_processing_time += (time.perf_counter() - t_data_start) * 1000  # ms
 
                 if stop_event and stop_event.is_set():
                     yield {
@@ -1323,12 +1316,51 @@ class BacktestVisualizationAPI:
                         "data": {"message": "回测已取消"}
                     }
                     break
+            
+            # 循环结束后，无论是否收到 stream_complete，都输出性能报告
+            # 计算回测执行总耗时
+            perf_timings['backtest_execution'] = (time.perf_counter() - t_backtest_start) * 1000  # ms
+            perf_timings['data_processing'] = data_processing_time
+            perf_timings['total'] = (time.perf_counter() - total_start) * 1000  # ms
+            
+            logger.debug(f"循环结束，update_count: {update_count}, data_processing_time: {data_processing_time:.2f}ms")
+            
+            # 输出性能报告（使用 sys.stderr 确保输出到控制台）
+            if perf_timings['total'] > 0:  # 避免除零错误
+                sys.stderr.write("\n" + "="*60 + "\n")
+                sys.stderr.write("[PERF] 回测性能分析报告\n")
+                sys.stderr.write("="*60 + "\n")
+                sys.stderr.write(f"[PERF] 总耗时: {perf_timings['total']:.2f} ms ({perf_timings['total']/1000:.2f} s)\n")
+                sys.stderr.write(f"[PERF]   - 初始化: {perf_timings['initialization']:.2f} ms ({perf_timings['initialization']/perf_timings['total']*100:.1f}%)\n")
+                sys.stderr.write(f"[PERF]   - 获取交易日期: {perf_timings['get_trading_dates']:.2f} ms ({perf_timings['get_trading_dates']/perf_timings['total']*100:.1f}%)\n")
+                sys.stderr.write(f"[PERF]   - 获取基准数据: {perf_timings['get_benchmark_data']:.2f} ms ({perf_timings['get_benchmark_data']/perf_timings['total']*100:.1f}%)\n")
+                sys.stderr.write(f"[PERF]   - 基准数据处理: {perf_timings['benchmark_processing']:.2f} ms ({perf_timings['benchmark_processing']/perf_timings['total']*100:.1f}%)\n")
+                sys.stderr.write(f"[PERF]   - 策略创建: {perf_timings['strategy_creation']:.2f} ms ({perf_timings['strategy_creation']/perf_timings['total']*100:.1f}%)\n")
+                sys.stderr.write(f"[PERF]   - 回测执行: {perf_timings['backtest_execution']:.2f} ms ({perf_timings['backtest_execution']/perf_timings['total']*100:.1f}%)\n")
+                sys.stderr.write(f"[PERF]   - 数据处理: {perf_timings['data_processing']:.2f} ms ({perf_timings['data_processing']/perf_timings['total']*100:.1f}%)\n")
+                sys.stderr.write(f"[PERF]   - 风险计算: {perf_timings['risk_calculation']:.2f} ms ({perf_timings['risk_calculation']/perf_timings['total']*100:.1f}%)\n")
+                sys.stderr.write(f"[PERF] 处理更新数: {update_count}\n")
+                if update_count > 0:
+                    sys.stderr.write(f"[PERF] 平均每个更新耗时: {perf_timings['data_processing']/update_count:.2f} ms\n")
+                sys.stderr.write("="*60 + "\n\n")
+                sys.stderr.flush()
 
         except Exception as e:
+            # 即使发生异常，也尝试输出性能报告
+            perf_timings['total'] = (time.perf_counter() - total_start) * 1000  # ms
+            logger.error(f"回测异常，已执行时间: {perf_timings['total']:.2f}ms, 处理更新数: {update_count}", exc_info=True)
             yield {
                 "type": "error",
                 "data": {"message": str(e)}
             }
+        finally:
+            # 【并发安全修复】清理局部资源
+            if local_data_query is not None:
+                try:
+                    local_data_query.close()
+                    logger.debug("局部数据查询对象已关闭")
+                except Exception as e:
+                    logger.warning(f"关闭局部数据查询对象失败: {e}")
 
     def _get_stock_info_with_market_cap(self, needed_symbols: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
         """
@@ -1541,9 +1573,36 @@ class BacktestVisualizationAPI:
         
         return stock_info
 
+    @lru_cache(maxsize=16)
+    @lru_cache(maxsize=16)
+    def _load_guba_posts_cached(self, symbol_key: str, sample_size: int) -> pd.DataFrame:
+        """
+        【性能优化】缓存版本的股吧数据加载
+        使用 LRU 缓存，缓存最近 16 次不同的请求，避免重复的 Parquet 解析开销
+        
+        Args:
+            symbol_key: 股票代码（字符串，None 用 "__ALL__" 表示）
+            sample_size: 抽样大小
+        """
+        # 将 symbol_key 转换回 Optional[str]
+        symbol = None if symbol_key == "__ALL__" else symbol_key
+        return self._load_guba_posts_from_parquet_impl(symbol, sample_size)
+    
     def _load_guba_posts_from_parquet(self, symbol: Optional[str] = None, sample_size: int = 50) -> pd.DataFrame:
         """
-        从 Parquet 文件加载股吧数据
+        从 Parquet 文件加载股吧数据（带缓存）
+        如果指定 symbol，返回该股票的评论数据（可抽样）
+        否则返回所有股票的聚合数据
+        
+        【性能优化】使用 LRU 缓存，避免重复的 Parquet 解析开销
+        """
+        # 使用缓存版本（symbol 为 None 时转换为字符串，确保可哈希）
+        cache_key_symbol = symbol if symbol is not None else "__ALL__"
+        return self._load_guba_posts_cached(cache_key_symbol, sample_size)
+    
+    def _load_guba_posts_from_parquet_impl(self, symbol: Optional[str] = None, sample_size: int = 50) -> pd.DataFrame:
+        """
+        从 Parquet 文件加载股吧数据（实际实现）
         如果指定 symbol，返回该股票的评论数据（可抽样）
         否则返回所有股票的聚合数据
         """
@@ -1721,11 +1780,11 @@ class BacktestVisualizationAPI:
             start_time = time.perf_counter()
             
             # CHANGED: 优化查询顺序 - 先获取股吧数据（已优化，只返回前100只），再只查询这些股票的市值
-            # 1. 从 Parquet 加载股吧数据（已优化：只返回评论数最多的前100只股票）
+            # 1. 从 Parquet 加载股吧数据（已优化：只返回评论数最多的前100只股票，带缓存）
             logger.info(f"开始加载股吧数据: symbol={symbol}")
             df = self._load_guba_posts_from_parquet(symbol)
             load_time = time.perf_counter() - start_time
-            logger.info(f"股吧数据加载完成: {len(df)} 条记录, 耗时 {load_time:.2f} 秒")
+            logger.info(f"股吧数据加载完成: {len(df)} 条记录, 耗时 {load_time:.2f} 秒 (可能来自缓存)")
             
             if df.empty:
                 logger.warning(f"股吧数据为空，返回空数据 (symbol={symbol})")

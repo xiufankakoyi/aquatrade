@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional, Any
 import time
 
 import pandas as pd
 import numpy as np
 
 from core.strategies.strategy_framework import StrategyBase
+from core.strategies.vectorized_base import VectorizedStrategyBase
 from config.config import Config
 
 
@@ -140,7 +141,7 @@ class JQVolumeConfigpro:
     )
 
 
-class JQVolumeStrategypro(StrategyBase):
+class JQVolumeStrategypro(VectorizedStrategyBase):
     """
     聚宽移植策略：20-60亿市值 + 量比>3 买入，跌破 MA5 卖出。
     """
@@ -158,6 +159,15 @@ class JQVolumeStrategypro(StrategyBase):
         self._last_date = None
         self._yesterday_cache: Dict[str, pd.DataFrame] = {}
         self._list_date_cache: Dict[str, pd.Timestamp] = {}
+        
+        # 性能监控：用于收集各步骤耗时
+        self._perf_stats = {
+            'get_previous_day_pool': {'total': 0.0, 'count': 0, 'cache_hits': 0},
+            'pre_screen_stocks': {'total': 0.0, 'count': 0},
+            'evaluate_buy_candidates': {'total': 0.0, 'count': 0},
+            'get_sell_signals': {'total': 0.0, 'count': 0},
+            'other': {'total': 0.0, 'count': 0}
+        }
 
     def generate_signals(self, current_date, stock_pool_today, data_query):
         """
@@ -170,6 +180,8 @@ class JQVolumeStrategypro(StrategyBase):
         注意：虽然参数名为 stock_pool_today，但策略内部不使用它，
         所有信号都基于昨日数据生成，确保没有未来函数问题。
         """
+        _t_total_start = time.perf_counter()
+        
         if self._last_date is None:
             try:
                 # 尝试获取前一个交易日
@@ -202,32 +214,58 @@ class JQVolumeStrategypro(StrategyBase):
         else:
             # 注意：这里传入 previous_date，确保取到的是昨日的 MA5
             sell_signals = self._get_sell_signals(stock_pool_yesterday, previous_date, data_query)
+        
         # 5. 合并信号
+        _t_merge_start = time.perf_counter()
         final_signals: Dict[str, str] = {code: "sell" for code in sell_signals}
         for stock in buy_candidates:
             # 如果同一只股票既有卖出又有买入信号，通常买入逻辑优先（或根据T+1规则）
             # 这里简单覆盖为 buy，或者您可以选择忽略买入
             final_signals[stock] = "buy"
-
+        _t_merge_end = time.perf_counter()
+        merge_time = (_t_merge_end - _t_merge_start) * 1000
+        self._perf_stats['other']['total'] += merge_time
+        self._perf_stats['other']['count'] += 1
+        
         return final_signals
 
     def _get_previous_day_pool(self, date: str, data_query):
         """获取带缓存的昨日股票池"""
+        _t_start = time.perf_counter()
+        
         if date in self._yesterday_cache:
+            _t_end = time.perf_counter()
+            elapsed = (_t_end - _t_start) * 1000
+            self._perf_stats['get_previous_day_pool']['total'] += elapsed
+            self._perf_stats['get_previous_day_pool']['count'] += 1
+            self._perf_stats['get_previous_day_pool']['cache_hits'] += 1
             return self._yesterday_cache[date]
 
         try:
             # 获取全市场股票池基础数据
             pool = data_query.get_stock_pool(date, use_cache=True, filters={"min_mv": 0})
             if pool is None or pool.empty:
+                _t_end = time.perf_counter()
+                elapsed = (_t_end - _t_start) * 1000
+                self._perf_stats['get_previous_day_pool']['total'] += elapsed
+                self._perf_stats['get_previous_day_pool']['count'] += 1
                 return None
         except Exception as exc:
             print(f"[{date}] JQ策略: 获取股票池失败: {exc}")
+            _t_end = time.perf_counter()
+            elapsed = (_t_end - _t_start) * 1000
+            self._perf_stats['get_previous_day_pool']['total'] += elapsed
+            self._perf_stats['get_previous_day_pool']['count'] += 1
             return None
 
         self._yesterday_cache[date] = pool
         if len(self._yesterday_cache) > 5:
             self._yesterday_cache.pop(next(iter(self._yesterday_cache)))
+        
+        _t_end = time.perf_counter()
+        elapsed = (_t_end - _t_start) * 1000
+        self._perf_stats['get_previous_day_pool']['total'] += elapsed
+        self._perf_stats['get_previous_day_pool']['count'] += 1
         return pool
 
     def _pre_screen_stocks(self, stock_pool: pd.DataFrame, date: str) -> List[str]:
@@ -289,6 +327,8 @@ class JQVolumeStrategypro(StrategyBase):
             result = final_candidates["stock_code"].tolist()
             
             dt = (time.perf_counter() - t0) * 1000
+            self._perf_stats['pre_screen_stocks']['total'] += dt
+            self._perf_stats['pre_screen_stocks']['count'] += 1
             # print(f"[PROFILE][JQ] Pre-screen: {len(result)} stocks, {dt:.1f} ms")
             return result
 
@@ -301,44 +341,68 @@ class JQVolumeStrategypro(StrategyBase):
         self, pre_screened_codes: List[str], stock_pool_snapshot: pd.DataFrame
     ) -> List[str]:
         """
-        第二步筛选（买入核心）：
-        1. 仅保留 volume_ratio > 3 的股票
+        优化后的买入筛选：使用 NumPy Mask + Set Intersection 替代 DataFrame 操作
+        
+        性能优化点：
+        1. 移除 .copy()：不再创建 candidates 子 DataFrame，直接在原数据视图上操作
+        2. 移除 fillna(0)：利用 NumPy 比较特性（NaN > 3 为 False），省去了填充缺失值的 O(N) 操作
+        3. 移除 isin()：将 O(N*M) 的 DataFrame 匹配操作转变为 O(N) 的 NumPy 布尔索引 + O(K) 的哈希表查找（Set）
+        4. 数据结构降维：从 DataFrame 降维到 NumPy Array 处理，去除了 Pandas 的 Overhead
+        
+        预计性能提升：4-10 倍（从 2-5ms 降至 0.2-0.5ms）
         """
         t0 = time.perf_counter()
+        
         if not pre_screened_codes or stock_pool_snapshot is None:
             return []
 
-        # 检查必要列
-        if "volume_ratio" not in stock_pool_snapshot.columns:
-            # 如果数据源没有预计算的量比，这里需要自行计算（通常数据源会有）
-            print("[JQ策略] 警告：股票池缺少 volume_ratio 列，无法进行量比筛选")
+        # 1. 直接获取 NumPy 数组 (Zero Copy，速度极快)
+        # 假设数据列名固定，直接取 values 绕过 Pandas 索引对齐
+        try:
+            # 这里的 values 是 numpy array 视图，没有内存拷贝
+            vol_ratios = stock_pool_snapshot["volume_ratio"].values
+            all_codes = stock_pool_snapshot["stock_code"].values
+            # 成交量列可能不存在，需要容错处理
+            if "volume" in stock_pool_snapshot.columns:
+                volumes = stock_pool_snapshot["volume"].values
+                has_volume_filter = True
+            else:
+                # 如果没有 volume 列，不进行成交量过滤
+                has_volume_filter = False
+        except KeyError:
+            # 容错处理
+            if "volume_ratio" not in stock_pool_snapshot.columns:
+                print("[JQ策略] 警告：缺少 volume_ratio")
+                return []
             return []
 
-        # 提取候选池
-        candidates = stock_pool_snapshot[
-            stock_pool_snapshot["stock_code"].isin(pre_screened_codes)
-        ].copy()
-
-        if candidates.empty:
-            return []
+        # 2. 全局向量化计算 Mask (NumPy 速度远快于 Series)
+        # 逻辑：量比 > 阈值 且 成交量 > 0（如果存在 volume 列）
+        # 处理 NaN：直接比较时 NaN 会返回 False，符合预期，无需 fillna(0) 的额外开销
+        threshold = self.config.volume_ratio_threshold
         
-        # 填充缺失值
-        # 注意：使用 loc 避免 SettingWithCopyWarning
-        candidates.loc[:, "volume_ratio"] = candidates["volume_ratio"].fillna(0)
+        # 这一步计算是纳秒级的
+        # 注意：使用 bitwise & 运算
+        buy_mask = (vol_ratios > threshold)
+        if has_volume_filter:
+            buy_mask = buy_mask & (volumes > 0)
 
-        # === 核心逻辑：量比 > 3 ===
-        # 原策略：yesterday_volume / avg_volume_5d > 3
-        # 假设数据源的 volume_ratio 已经是对齐该定义的（通常是 量比 = 当日量 / 5日均量）
-        final_mask = candidates["volume_ratio"] > self.config.volume_ratio_threshold
+        # 3. 获取所有满足量比条件的股票代码
+        # boolean indexing
+        high_vol_candidates = all_codes[buy_mask]
 
-        # 排除停牌（成交量为0）
-        if "volume" in candidates.columns:
-             final_mask &= (candidates["volume"] > 0)
-
-        result = candidates.loc[final_mask, "stock_code"].tolist()
+        # 4. 使用集合求交集 (Set Intersection)
+        # 这是 Python 处理字符串匹配最快的方式
+        # 如果 pre_screened_codes 比较大，先转 set；如果小，直接列表推导
         
+        # 方案 A：如果 pre_screened_codes 数量 > 100，转 set 会更快
+        target_set = set(pre_screened_codes)
+        result = [code for code in high_vol_candidates if code in target_set]
+
         dt = (time.perf_counter() - t0) * 1000
-        print(f"[PROFILE][JQ] Buy Logic: {len(pre_screened_codes)} -> {len(result)} buys, {dt:.1f} ms")
+        self._perf_stats['evaluate_buy_candidates']['total'] += dt
+        self._perf_stats['evaluate_buy_candidates']['count'] += 1
+        # print(f"[PROFILE] Optimized Buy: {len(result)} buys, {dt:.3f} ms")
         
         return result
 
@@ -350,7 +414,12 @@ class JQVolumeStrategypro(StrategyBase):
         注意：stock_pool 是昨日的数据，包含昨日的收盘价和MA5。
         如果昨日收盘价跌破MA5，则在今日开盘时执行卖出。
         """
+        t0 = time.perf_counter()
+        
         if stock_pool is None or stock_pool.empty:
+            dt = (time.perf_counter() - t0) * 1000
+            self._perf_stats['get_sell_signals']['total'] += dt
+            self._perf_stats['get_sell_signals']['count'] += 1
             return []
 
         # 如果 stock_pool 已经包含了昨日的 MA5 和 Close，直接向量化计算
@@ -358,7 +427,11 @@ class JQVolumeStrategypro(StrategyBase):
             # 卖出条件：昨日Close < 昨日MA5
             # 这是安全的，因为使用的是昨日收盘后的数据，在今日开盘时可以执行
             sell_mask = (stock_pool["close"] < stock_pool["ma5"])
-            return stock_pool.loc[sell_mask, "stock_code"].tolist()
+            result = stock_pool.loc[sell_mask, "stock_code"].tolist()
+            dt = (time.perf_counter() - t0) * 1000
+            self._perf_stats['get_sell_signals']['total'] += dt
+            self._perf_stats['get_sell_signals']['count'] += 1
+            return result
 
         # 如果没有 MA5 数据，尝试现场计算（备用路径）
         try:
@@ -373,12 +446,165 @@ class JQVolumeStrategypro(StrategyBase):
                 min_periods=self.config.ma_days,
             )
             if snapshot.empty:
+                dt = (time.perf_counter() - t0) * 1000
+                self._perf_stats['get_sell_signals']['total'] += dt
+                self._perf_stats['get_sell_signals']['count'] += 1
                 return []
 
             snapshot = snapshot.dropna(subset=["ma_value"])
             # 筛选跌破均线的股票
-            return snapshot.loc[snapshot["close"] < snapshot["ma_value"], "stock_code"].tolist()
+            result = snapshot.loc[snapshot["close"] < snapshot["ma_value"], "stock_code"].tolist()
+            dt = (time.perf_counter() - t0) * 1000
+            self._perf_stats['get_sell_signals']['total'] += dt
+            self._perf_stats['get_sell_signals']['count'] += 1
+            return result
 
         except Exception as exc:
             print(f"[{date}] JQ策略: 计算卖出信号失败: {exc}")
+            dt = (time.perf_counter() - t0) * 1000
+            self._perf_stats['get_sell_signals']['total'] += dt
+            self._perf_stats['get_sell_signals']['count'] += 1
             return []
+    
+    def get_perf_stats(self) -> Dict[str, Any]:
+        """
+        获取性能统计信息
+        
+        返回：
+            Dict包含各步骤的总耗时、平均耗时、调用次数等
+        """
+        stats = {}
+        total_time = 0.0
+        
+        for key, data in self._perf_stats.items():
+            count = data.get('count', 0)
+            total = data.get('total', 0.0)
+            avg = total / count if count > 0 else 0.0
+            total_time += total
+            
+            stats[key] = {
+                'total_ms': total,
+                'avg_ms': avg,
+                'count': count
+            }
+            
+            # 特殊处理：缓存命中率
+            if key == 'get_previous_day_pool' and 'cache_hits' in data:
+                cache_hits = data.get('cache_hits', 0)
+                hit_rate = (cache_hits / count * 100) if count > 0 else 0.0
+                stats[key]['cache_hits'] = cache_hits
+                stats[key]['cache_hit_rate'] = hit_rate
+        
+        stats['_total_time_ms'] = total_time
+        return stats
+    
+    def reset_perf_stats(self):
+        """重置性能统计"""
+        self._perf_stats = {
+            'get_previous_day_pool': {'total': 0.0, 'count': 0, 'cache_hits': 0},
+            'pre_screen_stocks': {'total': 0.0, 'count': 0},
+            'evaluate_buy_candidates': {'total': 0.0, 'count': 0},
+            'get_sell_signals': {'total': 0.0, 'count': 0},
+            'other': {'total': 0.0, 'count': 0}
+        }
+    
+    def generate_signals_vectorized(
+        self,
+        price_matrix: np.ndarray,  # (T, N, 4)
+        trading_dates: List[str],   # (T,)
+        stock_codes: List[str],     # (N,)
+        data_query,
+        preloaded_data: Optional[Dict[str, pd.DataFrame]] = None
+    ) -> np.ndarray:
+        """
+        【极速版】向量化信号生成（重构后）
+        性能预期：45s -> 0.2s
+        
+        参数：
+            price_matrix: 价格矩阵 (T, N, 4) - [open, high, low, close]
+            trading_dates: 交易日期列表 (T,)
+            stock_codes: 股票代码列表 (N,)
+            data_query: 数据查询对象
+            preloaded_data: 预加载的全量数据 Dict[str, pd.DataFrame]
+        
+        返回：
+            signal_matrix: (T, N) int32 - 0=hold, 1=buy, 2=sell
+        """
+        T, N = len(trading_dates), len(stock_codes)
+        signal_matrix = np.zeros((T, N), dtype=np.int32)
+        
+        if preloaded_data is None or len(preloaded_data) == 0:
+            return signal_matrix
+        
+        # =====================================================================
+        # 步骤1: 调用基类准备数据（矩阵转换逻辑已封装）
+        # =====================================================================
+        self.prepare_data(preloaded_data, trading_dates, stock_codes, price_matrix)
+        
+        # =====================================================================
+        # 步骤2: 使用 vectorized_ops 计算 MA5
+        # =====================================================================
+        from core.calc import vectorized_ops as ops
+        
+        # 使用基类准备好的 close 矩阵，如果没有则从 price_matrix 提取
+        if self.close is not None:
+            close_prices = self.close
+        else:
+            close_prices = price_matrix[:, :, 3]
+        
+        # 计算 MA5
+        ma5 = ops.calc_ma_vectorized(close_prices, self.config.ma_days)
+        
+        # =====================================================================
+        # 步骤3: 纯布尔运算实现策略逻辑
+        # =====================================================================
+        
+        # 1. 买入条件：市值筛选 + ST过滤 + 上市天数 + 量比筛选
+        buy_condition = (
+            (self.total_mv >= self.config.market_cap_min) &
+            (self.total_mv <= self.config.market_cap_max) &
+            (self.is_st == 0) &
+            (self.days_listed >= self.required_days) &
+            (self.volume_ratio > self.config.volume_ratio_threshold) &
+            (self.volume > 0)
+        )
+        
+        # 2. 卖出条件：跌破均线
+        if self.close is not None:
+            close_matrix = self.close
+        else:
+            close_matrix = price_matrix[:, :, 3]
+        
+        sell_condition = (
+            (close_matrix < ma5) &
+            ~np.isnan(close_matrix) &
+            ~np.isnan(ma5)
+        )
+        
+        # 3. 候选截断 (Argpartition) - 保留策略特有逻辑
+        if self.config.max_candidates < N:
+            # 只有当某天候选股超过限制时才需要处理
+            daily_counts = np.sum(buy_condition, axis=1)
+            days_to_prune = np.where(daily_counts > self.config.max_candidates)[0]
+            
+            for t in days_to_prune:
+                candidates_idx = np.where(buy_condition[t])[0]
+                amounts = self.amount[t, candidates_idx]
+                
+                # 取前 k 个
+                k = self.config.max_candidates
+                if len(amounts) > k:
+                    # 获取第 k 大元素的索引位置
+                    idx_in_candidates = np.argpartition(amounts, -k)[-k:]
+                    keep_idx = candidates_idx[idx_in_candidates]
+                    
+                    # 重置该行，只保留选中的
+                    buy_condition[t, :] = False
+                    buy_condition[t, keep_idx] = True
+        
+        # 4. 最终合成信号矩阵
+        signal_matrix[buy_condition] = 1
+        # 卖出信号不能覆盖买入信号（假设当日优先买入）
+        signal_matrix[sell_condition & (signal_matrix != 1)] = 2
+        
+        return signal_matrix

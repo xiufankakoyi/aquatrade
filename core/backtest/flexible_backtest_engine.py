@@ -24,6 +24,72 @@ from tqdm import tqdm
 import time
 
 
+def _detect_architecture(data_query, stock_pool=None):
+    """
+    检测当前使用的架构
+    
+    Returns:
+        dict: 架构信息
+    """
+    arch = {
+        'engine': 'FlexibleBacktestEngine',
+        'data_backend': 'unknown',
+        'data_format': 'unknown',
+        'compute_backend': 'unknown',
+        'jit_compiled': False
+    }
+    
+    # 1. 检测数据后端
+    if hasattr(data_query, '_use_lancedb') and data_query._use_lancedb:
+        if hasattr(data_query, 'lance_manager'):
+            arch['data_backend'] = 'LanceDB'
+        else:
+            arch['data_backend'] = 'LanceDB (未初始化)'
+    elif hasattr(data_query, '_use_duckdb') and data_query._use_duckdb:
+        arch['data_backend'] = 'DuckDB'
+    else:
+        arch['data_backend'] = 'SQLite/其他'
+    
+    # 2. 检测数据格式
+    if stock_pool is not None:
+        if isinstance(stock_pool, pd.DataFrame):
+            arch['data_format'] = 'Pandas DataFrame'
+        else:
+            try:
+                import polars as pl
+                if isinstance(stock_pool, pl.DataFrame):
+                    arch['data_format'] = 'Polars DataFrame'
+                elif isinstance(stock_pool, pl.LazyFrame):
+                    arch['data_format'] = 'Polars LazyFrame'
+                else:
+                    import numpy as np
+                    if isinstance(stock_pool, np.ndarray):
+                        arch['data_format'] = 'NumPy Array'
+                    else:
+                        arch['data_format'] = f'{type(stock_pool).__name__}'
+            except ImportError:
+                import numpy as np
+                if isinstance(stock_pool, np.ndarray):
+                    arch['data_format'] = 'NumPy Array'
+                else:
+                    arch['data_format'] = f'{type(stock_pool).__name__}'
+    
+    # 3. 检测计算后端
+    try:
+        import numba
+        arch['compute_backend'] = 'Numba (可用)'
+    except ImportError:
+        arch['compute_backend'] = 'Python (无Numba)'
+    
+    # 4. 检测是否使用预加载
+    if hasattr(data_query, '_preloaded_data') and data_query._preloaded_data is not None:
+        arch['preloaded'] = True
+    else:
+        arch['preloaded'] = False
+    
+    return arch
+
+
 class FlexibleBacktestEngine:
     """
     灵活的回测引擎
@@ -128,28 +194,48 @@ class FlexibleBacktestEngine:
                 yield {"type": "backtest_cancelled", "data": {"message": "回测已取消"}}
                 return
             
+            # 性能分析：记录每天的总耗时
+            day_start = time.perf_counter()
+            perf_breakdown = {}
+            arch_info = {}
+            
+            # 初始化 logger（延迟导入避免循环依赖）
+            from config.logger import get_logger
+            logger = get_logger(__name__)
+            
             try:
                 # 获取当前时间点的数据
+                t0 = time.perf_counter()
                 stock_pool = self._get_stock_pool_at_time(current_time)
+                perf_breakdown['data_load'] = (time.perf_counter() - t0) * 1000  # ms
+                
+                # 检测架构（仅在第一天或每10天检测一次）
+                if idx == 1 or idx % 10 == 0:
+                    arch_info = _detect_architecture(self.data_query, stock_pool)
                 
                 if stock_pool is None or stock_pool.empty:
                     continue
                 
                 # 设置策略上下文
+                t0 = time.perf_counter()
                 strategy.set_runtime_context(
                     current_date=current_time.strftime("%Y-%m-%d"),
                     portfolio=portfolio,
                     cash=cash
                 )
+                perf_breakdown['set_context'] = (time.perf_counter() - t0) * 1000  # ms
                 
                 # 生成信号
+                t0 = time.perf_counter()
                 signals = strategy.generate_signals(
                     current_date=current_time.strftime("%Y-%m-%d"),
                     stock_pool_today=stock_pool,
                     data_query=self.data_query
                 )
+                perf_breakdown['signal_generation'] = (time.perf_counter() - t0) * 1000  # ms
                 
                 # 执行交易
+                t0 = time.perf_counter()
                 portfolio, cash, trades = self._execute_trades(
                     current_time,
                     stock_pool,
@@ -157,19 +243,25 @@ class FlexibleBacktestEngine:
                     portfolio,
                     cash
                 )
+                perf_breakdown['execute_trades'] = (time.perf_counter() - t0) * 1000  # ms
                 
                 # 记录交易
+                t0 = time.perf_counter()
                 all_trades_log.extend(trades)
+                perf_breakdown['log_trades'] = (time.perf_counter() - t0) * 1000  # ms
                 
                 # 计算账户价值
+                t0 = time.perf_counter()
                 total_value = self._calculate_portfolio_value(
                     current_time,
                     stock_pool,
                     portfolio,
                     cash
                 )
+                perf_breakdown['calc_value'] = (time.perf_counter() - t0) * 1000  # ms
                 
                 # 产出每日更新
+                t0 = time.perf_counter()
                 if self.time_granularity == 'daily' or idx % self._get_update_frequency() == 0:
                     yield {
                         "type": "daily_equity",
@@ -181,6 +273,45 @@ class FlexibleBacktestEngine:
                             "trades": len(trades)
                         }
                     }
+                perf_breakdown['yield_data'] = (time.perf_counter() - t0) * 1000  # ms
+                
+                # 计算总耗时
+                perf_breakdown['total'] = (time.perf_counter() - day_start) * 1000  # ms
+                
+                # 输出性能分析（仅在前10天或总耗时>100ms时输出）
+                if idx <= 10 or perf_breakdown['total'] > 100:
+                    # 构建架构信息字符串
+                    arch_str = ""
+                    if arch_info:
+                        arch_str = f" | 架构: {arch_info.get('data_backend', '?')}/{arch_info.get('data_format', '?')}"
+                        if arch_info.get('preloaded'):
+                            arch_str += " [预加载]"
+                        else:
+                            arch_str += " [未预加载]"
+                    
+                    logger.warning(f"[PERF][Day {idx}] {current_time.strftime('%Y-%m-%d')}: "
+                          f"总耗时={perf_breakdown['total']:.1f}ms | "
+                          f"数据加载={perf_breakdown['data_load']:.1f}ms | "
+                          f"信号生成={perf_breakdown['signal_generation']:.1f}ms | "
+                          f"交易执行={perf_breakdown['execute_trades']:.1f}ms | "
+                          f"价值计算={perf_breakdown['calc_value']:.1f}ms | "
+                          f"数据传输={perf_breakdown['yield_data']:.1f}ms{arch_str}")
+                    
+                    # 如果是第一天，输出详细的架构信息
+                    if idx == 1 and arch_info:
+                        logger.warning(f"[ARCH] ========== 回测引擎架构检测 ==========")
+                        logger.warning(f"[ARCH] 引擎: {arch_info.get('engine', '?')}")
+                        logger.warning(f"[ARCH] 数据后端: {arch_info.get('data_backend', '?')}")
+                        logger.warning(f"[ARCH] 数据格式: {arch_info.get('data_format', '?')}")
+                        logger.warning(f"[ARCH] 计算后端: {arch_info.get('compute_backend', '?')}")
+                        logger.warning(f"[ARCH] 数据预加载: {'是' if arch_info.get('preloaded') else '否'}")
+                        if not arch_info.get('preloaded'):
+                            logger.warning(f"[ARCH] ⚠️  警告: 未使用数据预加载，性能可能较差！")
+                        if arch_info.get('data_backend') != 'LanceDB':
+                            logger.warning(f"[ARCH] ⚠️  警告: 未使用LanceDB后端，性能可能较差！")
+                        if arch_info.get('data_format') == 'Pandas DataFrame':
+                            logger.warning(f"[ARCH] ⚠️  警告: 使用Pandas DataFrame，建议使用Polars或NumPy！")
+                        logger.warning(f"[ARCH] ======================================")
                 
             except Exception as e:
                 yield {

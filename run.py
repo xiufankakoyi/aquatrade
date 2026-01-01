@@ -151,18 +151,6 @@ async def error_handler_wrapper(scope, receive, send):
     import sys
     import traceback
     
-    # 打印 scope 内容用于调试
-    try:
-        scope_str = json.dumps({k: (v.decode() if isinstance(v, bytes) else v) for k, v in scope.items() if k != 'headers'}, ensure_ascii=False)
-        print(f"[DEBUG] Scope received: {scope_str}", file=sys.stderr, flush=True)
-        # #region agent log
-        try:
-            with open(_log_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"run.py:error_handler","message":"Scope 接收","data":{"scope_type":scope.get("type","N/A"),"method":scope.get("method","N/A"),"path":scope.get("path","N/A")},"sessionId":"debug-session","runId":"error-debug","hypothesisId":"G"}) + "\n")
-        except: pass
-        # #endregion
-    except Exception as e:
-        print(f"[DEBUG] Failed to print scope: {e}", file=sys.stderr, flush=True)
     
     try:
         # #region agent log

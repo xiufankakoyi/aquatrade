@@ -230,10 +230,66 @@ class LanceDBManager:
                         f.flush()
                 except: pass
                 # #endregion
-                # 使用 search().where() 将过滤下推到数据库层
-                # 只读取符合条件的行，速度提升 100 倍
-                arrow_table = table.search().where(where_clause).to_arrow()
-                _t_query_end = time.perf_counter()
+                
+                # 【优化】尝试使用更明确的查询方式以触发索引使用
+                # 对于日期范围查询，确保使用索引列作为过滤条件
+                try:
+                    # 方法1：使用 search().where() 下推过滤（推荐，会使用索引）
+                    # 注意：LanceDB 的标量索引会在 where 子句包含索引列时自动使用
+                    search_query = table.search()
+                    
+                    # 如果只有日期过滤，优先使用日期索引
+                    if start_date and end_date and not stock_codes:
+                        # 优化：明确使用日期列过滤，触发索引
+                        # 使用 BETWEEN 语法可能更有利于索引使用
+                        date_filter = f"{date_column} >= '{start_date}' AND {date_column} <= '{end_date}'"
+                        logger.debug(f"[LanceDB] 使用日期范围过滤: {date_filter}")
+                        arrow_table = search_query.where(date_filter).to_arrow()
+                    else:
+                        # 其他情况使用完整 where 子句
+                        logger.debug(f"[LanceDB] 使用完整过滤条件: {where_clause}")
+                        arrow_table = search_query.where(where_clause).to_arrow()
+                    
+                    _t_query_end = time.perf_counter()
+                    query_time = _t_query_end - _t_query_start
+                    num_rows = arrow_table.num_rows if arrow_table else 0
+                    
+                    # 性能警告：如果查询时间过长，可能索引未被使用
+                    if query_time > 1.0:
+                        # 计算数据密度（行数/秒），用于判断是否使用了索引
+                        rows_per_sec = num_rows / query_time if query_time > 0 else 0
+                        logger.warning(
+                            f"⚠️ [LanceDB] 查询耗时较长 ({query_time:.3f}s)，可能索引未被使用。"
+                            f"表: {self.table_name}, 条件: {where_clause}, 行数: {num_rows}, "
+                            f"速度: {rows_per_sec:.0f} 行/秒"
+                        )
+                        
+                        # 检查索引是否存在并尝试重建
+                        try:
+                            schema = table.schema
+                            logger.debug(f"[LanceDB] 表结构: {schema.names}")
+                            
+                            # 尝试检查并重建索引（如果查询很慢）
+                            if query_time > 1.5 and num_rows > 100000:
+                                logger.warning(
+                                    f"⚠️ [LanceDB] 查询非常慢，建议运行 'python data.py' 重建索引。"
+                                    f"表: {self.table_name}, 日期列: {date_column}"
+                                )
+                        except:
+                            pass
+                    else:
+                        rows_per_sec = num_rows / query_time if query_time > 0 else 0
+                        logger.info(
+                            f"✓ [LanceDB] 查询完成 ({query_time:.3f}s)，行数: {num_rows}, "
+                            f"速度: {rows_per_sec:.0f} 行/秒, 表: {self.table_name}"
+                        )
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ [LanceDB] 优化查询失败，回退到标准查询: {e}")
+                    # 回退到标准查询
+                    arrow_table = table.search().where(where_clause).to_arrow()
+                    _t_query_end = time.perf_counter()
+                
                 # #region agent log
                 try:
                     with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
@@ -275,9 +331,53 @@ class LanceDBManager:
             
         except Exception as e:
             logger.error(f"LanceDB 查询失败: {e}")
-            # 最后的保底：如果 where 子句语法错误，回退到 Pandas 加载 (虽然慢但能跑)
-            result = table.to_pandas()
-            return pl.from_pandas(result).lazy()
+            # 【关键修复】最后的保底：即使失败也要尝试使用过滤，避免全表扫描
+            try:
+                # 尝试使用更简单的过滤方式
+                if where_clause:
+                    logger.warning(f"⚠️ [LanceDB] 尝试使用备用过滤方法: {where_clause}")
+                    try:
+                        # 尝试直接使用 search().where()，即使之前失败
+                        arrow_table = table.search().where(where_clause).to_arrow()
+                        df_eager = pl.from_arrow(arrow_table)
+                        lazy_df = df_eager.lazy()
+                        if columns:
+                            valid_cols = [c for c in columns if c in df_eager.columns and c != '_id']
+                            if valid_cols:
+                                lazy_df = lazy_df.select(valid_cols)
+                        elif '_id' in df_eager.columns:
+                            lazy_df = lazy_df.drop('_id')
+                        logger.warning(f"✓ [LanceDB] 备用过滤方法成功，行数: {len(df_eager)}")
+                        return lazy_df
+                    except Exception as e2:
+                        logger.error(f"⚠️ [LanceDB] 备用过滤方法也失败: {e2}")
+                
+                # 如果所有过滤方法都失败，才全表加载（这是最后的保底）
+                logger.error("⚠️ [LanceDB] 所有过滤方法都失败，执行全表扫描（性能较差）")
+                result = table.to_pandas()
+                
+                # 即使全表加载，也要在 Polars 层面应用过滤
+                df_pl = pl.from_pandas(result)
+                if start_date:
+                    df_pl = df_pl.filter(pl.col(date_column) >= start_date)
+                if end_date:
+                    df_pl = df_pl.filter(pl.col(date_column) <= end_date)
+                if stock_codes:
+                    code_col = "code" if self.table_name == "benchmark_data" else "stock_code"
+                    df_pl = df_pl.filter(pl.col(code_col).is_in(stock_codes))
+                if columns:
+                    valid_cols = [c for c in columns if c in df_pl.columns and c != '_id']
+                    if valid_cols:
+                        df_pl = df_pl.select(valid_cols)
+                elif '_id' in df_pl.columns:
+                    df_pl = df_pl.drop('_id')
+                
+                return df_pl.lazy()
+            except Exception as e3:
+                # 如果连这个都失败，才真正全表加载（不应该到这里）
+                logger.critical(f"⚠️ [LanceDB] 所有方法都失败，执行全表扫描: {e3}")
+                result = table.to_pandas()
+                return pl.from_pandas(result).lazy()
     
     def load_to_polars(self, 
                       stock_codes: Optional[List[str]] = None,
@@ -325,21 +425,46 @@ class LanceDBManager:
                               end_date: Optional[str] = None,
                               columns: Optional[List[str]] = None) -> pl.DataFrame:
         """
-        原有的 Eager API 实现（保留用于兼容性）
+        原有的 Eager API 实现（已修复：使用下推过滤，避免全表扫描）
         """
         if self.table_name not in self.db.table_names():
             raise ValueError(f"表 {self.table_name} 不存在，请先运行 convert_parquet_to_lance()")
         
         table = self.db.open_table(self.table_name)
         
+        # 自动推断日期列名
+        date_column = "date" if self.table_name == "benchmark_data" else "trade_date"
+        
         try:
             if not PYARROW_AVAILABLE:
                 raise ImportError("pyarrow not available")
             
-            arrow_table = table.to_arrow()
+            # 【关键修复】使用 search().where() 下推过滤，避免全表扫描
+            # 构建过滤条件
+            conditions = []
+            if start_date:
+                conditions.append(f"{date_column} >= '{start_date}'")
+            if end_date:
+                conditions.append(f"{date_column} <= '{end_date}'")
+            if stock_codes:
+                code_column = "code" if self.table_name == "benchmark_data" else "stock_code"
+                codes_str = "', '".join(stock_codes)
+                conditions.append(f"{code_column} IN ('{codes_str}')")
+            
+            where_clause = " AND ".join(conditions) if conditions else None
+            
+            if where_clause:
+                # 使用下推过滤，只加载符合条件的数据
+                logger.debug(f"[LanceDB Eager] 使用下推过滤: {where_clause}")
+                arrow_table = table.search().where(where_clause).to_arrow()
+            else:
+                # 只有在没有过滤条件时，才全量读取
+                logger.warning("⚠️ [LanceDB Eager] 无过滤条件，执行全表扫描！")
+                arrow_table = table.to_arrow()
+            
             df_pl = pl.from_arrow(arrow_table)
             
-            # 应用过滤
+            # 再次应用过滤（双重保险，但此时数据已经过滤过了）
             if stock_codes:
                 df_pl = df_pl.filter(pl.col('stock_code').is_in(stock_codes))
             if start_date:
@@ -357,10 +482,23 @@ class LanceDBManager:
             
             return df_pl
         except Exception as e:
-            logger.warning(f"Eager 加载失败: {e}")
-            result = table.to_pandas()
+            logger.warning(f"Eager 加载失败，尝试回退: {e}")
+            # 最后的保底：如果 search().where() 失败，尝试使用 Pandas 但也要先过滤
+            try:
+                # 尝试使用 search().where() 先过滤，再转 Pandas
+                if where_clause:
+                    arrow_table = table.search().where(where_clause).to_arrow()
+                    result = arrow_table.to_pandas()
+                else:
+                    result = table.to_pandas()
+            except:
+                # 如果还是失败，才全表加载（这是最后的保底）
+                logger.error("⚠️ [LanceDB Eager] 所有过滤方法都失败，执行全表扫描（性能较差）")
+                result = table.to_pandas()
+            
             df_pl = pl.from_pandas(result)
             
+            # 应用过滤（如果之前没有过滤成功）
             if stock_codes:
                 df_pl = df_pl.filter(pl.col('stock_code').is_in(stock_codes))
             if start_date:
