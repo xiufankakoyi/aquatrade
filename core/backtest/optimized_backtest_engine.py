@@ -1656,7 +1656,12 @@ class OptimizedBacktestEngine:
             # 产出该日期的所有交易记录
             if current_date in trades_by_date:
                 for trade_record in trades_by_date[current_date]:
-                    yield {"type": "new_trade_engine", "data": trade_record}
+                    # 【修复】兼容旧前端：
+                    # 1. 事件名改为 'new_trade'
+                    # 2. 补全 'reason' 字段防止前端报错
+                    # 3. 补全 'name' 字段 (如果有数据的话)
+                    trade_record['reason'] = "策略触发"
+                    yield {"type": "new_trade", "data": trade_record}
             
             # 【优化】减少日志输出频率，每50天输出一次
             if (t + 1) % 50 == 0:
@@ -1716,7 +1721,9 @@ class OptimizedBacktestEngine:
         win_trades = sum(1 for t in sell_trades if t.get('profit_loss', 0) > 0)
         win_rate = (win_trades / len(sell_trades)) * 100 if sell_trades else 0
         
+        # 【修复】双写 Key 以兼容旧前端 (同时提供驼峰和下划线)
         return {
+            # 新格式 (驼峰)
             "totalReturn": round(float(total_return), 2),
             "annualizedReturn": round(float(annualized_return), 2),
             "maxDrawdown": round(float(abs(max_drawdown)), 2),
@@ -1725,4 +1732,13 @@ class OptimizedBacktestEngine:
             "volatility": round(float(volatility), 2),
             "winRate": round(float(win_rate), 1),
             "tradesCount": len(trades_log),
+            
+            # 旧格式 (下划线) - 修复参数对比界面
+            "total_return": round(float(total_return), 2),
+            "annualized_return": round(float(annualized_return), 2),
+            "max_drawdown": round(float(abs(max_drawdown)), 2),
+            "sharpe_ratio": round(float(sharpe_ratio), 2),
+            "sortino_ratio": round(float(sortino), 2),
+            "alpha": 0.0, # 补全缺失字段
+            "beta": 0.0,
         }

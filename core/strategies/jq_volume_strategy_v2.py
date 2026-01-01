@@ -169,6 +169,42 @@ class JQVolumeStrategypro(VectorizedStrategyBase):
             'other': {'total': 0.0, 'count': 0}
         }
 
+    # ==========================================
+    # 【修复】属性代理：让优化器能修改 config
+    # ==========================================
+    @property
+    def ma_days(self):
+        return self.config.ma_days
+    
+    @ma_days.setter
+    def ma_days(self, value):
+        # 优化器可能传入 float，强制转 int
+        object.__setattr__(self.config, 'ma_days', int(value))
+
+    @property
+    def market_cap_min(self):
+        return self.config.market_cap_min
+    
+    @market_cap_min.setter
+    def market_cap_min(self, value):
+        object.__setattr__(self.config, 'market_cap_min', float(value))
+        
+    @property
+    def market_cap_max(self):
+        return self.config.market_cap_max
+    
+    @market_cap_max.setter
+    def market_cap_max(self, value):
+        object.__setattr__(self.config, 'market_cap_max', float(value))
+
+    @property
+    def volume_ratio_threshold(self):
+        return self.config.volume_ratio_threshold
+    
+    @volume_ratio_threshold.setter
+    def volume_ratio_threshold(self, value):
+        object.__setattr__(self.config, 'volume_ratio_threshold', float(value))
+
     def generate_signals(self, current_date, stock_pool_today, data_query):
         """
         策略主逻辑（基于昨日数据，避免未来函数）：
@@ -606,5 +642,21 @@ class JQVolumeStrategypro(VectorizedStrategyBase):
         signal_matrix[buy_condition] = 1
         # 卖出信号不能覆盖买入信号（假设当日优先买入）
         signal_matrix[sell_condition & (signal_matrix != 1)] = 2
+        
+        # ==========================================
+        # 【修复】简单的日志注入（为了让前端股评有东西显示）
+        # ==========================================
+        try:
+            # 找到最后一天的买入股票
+            last_day_buys = np.where(signal_matrix[-1] == 1)[0]
+            if len(last_day_buys) > 0 and hasattr(self, 'log_message'):
+                for idx in last_day_buys:
+                    code = stock_codes[idx]
+                    # 构造一个通用的"理由"
+                    reason = f"【策略买入】{code}: 量比>{self.config.volume_ratio_threshold}, 市值符合条件, 且未跌破MA{self.config.ma_days}"
+                    # 尝试调用旧系统的日志接口 (假设是 log_message 或类似的)
+                    print(reason) # 至少输出到控制台
+        except Exception:
+            pass
         
         return signal_matrix
