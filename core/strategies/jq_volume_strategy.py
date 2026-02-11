@@ -168,6 +168,7 @@ class JQVolumeStrategy(StrategyBase):
     # CHANGED: 内部定义策略名称
     strategy_id = "jq_volume_v1"
     strategy_name = "聚宽量比市值策略"
+    needs_today_pool = True  # 策略需要当日股票池数据
 
     def __init__(self, config: JQVolumeConfig | None = None):
         super().__init__(name=self.strategy_name)

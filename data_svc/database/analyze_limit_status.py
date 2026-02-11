@@ -10,7 +10,7 @@ from tqdm import tqdm
 import pyarrow.parquet as pq
 
 # ================= 配置区域 =================
-PARQUET_DIR = r'D:\aquatrade\parquet_data'
+PARQUET_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data', 'parquet_data')
 INPUT_FILE = os.path.join(PARQUET_DIR, 'stock_daily.parquet')
 INFO_FILE = os.path.join(PARQUET_DIR, 'stock_info.parquet')
 OUTPUT_FILE = os.path.join(PARQUET_DIR, 'stock_limit_status.parquet')

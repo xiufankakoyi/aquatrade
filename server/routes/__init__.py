@@ -14,6 +14,7 @@ def register_routes(app):
     from server.routes.sentiment_routes import sentiment_bp
     from server.routes.optimization_routes import optimization_bp
     from server.routes.system_routes import system_bp
+    from server.routes.dragon_eye_routes import dragon_bp
     
     app.register_blueprint(strategy_bp)
     app.register_blueprint(backtest_bp)
@@ -22,4 +23,5 @@ def register_routes(app):
     app.register_blueprint(sentiment_bp)
     app.register_blueprint(optimization_bp)
     app.register_blueprint(system_bp)
+    app.register_blueprint(dragon_bp)
 

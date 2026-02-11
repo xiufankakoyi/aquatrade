@@ -44,6 +44,7 @@ class SimpleVolumeStrategyV3(StrategyBase):
     """
     strategy_id = "simple_volume_v3"
     strategy_name = "聚宽量比市值策略V3_严格趋势"
+    needs_today_pool = True  # 策略需要当日股票池数据
 
     # ===== 新增：这一段是给前端 + GA 用的参数规范 =====
     PARAM_SPEC = [

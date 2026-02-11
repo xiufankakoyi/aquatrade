@@ -58,6 +58,7 @@ class TrendFollowStrategy(StrategyBase):
 
     strategy_id = "trend_follow_v1"
     strategy_name = "主升浪趋势跟随策略"
+    needs_today_pool = True  # 策略需要当日股票池数据
 
     def __init__(self, config: TrendFollowConfig | None = None):
         super().__init__(name=self.strategy_name)

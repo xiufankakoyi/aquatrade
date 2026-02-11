@@ -32,6 +32,43 @@ def get_kline_data():
         return json_response({"success": False, "error": str(e)}, status_code=500)
 
 
+@data_bp.route('/db/update', methods=['POST'])
+def update_database():
+    """
+    触发数据库增量更新 (Tushare -> LanceDB)
+    """
+    import threading
+    
+    def run_update_task():
+        # 极晚导入，避免任何启动时的性能干扰或循环依赖
+        from data_svc.database.lance_updater import LanceDBUpdater
+        from server.app import socketio
+        
+        def progress_callback(data):
+            # 将进度通过 Socket.IO 发送到前端
+            socketio.emit('db_update_progress', data)
+            
+        try:
+            updater = LanceDBUpdater(progress_callback=progress_callback)
+            updater.run_sync()
+        except Exception as e:
+            from config.logger import get_logger
+            logger = get_logger(__name__)
+            logger.error(f"Database update task failed: {e}", exc_info=True)
+            socketio.emit('db_update_progress', {
+                "status": "FAILED",
+                "progress": 0,
+                "message": f"更新失败: {str(e)}"
+            })
+
+    # 在后台线程运行
+    thread = threading.Thread(target=run_update_task)
+    thread.daemon = True
+    thread.start()
+    
+    return json_response({"success": True, "message": "数据库更新任务已在后台启动"})
+
+
 @data_bp.route('/latest_price', methods=['GET'])
 def get_latest_price():
     """

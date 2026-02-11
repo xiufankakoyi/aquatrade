@@ -82,10 +82,13 @@ function normalizeEvent(eventName: string, data: any): BacktestEvent | null {
     'initialized': 'initialized',
     'backtest_start': 'backtest_start',
     'daily_update': 'daily_equity',
+    'daily_equity_engine': 'daily_equity',
     'new_trade': 'new_trade',
+    'new_trade_engine': 'new_trade',
     'metrics_update': 'metrics_update',
     'final_metrics': 'final_metrics',
     'risk_update': 'risk_data',
+    'risk_data': 'risk_data',
     'stream_complete': 'stream_complete',
     'progress': 'progress',
     'backtest_error': 'error',
@@ -110,7 +113,7 @@ function subscribe(callback: (event: BacktestEvent) => void): () => void {
     isSubscribed = true;
     socketIOInstance = useSocketIO();
     
-    const events = ['initializing', 'initialized', 'backtest_start', 'daily_update', 'new_trade', 'metrics_update', 'final_metrics', 'risk_update', 'stream_complete', 'progress', 'backtest_error', 'backtest_cancelled'];
+    const events = ['initializing', 'initialized', 'backtest_start', 'daily_update', 'daily_equity_engine', 'new_trade', 'new_trade_engine', 'metrics_update', 'final_metrics', 'risk_update', 'risk_data', 'stream_complete', 'progress', 'backtest_error', 'backtest_cancelled'];
     
     events.forEach(eventName => {
       const unsub = socketIOInstance!.onEvent(eventName, (data: any) => {

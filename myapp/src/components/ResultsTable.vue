@@ -48,47 +48,54 @@
           </tr>
         </thead>
         <tbody class="bg-white dark:bg-slate-800">
-          <tr
-            v-for="trade in paginatedTrades"
-            :key="getTradeKey(trade)"
-            @click="handleTradeClick(trade)"
-            class="border-b border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 cursor-pointer transition-colors"
+          <!-- Virtual Scroller for rows -->
+          <virtual-scroller
+            :items="paginatedTrades"
+            :item-height="48"
+            v-slot="{ item: trade }"
+            class="virtual-scroller"
           >
-            <td class="px-4 py-3 text-gray-700 dark:text-slate-300">{{ trade.date }}</td>
-            <td class="px-4 py-3 font-medium text-gray-800 dark:text-slate-100">
-              {{ trade.symbol }}
-            </td>
-            <td class="px-4 py-3">
-              <span
-                class="px-2 py-1 text-xs rounded-full"
-              :class="trade.action === 'buy' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' : 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'"
+            <tr
+              :key="getTradeKey(trade)"
+              @click="handleTradeClick(trade)"
+              class="border-b border-gray-200 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700 cursor-pointer transition-colors"
+            >
+              <td class="px-4 py-3 text-gray-700 dark:text-slate-300">{{ trade.date }}</td>
+              <td class="px-4 py-3 font-medium text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                {{ trade.symbol }}
+              </td>
+              <td class="px-4 py-3">
+                <span
+                  class="px-2 py-1 text-xs rounded-full"
+                  :class="trade.action === 'buy' ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' : 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'"
+                >
+                  {{ trade.action === 'buy' ? '买入' : '卖出' }}
+                </span>
+              </td>
+              <td class="px-4 py-3 text-gray-700 dark:text-slate-300">
+                ¥{{ trade.price.toFixed(2) }}
+              </td>
+              <td class="px-4 py-3 text-gray-700 dark:text-slate-300">{{ trade.quantity }}</td>
+              <td class="px-4 py-3 text-gray-700 dark:text-slate-300">
+                {{ formatCommission(trade) }}
+              </td>
+              <td
+                class="px-4 py-3 font-medium"
+                :class="(trade.profitLoss ?? 0) >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'"
               >
-                {{ trade.action === 'buy' ? '买入' : '卖出' }}
-              </span>
-            </td>
-            <td class="px-4 py-3 text-gray-700 dark:text-slate-300">
-              ¥{{ trade.price.toFixed(2) }}
-            </td>
-            <td class="px-4 py-3 text-gray-700 dark:text-slate-300">{{ trade.quantity }}</td>
-            <td class="px-4 py-3 text-gray-700 dark:text-slate-300">
-              {{ formatCommission(trade) }}
-            </td>
-            <td
-              class="px-4 py-3 font-medium"
-              :class="(trade.profitLoss ?? 0) >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'"
-            >
-              {{ formatCurrency(trade.profitLoss ?? 0) }}
-            </td>
-            <td
-              class="px-4 py-3 font-medium"
-              :class="(trade.cumulativePnL ?? 0) >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'"
-            >
-              {{ formatCurrency(trade.cumulativePnL ?? 0) }}
-            </td>
-            <td class="px-4 py-3 text-gray-700 dark:text-slate-300">
-              {{ formatHoldingPeriod(trade) }}
-            </td>
-          </tr>
+                {{ formatCurrency(trade.profitLoss ?? 0) }}
+              </td>
+              <td
+                class="px-4 py-3 font-medium"
+                :class="(trade.cumulativePnL ?? 0) >= 0 ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'"
+              >
+                {{ formatCurrency(trade.cumulativePnL ?? 0) }}
+              </td>
+              <td class="px-4 py-3 text-gray-700 dark:text-slate-300">
+                {{ formatHoldingPeriod(trade) }}
+              </td>
+            </tr>
+          </virtual-scroller>
           <tr v-if="paginatedTrades.length === 0">
             <td colspan="9" class="px-4 py-8 text-center text-gray-500 dark:text-slate-400">
               暂无交易记录
@@ -128,6 +135,16 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { VirtualScroller } from 'vue-virtual-scroller';
+
+// Using defineOptions for component options in <script setup>
+import { defineOptions } from 'vue';
+defineOptions({
+  components: {
+    VirtualScroller
+  }
+});
+
 import type { Trade } from '../types/backtest';
 
 interface Props {

@@ -7,7 +7,15 @@ ASGI 入口点 - 使用 python-socketio AsyncServer
 """
 import os
 import sys
+import warnings
 from pathlib import Path
+
+# 忽略 asgiref.wsgi 中的非异步标注警告 (这是因为 Granian 使用 Rust 实现的 send 是原生的，asgiref 检查不到)
+warnings.filterwarnings(
+    "ignore", 
+    message="async_to_sync was passed a non-async-marked callable", 
+    module="asgiref.wsgi"
+)
 
 # 添加项目根目录到路径
 _project_root = Path(__file__).parent.parent
@@ -21,8 +29,28 @@ from flask_cors import CORS
 # 创建 Flask 应用（从 server.app 中提取，但不包含 SocketIO）
 # 注意：我们需要重新创建 app，因为原来的 app 绑定了 Flask-SocketIO
 app = Flask(__name__, static_folder='static')
-CORS(app, resources={r"/api/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"], 
-                                  "headers": ["Content-Type", "Authorization", "X-Requested-With"]}})
+
+# CRITICAL: CORS must include /socket.io/* for Socket.IO polling transport
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*", 
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"], 
+        "headers": ["Content-Type", "Authorization", "X-Requested-With"]
+    },
+    r"/socket.io/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "OPTIONS"],
+"headers": ["Content-Type"]
+    }
+})
+try:
+    from server.routers.strategy_config_flask import config_bp
+    app.register_blueprint(config_bp)
+    print("[OK] Strategy config routes registered (Hot-reload API)")
+except Exception as e:
+    print(f"[WARNING] Strategy config registration failed: {e}")
+
+
 
 # 导入所有 Flask 路由（但不包括 SocketIO 事件）
 # 我们需要手动导入路由，或者使用一个包装器
@@ -111,6 +139,23 @@ except Exception as e:
     import traceback
     traceback.print_exc()
 
+# 初始化 API 文档 (Swagger UI)
+try:
+    from flasgger import Swagger
+    app.config['SWAGGER'] = {
+        'title': 'Aquatrade API',
+        'uiversion': 3,
+        'version': '1.0.0',
+        'description': 'Aquatrade 核心交易系统 API 文档',
+        'specs_route': '/apidocs/'
+    }
+    Swagger(app, parse=True)
+    print("[OK] Swagger UI verified (available at /apidocs/)")
+except ImportError:
+    print("[WARNING] flasgger 未安装，跳过 API 文档初始化 (pip install flasgger)")
+except Exception as e:
+    print(f"[WARNING] API 文档初始化失败: {e}")
+
 # 创建异步 SocketIO 服务器（关键：使用 AsyncServer）
 # #region agent log
 try:
@@ -127,9 +172,10 @@ try:
     except: pass
     # #endregion
     # 使用 AsyncServer（支持 ASGI）
+    # CRITICAL: Must set cors_allowed_origins='*' for CORS headers to be sent
     sio = socketio.AsyncServer(
         async_mode='asgi',
-        cors_allowed_origins='*',
+        cors_allowed_origins='*',  # Allow all origins for Socket.IO
         logger=False,
         engineio_logger=False,
         ping_interval=25000,
@@ -152,8 +198,19 @@ except ImportError as e:
 
 # 导入 SocketIO 事件处理器（需要转换为异步）
 # 注意：需要将同步事件处理器转换为异步版本
-from server.asgi_socketio_handlers import register_handlers
-register_handlers(sio)
+print("\n" + "="*80)
+print("[ASGI] Importing asgi_socketio_handlers...")
+try:
+    from server.asgi_socketio_handlers import register_handlers
+    print("[ASGI] Calling register_handlers(sio)...")
+    register_handlers(sio)
+    print("[ASGI] OK - Socket.IO event handlers registered!")
+except Exception as e:
+    print(f"[ASGI] ERROR - Failed to register Socket.IO handlers: {e}")
+    import traceback
+    traceback.print_exc()
+    raise
+print("="*80 + "\n")
 
 # 关键：使用 ASGIApp 包装
 # Granian 收到请求 -> 如果是 /socket.io/ 开头 -> 交给 sio 处理
@@ -191,6 +248,16 @@ try:
         f.write(json.dumps({'sessionId':'debug-session','runId':'run1','hypothesisId':'B','timestamp':int(datetime.datetime.now().timestamp()*1000),'location':'asgi_entry.py:97','message':'ASGIApp created','data':{'type':str(type(app_asgi))}})+'\n')
 except: pass
 # #endregion
+
+# 启动文件监听器（热重载）
+try:
+    from core.strategies.hot_reload import get_watcher
+    watcher = get_watcher()
+    watcher.start()
+    print("[OK] Strategy file watcher started (Hot-reload enabled)")
+except Exception as e:
+    print(f"[WARNING] File watcher startup failed: {e}")
+
 
 # 导出给 Granian 使用
 asgi_app = app_asgi

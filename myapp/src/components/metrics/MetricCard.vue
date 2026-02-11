@@ -43,8 +43,18 @@ const formattedValue = computed(() => {
   }
   
   if (props.format === 'percent') {
-    // 对于最大回撤等负值指标，不显示+号
+    // 对于最大回撤等负值指标，显示正确的符号
+    // 注意：props.value 可能已经是绝对值（如在 DashboardOverview 中），但我们应该使用 originalValue 来判断
+    // 对于直接传入负值的情况，直接显示符号
     const sign = props.value! >= 0 ? '+' : '';
+    
+    // 如果是最大回撤等指标，确保显示为负值
+    // 检查是否使用了 originalValue 且 originalValue 是负值（表示真实回撤）
+    if (props.useOriginalValue && props.originalValue !== null && props.originalValue < 0) {
+      // 真实回撤是负值，显示为负值
+      return `-${props.value!.toFixed(2)}%`;
+    }
+    
     return `${sign}${props.value!.toFixed(2)}%`;
   }
   if (props.format === 'currency') {

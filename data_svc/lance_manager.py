@@ -22,6 +22,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 import pandas as pd
 import polars as pl
+from tqdm import tqdm
 
 try:
     import lancedb
@@ -59,7 +60,7 @@ class LanceDBManager:
         
         # 确定数据目录
         if lance_dir is None:
-            parquet_dir = getattr(Config, 'PARQUET_DIR', 'parquet_data')
+            parquet_dir = getattr(Config, 'PARQUET_DIR', 'data/parquet_data')
             lance_dir = os.path.join(parquet_dir, 'lance_db')
         
         self.lance_dir = Path(lance_dir)
@@ -69,6 +70,105 @@ class LanceDBManager:
         # 连接数据库（共享同一个目录，不同表名）
         self.db = lancedb.connect(str(self.lance_dir))
         logger.info(f"LanceDB 连接已建立: {self.lance_dir}, 表: {self.table_name}")
+    
+    def convert_csv_to_lance(self, source_path: str, batch_size: int = 1000000) -> None:
+        """
+        [断点续传版] 针对 16GB 分时数据的写入
+        - 特性: 支持中断后继续运行 (不会从头开始)
+        - 修复: 正确处理 trade_time 和 stock_code
+        - 内存: 保持用完即焚
+        """
+        import gc
+        import os
+        from tqdm import tqdm
+        
+        path = Path(source_path)
+        if not path.exists():
+            raise FileNotFoundError(f"路径不存在: {path}")
+
+        if path.is_dir():
+            all_files = list(path.glob("*.csv"))
+            logger.info(f"扫描目录: {path} (共 {len(all_files)} 个文件)")
+        else:
+            all_files = [path]
+
+        # --- [新增] 断点续传逻辑 ---
+        progress_file = Path("migration_progress.txt")
+        processed_files = set()
+        if progress_file.exists():
+            with open(progress_file, "r", encoding="utf-8") as f:
+                processed_files = set(line.strip() for line in f if line.strip())
+            logger.info(f"检测到断点记录，已跳过 {len(processed_files)} 个文件")
+
+        # 过滤掉已处理的文件
+        files_to_process = [f for f in all_files if f.name not in processed_files]
+        if not files_to_process:
+            logger.info("所有文件均已处理完毕，无需操作。")
+            return
+
+        # 进度条
+        pbar = tqdm(files_to_process, desc="断点续传写入", unit="file")
+        
+        for i, f in enumerate(pbar):
+            try:
+                pbar.set_postfix(file=f.name)
+                
+                # 1. 读取数据
+                df_chunk = pd.read_csv(f, dtype={'code': str, 'stock_code': str, 'symbol': str})
+                
+                # 2. 列名映射 (抢救时间列)
+                rename_map = {}
+                if 'Unnamed: 0' in df_chunk.columns: rename_map['Unnamed: 0'] = 'trade_time'
+                if 'code' in df_chunk.columns and 'stock_code' not in df_chunk.columns: rename_map['code'] = 'stock_code'
+                if 'symbol' in df_chunk.columns and 'stock_code' not in df_chunk.columns: rename_map['symbol'] = 'stock_code'
+                if 'time' in df_chunk.columns and 'trade_time' not in df_chunk.columns: rename_map['time'] = 'trade_time'
+                
+                if rename_map: df_chunk.rename(columns=rename_map, inplace=True)
+                
+                # 3. 清洗
+                if 'index' in df_chunk.columns: df_chunk.drop(columns=['index'], inplace=True)
+                
+                if 'stock_code' not in df_chunk.columns or 'trade_time' not in df_chunk.columns:
+                    del df_chunk
+                    continue
+
+                # 4. 格式化
+                df_chunk['stock_code'] = df_chunk['stock_code'].astype(str).str.split('.').str[0]
+                df_chunk['trade_time'] = df_chunk['trade_time'].astype(str)
+                df_chunk.sort_values(['stock_code', 'trade_time'], inplace=True)
+                
+                # 5. 写入逻辑
+                # 判断表是否存在 (如果存在则追加，不存在则创建)
+                table_exists = self.table_name in self.db.table_names()
+                
+                if not table_exists:
+                    # 第一次创建
+                    self.db.create_table(self.table_name, df_chunk)
+                else:
+                    # 追加模式
+                    tbl = self.db.open_table(self.table_name)
+                    # Schema 对齐
+                    valid_cols = tbl.schema.names
+                    current_cols = df_chunk.columns.tolist()
+                    extra_cols = [c for c in current_cols if c not in valid_cols]
+                    if extra_cols: df_chunk.drop(columns=extra_cols, inplace=True)
+                    
+                    tbl.add(df_chunk)
+                    del tbl
+                
+                # 6. [新增] 记录成功文件
+                with open(progress_file, "a", encoding="utf-8") as pf:
+                    pf.write(f.name + "\n")
+                
+                # 7. 内存清理
+                del df_chunk
+                gc.collect()
+                
+            except Exception as e:
+                tqdm.write(f"❌ 文件 {f.name} 失败: {e}")
+                gc.collect()
+
+        logger.info(f"✓ 本批次任务完成！")
     
     def convert_parquet_to_lance(self, parquet_path: str, 
                                  batch_size: int = 500000) -> None:
@@ -167,163 +267,140 @@ class LanceDBManager:
                            columns: Optional[List[str]] = None,
                            date_column: Optional[str] = None) -> pl.LazyFrame:
         """
-        从 LanceDB 加载数据 (已修复：使用下推过滤，杜绝全表扫描)
-        
-        Args:
-            stock_codes: 股票代码列表（可选）
-            start_date: 开始日期（可选）
-            end_date: 结束日期（可选）
-            columns: 要加载的列（可选，默认全部）
-            date_column: 日期列名（可选，默认根据表名自动推断：benchmark_data 使用 'date'，其他使用 'trade_date'）
-            
-        Returns:
-            Polars LazyFrame（需要调用 .collect() 才执行）
+        从 LanceDB 加载数据 (已修复：自动识别 trade_time/trade_date)
         """
         if self.table_name not in self.db.table_names():
             raise ValueError(f"表 {self.table_name} 不存在")
         
         table = self.db.open_table(self.table_name)
         
-        # 自动推断日期列名
-        if date_column is None:
-            if self.table_name == "benchmark_data":
-                date_column = "date"
-            else:
-                date_column = "trade_date"
+        # 【DEBUG】记录表结构和请求参数 - 针对 stock_limit_status 表
+        if self.table_name == "stock_limit_status":
+            logger.info(f"[DEBUG] stock_limit_status: 请求参数 - start_date={start_date}, end_date={end_date}, date_column={date_column}")
+            logger.info(f"[DEBUG] stock_limit_status: 表 schema - {table.schema.names}")
         
-        # 1. 构建 SQL 风格的过滤条件
+        # --- [核心修复] 自动推断日期列名 ---
+        if date_column is None:
+            schema_names = table.schema.names
+            
+            # 【优先处理】针对 stock_limit_status 表的特殊处理
+            if self.table_name == "stock_limit_status":
+                logger.info(f"[DEBUG] stock_limit_status: 开始推断日期列，当前 schema_names: {schema_names}")
+                # 首先检查标准日期列
+                if "trade_date" in schema_names:
+                    date_column = "trade_date"
+                    logger.info(f"[DEBUG] stock_limit_status: 找到 trade_date 列")
+                elif "date" in schema_names:
+                    date_column = "date"
+                    logger.info(f"[DEBUG] stock_limit_status: 找到 date 列")
+                else:
+                    # 尝试其他候选列
+                    date_candidates = ["limit_date", "trade_datetime"]
+                    logger.info(f"[DEBUG] stock_limit_status: 尝试候选日期列: {date_candidates}")
+                    for candidate in date_candidates:
+                        if candidate in schema_names:
+                            date_column = candidate
+                            logger.info(f"[DEBUG] stock_limit_status: 找到匹配的日期列: {candidate}")
+                            break
+                    # 如果没有找到合适的日期列，使用 trade_date 作为最终兜底
+                    if date_column is None:
+                        date_column = "trade_date"
+                        logger.info(f"[DEBUG] stock_limit_status: 未找到匹配的日期列，使用 trade_date 作为兜底")
+            else:
+                # 常规表的日期列推断
+                if "trade_time" in schema_names:
+                    date_column = "trade_time"  # 分时数据用这个
+                elif "trade_date" in schema_names:
+                    date_column = "trade_date"  # 日线数据用这个
+                elif "date" in schema_names:
+                    date_column = "date"        # Benchmark 用这个
+                else:
+                    date_column = "trade_date"  # 默认兜底
+        # --------------------------------
+        
+        # 【DEBUG】验证日期列是否存在
+        if self.table_name == "stock_limit_status":
+            if date_column not in table.schema.names:
+                logger.warning(f"[DEBUG] stock_limit_status: 警告！推断的日期列 {date_column} 不在 schema 中！schema: {table.schema.names}")
+                # 强制使用存在的日期列
+                if "trade_date" in table.schema.names:
+                    date_column = "trade_date"
+                    logger.warning(f"[DEBUG] stock_limit_status: 切换到 trade_date 列")
+                elif "date" in table.schema.names:
+                    date_column = "date"
+                    logger.warning(f"[DEBUG] stock_limit_status: 切换到 date 列")
+                else:
+                    logger.error(f"[DEBUG] stock_limit_status: 错误！表中没有可用的日期列！schema: {table.schema.names}")
+        
+        # 1. 构建标准 SQL 风格的过滤条件（LanceDB 使用 SQL 语法）
         conditions = []
-        if start_date:
+        
+        # 【DEBUG】记录日期参数和 date_column
+        if self.table_name == "stock_limit_status":
+            logger.info(f"[DEBUG] stock_limit_status: 构建条件 - date_column={date_column}, start_date={start_date} (type: {type(start_date)}), end_date={end_date} (type: {type(end_date)}), stock_codes={stock_codes}")
+        
+        # 【修复】确保日期过滤条件被添加
+        if start_date is not None:
+            logger.info(f"[DEBUG] 添加 start_date 条件: {date_column} >= '{start_date}'")
             conditions.append(f"{date_column} >= '{start_date}'")
-        if end_date:
+        else:
+            logger.debug(f"[DEBUG] start_date 是 None，跳过条件")
+            
+        if end_date is not None:
+            logger.info(f"[DEBUG] 添加 end_date 条件: {date_column} <= '{end_date}'")
             conditions.append(f"{date_column} <= '{end_date}'")
-        if stock_codes:
-            # list 转 SQL string: ('000001', '000002')
+        else:
+            logger.debug(f"[DEBUG] end_date 是 None，跳过条件")
+
+        
+        # 【修复】正确处理 stock_codes 为 None 的情况
+        if stock_codes is not None and len(stock_codes) > 0:
+            code_column = "code" if "code" in table.schema.names and "stock_code" not in table.schema.names else "stock_code"
             codes_str = "', '".join(stock_codes)
-            # 根据表名选择代码列名
-            code_column = "code" if self.table_name == "benchmark_data" else "stock_code"
             conditions.append(f"{code_column} IN ('{codes_str}')")
         
-        # 特殊处理：stock_info 表没有日期列，如果只有 stock_codes 过滤，也要构建 where 子句
-        if self.table_name == "stock_info" and stock_codes and not conditions:
-            codes_str = "', '".join(stock_codes)
-            conditions.append(f"stock_code IN ('{codes_str}')")
-            
+        # 构建标准 SQL 风格的 where_clause（使用 AND 连接条件）
         where_clause = " AND ".join(conditions) if conditions else None
         
-        # 2. 决定需要读取的列 (减少 IO)
-        # 注意：LanceDB 需要列名列表，不能是 None
-        columns_to_load = columns if columns else None
-
         try:
-            if not PYARROW_AVAILABLE:
-                raise ImportError("pyarrow not available")
+            if not PYARROW_AVAILABLE: raise ImportError("pyarrow not available")
 
-            # === 核心修复开始 ===
-            _t_query_start = time.perf_counter()
+            # 执行查询
             if where_clause:
                 logger.info(f"⚡ [LanceDB] 执行过滤查询: {where_clause}")
-                # #region agent log
+                logger.info(f"⚡ [LanceDB] 查询参数 - table: {self.table_name}, where_clause:  {where_clause}")
+                # 尝试优化查询
                 try:
-                    with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                        f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"lance_manager.py:load_to_polars_lazy","message":"开始执行下推查询","data":{"where_clause":where_clause,"start_date":start_date,"end_date":end_date,"has_stock_codes":stock_codes is not None},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"I"}) + "\n")
-                        f.flush()
-                except: pass
-                # #endregion
-                
-                # 【优化】尝试使用更明确的查询方式以触发索引使用
-                # 对于日期范围查询，确保使用索引列作为过滤条件
-                try:
-                    # 方法1：使用 search().where() 下推过滤（推荐，会使用索引）
-                    # 注意：LanceDB 的标量索引会在 where 子句包含索引列时自动使用
                     search_query = table.search()
-                    
-                    # 如果只有日期过滤，优先使用日期索引
-                    if start_date and end_date and not stock_codes:
-                        # 优化：明确使用日期列过滤，触发索引
-                        # 使用 BETWEEN 语法可能更有利于索引使用
-                        date_filter = f"{date_column} >= '{start_date}' AND {date_column} <= '{end_date}'"
-                        logger.debug(f"[LanceDB] 使用日期范围过滤: {date_filter}")
-                        arrow_table = search_query.where(date_filter).to_arrow()
-                    else:
-                        # 其他情况使用完整 where 子句
-                        logger.debug(f"[LanceDB] 使用完整过滤条件: {where_clause}")
-                        arrow_table = search_query.where(where_clause).to_arrow()
-                    
-                    _t_query_end = time.perf_counter()
-                    query_time = _t_query_end - _t_query_start
-                    num_rows = arrow_table.num_rows if arrow_table else 0
-                    
-                    # 性能警告：如果查询时间过长，可能索引未被使用
-                    if query_time > 1.0:
-                        # 计算数据密度（行数/秒），用于判断是否使用了索引
-                        rows_per_sec = num_rows / query_time if query_time > 0 else 0
-                        logger.warning(
-                            f"⚠️ [LanceDB] 查询耗时较长 ({query_time:.3f}s)，可能索引未被使用。"
-                            f"表: {self.table_name}, 条件: {where_clause}, 行数: {num_rows}, "
-                            f"速度: {rows_per_sec:.0f} 行/秒"
-                        )
-                        
-                        # 检查索引是否存在并尝试重建
-                        try:
-                            schema = table.schema
-                            logger.debug(f"[LanceDB] 表结构: {schema.names}")
-                            
-                            # 尝试检查并重建索引（如果查询很慢）
-                            if query_time > 1.5 and num_rows > 100000:
-                                logger.warning(
-                                    f"⚠️ [LanceDB] 查询非常慢，建议运行 'python data.py' 重建索引。"
-                                    f"表: {self.table_name}, 日期列: {date_column}"
-                                )
-                        except:
-                            pass
-                    else:
-                        rows_per_sec = num_rows / query_time if query_time > 0 else 0
-                        logger.info(
-                            f"✓ [LanceDB] 查询完成 ({query_time:.3f}s)，行数: {num_rows}, "
-                            f"速度: {rows_per_sec:.0f} 行/秒, 表: {self.table_name}"
-                        )
-                        
+                    # 检查日期列是否存在于表中
+                    if date_column not in table.schema.names:
+                        logger.error(f"[ERROR] 日期列 {date_column} 不存在于表 {self.table_name} 的 schema 中！schema: {table.schema.names}")
+                    # 如果只有日期范围，尝试强制使用索引逻辑（LanceDB 自动优化）
+                    arrow_table = search_query.where(where_clause).to_arrow()
+                    logger.info(f"⚡ [LanceDB] 查询成功，返回行数: {len(arrow_table)}")
                 except Exception as e:
-                    logger.warning(f"⚠️ [LanceDB] 优化查询失败，回退到标准查询: {e}")
-                    # 回退到标准查询
+                    logger.warning(f"⚠️ [LanceDB] 优化查询失败，回退: {e}")
                     arrow_table = table.search().where(where_clause).to_arrow()
-                    _t_query_end = time.perf_counter()
-                
-                # #region agent log
-                try:
-                    with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                        f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"lance_manager.py:load_to_polars_lazy","message":"下推查询完成","data":{"elapsed":_t_query_end-_t_query_start,"rows":arrow_table.num_rows if arrow_table else 0},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"I"}) + "\n")
-                        f.flush()
-                except: pass
-                # #endregion
             else:
-                # 只有在没有过滤条件时，才全量读取
-                # 对于 stock_info 表，全表扫描是正常的（表小，只有几千条记录）
-                if self.table_name != "stock_info":
-                    logger.warning("⚠️ [LanceDB] 无过滤条件，执行全表扫描！")
-                else:
-                    logger.debug(f"[LanceDB] stock_info 表全表扫描（表小，正常）")
-                # #region agent log
-                try:
-                    with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                        f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"lance_manager.py:load_to_polars_lazy","message":"警告：无过滤条件，执行全表扫描","data":{"table_name":self.table_name},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"I"}) + "\n")
-                        f.flush()
-                except: pass
-                # #endregion
+                # 【修复】只对应该有日期过滤的表发出警告
+                # stock_info 和 benchmark_data 的某些查询确实不需要日期过滤
+                if self.table_name in ["stock_limit_status", "stock_daily"] and (start_date or end_date):
+                    logger.warning(f"⚠️ [LanceDB] {self.table_name} 表缺少日期过滤条件！start_date={start_date}, end_date={end_date}")
+                    logger.warning(f"⚠️ [LanceDB] 日期列: {date_column}, 是否在 schema 中: {date_column in table.schema.names}")
+                    logger.warning(f"⚠️ [LanceDB] 构建条件时的条件列表: {conditions}")
+                
                 arrow_table = table.to_arrow()
-                _t_query_end = time.perf_counter()
-            # === 核心修复结束 ===
+                logger.info(f"⚠️ [LanceDB] 全表扫描 {self.table_name}，返回行数: {len(arrow_table)}")
 
-            # 转换为 Polars LazyFrame
+
+            # 转换为 Polars
             df_eager = pl.from_arrow(arrow_table)
             lazy_df = df_eager.lazy()
             
-            # 再次应用列选择 (Polars层面的双重保险)
+            # 列选择
             if columns:
                 valid_cols = [c for c in columns if c in df_eager.columns and c != '_id']
-                if valid_cols:
-                    lazy_df = lazy_df.select(valid_cols)
+                if valid_cols: lazy_df = lazy_df.select(valid_cols)
             elif '_id' in df_eager.columns:
                 lazy_df = lazy_df.drop('_id')
                 
@@ -331,53 +408,8 @@ class LanceDBManager:
             
         except Exception as e:
             logger.error(f"LanceDB 查询失败: {e}")
-            # 【关键修复】最后的保底：即使失败也要尝试使用过滤，避免全表扫描
-            try:
-                # 尝试使用更简单的过滤方式
-                if where_clause:
-                    logger.warning(f"⚠️ [LanceDB] 尝试使用备用过滤方法: {where_clause}")
-                    try:
-                        # 尝试直接使用 search().where()，即使之前失败
-                        arrow_table = table.search().where(where_clause).to_arrow()
-                        df_eager = pl.from_arrow(arrow_table)
-                        lazy_df = df_eager.lazy()
-                        if columns:
-                            valid_cols = [c for c in columns if c in df_eager.columns and c != '_id']
-                            if valid_cols:
-                                lazy_df = lazy_df.select(valid_cols)
-                        elif '_id' in df_eager.columns:
-                            lazy_df = lazy_df.drop('_id')
-                        logger.warning(f"✓ [LanceDB] 备用过滤方法成功，行数: {len(df_eager)}")
-                        return lazy_df
-                    except Exception as e2:
-                        logger.error(f"⚠️ [LanceDB] 备用过滤方法也失败: {e2}")
-                
-                # 如果所有过滤方法都失败，才全表加载（这是最后的保底）
-                logger.error("⚠️ [LanceDB] 所有过滤方法都失败，执行全表扫描（性能较差）")
-                result = table.to_pandas()
-                
-                # 即使全表加载，也要在 Polars 层面应用过滤
-                df_pl = pl.from_pandas(result)
-                if start_date:
-                    df_pl = df_pl.filter(pl.col(date_column) >= start_date)
-                if end_date:
-                    df_pl = df_pl.filter(pl.col(date_column) <= end_date)
-                if stock_codes:
-                    code_col = "code" if self.table_name == "benchmark_data" else "stock_code"
-                    df_pl = df_pl.filter(pl.col(code_col).is_in(stock_codes))
-                if columns:
-                    valid_cols = [c for c in columns if c in df_pl.columns and c != '_id']
-                    if valid_cols:
-                        df_pl = df_pl.select(valid_cols)
-                elif '_id' in df_pl.columns:
-                    df_pl = df_pl.drop('_id')
-                
-                return df_pl.lazy()
-            except Exception as e3:
-                # 如果连这个都失败，才真正全表加载（不应该到这里）
-                logger.critical(f"⚠️ [LanceDB] 所有方法都失败，执行全表扫描: {e3}")
-                result = table.to_pandas()
-                return pl.from_pandas(result).lazy()
+            # 最后的保底逻辑... (保持原样即可，或者直接抛出)
+            raise e
     
     def load_to_polars(self, 
                       stock_codes: Optional[List[str]] = None,
@@ -398,6 +430,13 @@ class LanceDBManager:
         Returns:
             Polars DataFrame
         """
+        # 【DEBUG】记录接收到的参数
+        logger.info(f"[DEBUG] load_to_polars 接收参数: table={self.table_name}, "
+                    f"start_date={start_date} (type: {type(start_date).__name__}), "
+                    f"end_date={end_date} (type: {type(end_date).__name__}), "
+                    f"stock_codes={'None' if stock_codes is None else f'List[{len(stock_codes)}]'}, "
+                    f"use_lazy={use_lazy}")
+        
         if use_lazy:
             # 使用 Lazy API（推荐，内存安全）
             lazy_df = self.load_to_polars_lazy(
@@ -425,21 +464,26 @@ class LanceDBManager:
                               end_date: Optional[str] = None,
                               columns: Optional[List[str]] = None) -> pl.DataFrame:
         """
-        原有的 Eager API 实现（已修复：使用下推过滤，避免全表扫描）
+        Eager API 实现（已修复：自动识别 trade_time/trade_date）
         """
         if self.table_name not in self.db.table_names():
-            raise ValueError(f"表 {self.table_name} 不存在，请先运行 convert_parquet_to_lance()")
+            raise ValueError(f"表 {self.table_name} 不存在")
         
         table = self.db.open_table(self.table_name)
         
-        # 自动推断日期列名
-        date_column = "date" if self.table_name == "benchmark_data" else "trade_date"
+        # --- [核心修复] 自动推断日期列名 ---
+        schema_names = table.schema.names
+        if "trade_time" in schema_names:
+            date_column = "trade_time"
+        elif "trade_date" in schema_names:
+            date_column = "trade_date"
+        elif "date" in schema_names:
+            date_column = "date"
+        else:
+            date_column = "trade_date"
+        # --------------------------------
         
         try:
-            if not PYARROW_AVAILABLE:
-                raise ImportError("pyarrow not available")
-            
-            # 【关键修复】使用 search().where() 下推过滤，避免全表扫描
             # 构建过滤条件
             conditions = []
             if start_date:
@@ -447,74 +491,31 @@ class LanceDBManager:
             if end_date:
                 conditions.append(f"{date_column} <= '{end_date}'")
             if stock_codes:
-                code_column = "code" if self.table_name == "benchmark_data" else "stock_code"
+                code_column = "code" if "code" in schema_names and "stock_code" not in schema_names else "stock_code"
                 codes_str = "', '".join(stock_codes)
                 conditions.append(f"{code_column} IN ('{codes_str}')")
             
             where_clause = " AND ".join(conditions) if conditions else None
             
             if where_clause:
-                # 使用下推过滤，只加载符合条件的数据
-                logger.debug(f"[LanceDB Eager] 使用下推过滤: {where_clause}")
                 arrow_table = table.search().where(where_clause).to_arrow()
             else:
-                # 只有在没有过滤条件时，才全量读取
-                logger.warning("⚠️ [LanceDB Eager] 无过滤条件，执行全表扫描！")
                 arrow_table = table.to_arrow()
             
             df_pl = pl.from_arrow(arrow_table)
             
-            # 再次应用过滤（双重保险，但此时数据已经过滤过了）
-            if stock_codes:
-                df_pl = df_pl.filter(pl.col('stock_code').is_in(stock_codes))
-            if start_date:
-                df_pl = df_pl.filter(pl.col('trade_date') >= start_date)
-            if end_date:
-                df_pl = df_pl.filter(pl.col('trade_date') <= end_date)
-            
+            # 列裁剪
             if columns:
                 available_cols = [col for col in columns if col in df_pl.columns]
-                if available_cols:
-                    df_pl = df_pl.select(available_cols)
+                if available_cols: df_pl = df_pl.select(available_cols)
             
-            if '_id' in df_pl.columns:
-                df_pl = df_pl.drop('_id')
+            if '_id' in df_pl.columns: df_pl = df_pl.drop('_id')
             
             return df_pl
+            
         except Exception as e:
-            logger.warning(f"Eager 加载失败，尝试回退: {e}")
-            # 最后的保底：如果 search().where() 失败，尝试使用 Pandas 但也要先过滤
-            try:
-                # 尝试使用 search().where() 先过滤，再转 Pandas
-                if where_clause:
-                    arrow_table = table.search().where(where_clause).to_arrow()
-                    result = arrow_table.to_pandas()
-                else:
-                    result = table.to_pandas()
-            except:
-                # 如果还是失败，才全表加载（这是最后的保底）
-                logger.error("⚠️ [LanceDB Eager] 所有过滤方法都失败，执行全表扫描（性能较差）")
-                result = table.to_pandas()
-            
-            df_pl = pl.from_pandas(result)
-            
-            # 应用过滤（如果之前没有过滤成功）
-            if stock_codes:
-                df_pl = df_pl.filter(pl.col('stock_code').is_in(stock_codes))
-            if start_date:
-                df_pl = df_pl.filter(pl.col('trade_date') >= start_date)
-            if end_date:
-                df_pl = df_pl.filter(pl.col('trade_date') <= end_date)
-            
-            if columns:
-                available_cols = [col for col in columns if col in df_pl.columns]
-                if available_cols:
-                    df_pl = df_pl.select(available_cols)
-            
-            if '_id' in df_pl.columns:
-                df_pl = df_pl.drop('_id')
-            
-            return df_pl
+            logger.error(f"Eager 加载失败: {e}")
+            raise e
     
     def upsert_daily_data(self, new_data: pd.DataFrame) -> None:
         """
@@ -606,23 +607,32 @@ class LanceDBManager:
         logger.info(f"✓ Upsert 完成")
     
     def get_table_info(self) -> Dict[str, Any]:
-        """获取表信息"""
+        """
+        [轻量版] 获取表信息
+        只读取元数据，不加载全量数据，防止 16GB 数据撑爆内存
+        """
         if self.table_name not in self.db.table_names():
             return {"exists": False}
         
-        table = self.db.open_table(self.table_name)
-        df = table.to_pandas()
-        
-        return {
-            "exists": True,
-            "rows": len(df),
-            "columns": list(df.columns),
-            "date_range": {
-                "min": df['trade_date'].min() if 'trade_date' in df.columns else None,
-                "max": df['trade_date'].max() if 'trade_date' in df.columns else None,
-            },
-            "stock_count": df['stock_code'].nunique() if 'stock_code' in df.columns else None,
-        }
+        try:
+            table = self.db.open_table(self.table_name)
+            
+            # 【关键修改】绝对不要调用 to_pandas()！
+            # 使用 count_rows() 直接从元数据读取行数，速度极快且不占内存
+            row_count = table.count_rows()
+            
+            # 获取列名
+            schema_names = table.schema.names
+            
+            # 对于大表，不再计算 min/max 日期，因为需要全表扫描
+            return {
+                "exists": True,
+                "rows": row_count,
+                "columns": schema_names,
+                "note": "Big table mode: detailed stats skipped for performance"
+            }
+        except Exception as e:
+            return {"exists": True, "error": str(e)}
     
     def optimize_table(self) -> None:
         """优化表（压缩、重建索引）"""
@@ -637,7 +647,38 @@ class LanceDBManager:
         try:
             if hasattr(table, 'compact_files'):
                 table.compact_files()
-                logger.info("✓ 表优化完成")
+                logger.info("✓ 表文件压缩完成")
+            
+            # 【新增】创建标量索引 (Scalar Index) 以加速过滤查询
+            if hasattr(table, 'create_scalar_index'):
+                schema_names = table.schema.names
+                
+                # 针对 trade_date 创建索引 (加速范围查询)
+                date_col = None
+                if 'trade_date' in schema_names: date_col = 'trade_date'
+                elif 'date' in schema_names: date_col = 'date'
+                
+                if date_col:
+                    logger.info(f"正在为 {self.table_name} 创建日期索引 ({date_col})...")
+                    try:
+                        table.create_scalar_index(date_col)
+                        logger.info(f"✓ 日期索引创建完成: {date_col}")
+                    except Exception as idx_err:
+                        logger.warning(f"创建一个日期索引失败: {idx_err}")
+
+                # 针对 stock_code 创建索引 (加速精确查询)
+                code_col = None
+                if 'stock_code' in schema_names: code_col = 'stock_code'
+                elif 'code' in schema_names: code_col = 'code'
+                
+                if code_col:
+                    logger.info(f"正在为 {self.table_name} 创建代码索引 ({code_col})...")
+                    try:
+                        table.create_scalar_index(code_col)
+                        logger.info(f"✓ 代码索引创建完成: {code_col}")
+                    except Exception as idx_err:
+                        logger.warning(f"创建一个代码索引失败: {idx_err}")
+
             else:
                 logger.info("✓ 表已就绪（LanceDB 自动优化）")
         except Exception as e:

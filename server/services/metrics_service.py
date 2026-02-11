@@ -20,7 +20,37 @@ class MetricsService:
         self.stock_data_service = stock_data_service
     
     def calculate_metrics_from_df(self, results_df: pd.DataFrame, trades_log: List[Dict]) -> Dict:
-        """用于流式回测的最终指标计算"""
+        """
+        用于流式回测的最终指标计算
+        
+        Returns:
+            dict: 包含所有回测指标的字典，若无交易则返回 EmptyMetrics 并设置 warning_level
+        """
+        # [Modified] 任务C：计算后端保护 - 短路处理无交易情况
+        # 统计卖出交易数量
+        sell_trades_count = len([t for t in trades_log if t.get('action') == 'sell'])
+        
+        if sell_trades_count == 0:
+            # 无交易情况：返回预定义的 EmptyMetrics 并设置警告级别
+            logger.warning("[Metrics] 无卖出交易记录，触发 EmptyMetrics 保护机制")
+            return {
+                "totalReturn": 0.0,
+                "annualizedReturn": 0.0,
+                "maxDrawdown": 0.0,
+                "sharpeRatio": 0.0,
+                "sortinoRatio": 0.0,
+                "volatility": 0.0,
+                "winRate": 0.0,
+                "profitFactor": 0.0,
+                "tradesCount": 0,
+                "avgTradeReturn": 0.0,
+                "maxWinningStreak": 0,
+                "maxLosingStreak": 0,
+                "calmarRatio": 0.0,
+                "warning_level": "warning",  # [Added] 标记警告级别
+                "_empty_metrics": True       # [Added] 标记为空指标
+            }
+        
         initial_capital = self.init_service.initial_capital
         final_value = results_df['total_value'].iloc[-1]
         total_return = (final_value / initial_capital - 1) * 100
@@ -67,16 +97,17 @@ class MetricsService:
 
         sum_trade_return_pct = 0.0  # 用来算"平均每笔收益率（%）"
 
-        positions: Dict[str, Dict[str, float]] = {}
+        # 使用回测引擎已经计算好的profit_loss字段，而不是重新计算
         for trade in trades_log:
             action = trade['action']
-            symbol = str(trade['symbol'])
-            qty = trade['quantity']
-            price = trade['price']
-
+            
             if action == 'sell':
-                avg_cost = positions.get(symbol, {}).get('cost', price)
-                pnl = (price - avg_cost) * qty
+                # 优先使用回测引擎已经计算好的profit_loss字段
+                pnl = trade.get('profit_loss', 0)
+                
+                # 如果没有profit_loss字段，再使用回测引擎计算的roi和value来计算
+                if pnl == 0 and 'roi' in trade and 'value' in trade:
+                    pnl = (trade['roi'] / 100) * trade['value']
 
                 # 统计盈亏次数 & 盈利/亏损总额
                 if pnl > 0:
@@ -97,26 +128,20 @@ class MetricsService:
                 total_pnl += pnl
 
                 # 单笔收益率（相对于成本）
-                exposure = avg_cost * qty
-                if exposure > 0:
-                    trade_return_pct = (pnl / exposure) * 100
-                    sum_trade_return_pct += trade_return_pct
+                # 使用回测引擎已经计算好的trade_return_pct或roi字段
+                if 'roi' in trade:
+                    sum_trade_return_pct += trade['roi']
+                elif 'trade_return_pct' in trade:
+                    sum_trade_return_pct += trade['trade_return_pct']
+                else:
+                    # 如果没有这些字段，再使用pnl和cost计算
+                    avg_cost = trade.get('entry_price', trade.get('price', 0))
+                    exposure = avg_cost * trade.get('quantity', 0)
+                    if exposure > 0:
+                        trade_return_pct = (pnl / exposure) * 100
+                        sum_trade_return_pct += trade_return_pct
 
-            elif action == 'buy':
-                if symbol not in positions:
-                    positions[symbol] = {'qty': 0, 'cost': 0}
-                prev_qty = positions[symbol]['qty']
-                prev_cost = positions[symbol]['cost']
-
-                new_qty = prev_qty + qty
-                new_cost = (prev_cost * prev_qty + qty * price) / new_qty if new_qty > 0 else price
-
-                positions[symbol]['qty'] = new_qty
-                positions[symbol]['cost'] = new_cost
-
-        sell_trades_count = len([t for t in trades_log if t['action'] == 'sell'])
-        win_rate = (win_trades / sell_trades_count) * 100 if sell_trades_count > 0 else 0
-        profit_factor = total_profit / total_loss if total_loss > 0 else 0
+        # [Unchanged] 后续逻辑保持不变
         avg_trade_return = (sum_trade_return_pct / sell_trades_count) if sell_trades_count > 0 else 0
 
         def _to_scalar(x: Any) -> float:
@@ -148,7 +173,7 @@ class MetricsService:
         return {
             "totalReturn": round(total_return_v, 2),
             "annualizedReturn": round(annualized_return_v, 2),
-            "maxDrawdown": round(abs(max_drawdown_v), 2),
+            "maxDrawdown": round(max_drawdown_v, 2),
             "sharpeRatio": round(sharpe_ratio_v, 2),
             "sortinoRatio": round(sortino_ratio_v, 2),
             "volatility": round(volatility_v, 2),
@@ -159,6 +184,7 @@ class MetricsService:
             "maxWinningStreak": int(max_win_streak),
             "maxLosingStreak": int(max_loss_streak),
             "calmarRatio": round(calmar_ratio_v, 3),
+            "warning_level": "normal"  # [Added] 正常情况标记为 normal
         }
     
     def extract_equity_curve_from_df(self, results_df: pd.DataFrame, stock_data_service=None) -> Dict:
@@ -247,29 +273,38 @@ class MetricsService:
             df_equity['year'] = df_equity.index.year
             df_equity['month'] = df_equity.index.month
 
+            # 计算每个月的收益
             monthly_returns = []
             for (year, month), group in df_equity.groupby(['year', 'month']):
                 first_value = group['total_value'].iloc[0]
                 last_value = group['total_value'].iloc[-1]
                 if first_value <= 0:
                     continue
+                monthly_return = (last_value / first_value - 1) * 100  # 直接计算为百分比
                 monthly_returns.append({
                     'year': int(year),
                     'month': int(month),
-                    'return': (last_value / first_value - 1)
+                    'return': monthly_return
                 })
 
-            monthly_returns_df = pd.DataFrame(monthly_returns)
-            if not monthly_returns_df.empty:
-                monthly_returns_df = monthly_returns_df.sort_values(['year', 'month'])
-                for year, group in monthly_returns_df.groupby('year'):
+            # 整理数据为前端需要的格式
+            if monthly_returns:
+                # 获取所有年份
+                years = sorted(set(item['year'] for item in monthly_returns))
+                
+                for year in years:
+                    # 创建包含12个月的列表，初始值为0.0
                     year_data = {
                         'year': int(year),
-                        'months': [None] * 12   # 1~12 月
+                        'months': [0.0] * 12  # 1~12月，初始值为0.0
                     }
-                    for _, row in group.iterrows():
-                        m = int(row['month']) - 1
-                        year_data['months'][m] = round(row['return'] * 100, 2)  # 百分比
+                    
+                    # 填充实际数据
+                    for item in monthly_returns:
+                        if item['year'] == year:
+                            m = int(item['month']) - 1  # 转换为0-based索引
+                            year_data['months'][m] = round(item['return'], 2)
+                    
                     heatmap_data.append(year_data)
 
         except Exception as e:
@@ -281,4 +316,5 @@ class MetricsService:
             "returnDistribution": [],
             "monthlyReturns": heatmap_data
         }
+
 

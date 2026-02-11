@@ -71,6 +71,22 @@ const routes: RouteRecordRaw[] = [
         meta: {
           title: '历史记录'
         }
+      },
+      {
+        path: 'strategy-generator',
+        name: 'StrategyGenerator',
+        component: () => import('../pages/StrategyGeneratorPage.vue'),
+        meta: {
+          title: 'AI 策略生成器'
+        }
+      },
+      {
+        path: 'dragon-eye',
+        name: 'DragonEye',
+        component: () => import('../pages/DragonEyePage.vue'),
+        meta: {
+          title: 'DragonEye 龙虎榜'
+        }
       }
     ]
   }

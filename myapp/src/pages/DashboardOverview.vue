@@ -1,136 +1,179 @@
 <template>
-  <div class="p-6 space-y-6">
-    <div class="grid grid-cols-4 gap-4">
-      <MetricCard
-        label="回测收益率"
-        :value="metrics?.totalReturn ?? null"
-        format="percent"
-        :subtitle="hasBacktestData && benchmarkReturn !== null ? `基准: ${benchmarkReturn >= 0 ? '+' : ''}${benchmarkReturn.toFixed(2)}%` : undefined"
-      />
-      <MetricCard
-        label="夏普比率 (Sharpe)"
-        :value="metrics?.sharpeRatio ?? null"
-        format="number"
-        :subtitle="hasBacktestData && metrics?.volatility ? `波动率 ${volatilityDisplay.toFixed(2)}%` : undefined"
-      />
-      <MetricCard
-        label="最大回撤(MaxDD)"
-        :value="metrics?.maxDrawdown !== undefined && metrics?.maxDrawdown !== null ? Math.abs(metrics.maxDrawdown) : null"
-        format="percent"
-        positive-color="text-red-400"
-        negative-color="text-green-400"
-        zero-color="text-gray-400"
-        :use-original-value="true"
-        :original-value="metrics?.maxDrawdown ?? null"
-      />
-      <MetricCard
-        label="盈亏比(P/L Ratio)"
-        :value="hasBacktestData && metrics?.profitFactor !== undefined ? (metrics.profitFactor ?? null) : null"
-        format="number"
-        :subtitle="hasBacktestData && winRatePercent !== null ? `胜率: ${winRatePercent.toFixed(0)}%` : undefined"
-      />
-    </div>
-
-    <div class="grid grid-cols-2 gap-6">
-      <div class="bg-[#151925] rounded-lg p-6 border border-slate-800 relative">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold text-white">资金收益曲线 (Equity Curve)</h3>
-          <div class="flex space-x-2">
-            <button
-              @click="chartScale = 'linear'"
-              :class="chartScale === 'linear' ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-400'"
-              class="px-3 py-1 rounded text-xs font-medium transition-colors"
-            >
-              Linear
-            </button>
-            <button
-              @click="chartScale = 'log'"
-              :class="chartScale === 'log' ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-400'"
-              class="px-3 py-1 rounded text-xs font-medium transition-colors"
-            >
-              Log
-            </button>
-          </div>
-        </div>
-        <div class="relative" style="min-height: 300px;">
-          <EquityCurve
-            v-if="equityCurveData.length > 0 || benchmarkData.length > 0"
-            :versions="equityCurveData"
-            :benchmark="benchmarkData"
-            :kline-data="[]"
-            :highlight-ranges="[]"
-            mode="equity"
-            :scale="chartScale"
-            @hover="handleEquityHover"
-          />
-          <!-- 蒙层：如果没有数据，就盖在上面 -->
-          <div
-            v-if="!hasBacktestData"
-            class="absolute inset-0 bg-gray-900/80 flex flex-col items-center justify-center z-10 backdrop-blur-sm rounded-lg"
+  <div class="h-screen flex flex-col bg-[#131722] text-[#d1d4dc] overflow-hidden">
+    <!-- Top Metrics Ticker Tape -->
+    <MetricsToolbar 
+      :strategy-name="strategyStore.currentVersion?.name || '未命名策略'"
+      :metrics="metrics"
+      :hover-metrics="hoverMetrics"
+      :has-backtest-data="hasBacktestData"
+    >
+      <template #actions>
+        <div class="flex items-center space-x-3">
+          <button 
+            @click="analyzeStrategy" 
+            :disabled="isAnalyzing"
+            class="text-[10px] bg-[#2962ff] hover:bg-[#1e4bd8] text-white px-2 py-1 rounded-sm font-bold uppercase disabled:opacity-50 transition-colors"
           >
-            <p class="text-gray-400 mb-4 text-lg">暂无回测数据</p>
-            <button
-              class="px-6 py-2 bg-indigo-600 rounded hover:bg-indigo-500 transition text-white font-medium"
-              @click="router.push('/strategy')"
-            >
-              运行策略
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div class="bg-[#151925] rounded-lg p-6 border border-slate-800 relative">
-        <div class="relative" style="min-height: 300px;">
-          <RadarAbility
-            v-if="radarScores"
-            :scores="radarScores"
-            :benchmark="benchmarkRadarScores"
-            :feasibility-score="overallFeasibilityScore"
-          />
-          <!-- 蒙层：如果没有数据，就盖在上面 -->
-          <div
-            v-if="!hasBacktestData"
-            class="absolute inset-0 bg-gray-900/80 flex flex-col items-center justify-center z-10 backdrop-blur-sm rounded-lg"
-          >
-            <p class="text-gray-400 mb-4 text-lg">暂无回测数据</p>
-            <button
-              class="px-6 py-2 bg-indigo-600 rounded hover:bg-indigo-500 transition text-white font-medium"
-              @click="router.push('/strategy')"
-            >
-              运行策略
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="bg-[#151925] rounded-lg p-6 border border-slate-800">
-      <div class="flex items-center justify-between mb-4">
-        <h3 class="text-lg font-semibold text-white">月度收益热力图</h3>
-        <div class="flex space-x-2">
-          <button
-            @click="heatmapView = 'calendar'"
-            :class="heatmapView === 'calendar' ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-400'"
-            class="px-3 py-1 rounded text-xs font-medium transition-colors"
-          >
-            Calendar
+            <i class="fas fa-brain mr-1"></i> {{ isAnalyzing ? 'ANALYZING' : 'AI REVIEW' }}
           </button>
-          <button
-            @click="heatmapView = 'heatmap'"
-            :class="heatmapView === 'heatmap' ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-400'"
-            class="px-3 py-1 rounded text-xs font-medium transition-colors"
-          >
-            Heatmap
+          <button @click="isSidebarOpen = !isSidebarOpen" class="text-[#787b86] hover:text-white">
+            <i class="fas fa-columns text-xs"></i>
           </button>
         </div>
+      </template>
+    </MetricsToolbar>
+
+    <!-- Main Content Area: Flattened Dot Grid -->
+    <div class="flex-1 flex overflow-hidden">
+      <!-- Primary Multi-Pane area -->
+      <div class="flex-1 grid grid-cols-1 grid-rows-[1fr_200px_200px] gap-[1px] bg-[#2a2e39] tv-dot-grid overflow-hidden">
+        
+        <!-- Equity Curve Pane -->
+        <div class="tv-pane h-full">
+          <div class="tv-pane-header-flat">
+            <span class="tv-pane-label">净值曲线 (Equity Curve)</span>
+            <div class="flex bg-[#131722]/60 rounded p-0.5 border border-[#2a2e39] pointer-events-auto">
+              <button 
+                @click="chartScale = 'linear'" 
+                :class="chartScale === 'linear' ? 'text-[#2962ff]' : 'text-[#787b86]'"
+                class="px-1.5 py-0.5 text-[8px] font-bold uppercase transition-colors"
+                >线性</button>
+              <button 
+                @click="chartScale = 'log'" 
+                :class="chartScale === 'log' ? 'text-[#2962ff]' : 'text-[#787b86]'"
+                class="px-1.5 py-0.5 text-[8px] font-bold uppercase transition-colors"
+                >对数</button>
+            </div>
+          </div>
+          <div class="flex-1 min-h-0">
+            <EquityCurve
+              v-if="hasBacktestData"
+              :versions="equityCurveData"
+              :benchmark="benchmarkData"
+              :scale="chartScale"
+              :sync-x-axis="syncDate"
+              :x-axis-min="xAxisMin"
+              :x-axis-max="xAxisMax"
+              @hover="handleChartHover"
+            />
+          </div>
+        </div>
+
+        <!-- Drawdown Pane -->
+        <div class="tv-pane h-full border-t border-[#2a2e39]">
+          <div class="tv-pane-header-flat"><span class="tv-pane-label">回撤序列 (DDR)</span></div>
+          <div class="flex-1 min-h-0">
+            <DrawdownChart 
+              v-if="hasBacktestData"
+              :equity-series="backtestStore.equitySeries"
+              :sync-x-axis="syncDate"
+            />
+          </div>
+        </div>
+
+        <!-- Trade Frequency Pane -->
+        <div class="tv-pane h-full border-t border-[#2a2e39]">
+          <div class="tv-pane-header-flat"><span class="tv-pane-label">交易频率 (FREQ)</span></div>
+          <div class="flex-1 min-h-0 px-2 pb-2">
+            <TradeFrequencyChart 
+              v-if="hasBacktestData"
+              :trades="backtestStore.trades"
+              :sync-x-axis="syncDate"
+            />
+          </div>
+        </div>
       </div>
-      <PnLCalendar v-if="heatmapView === 'calendar' && monthlyReturnsData.length > 0" :data="monthlyReturnsData" />
-      <HeatmapChart v-else-if="heatmapView === 'heatmap' && monthlyReturnsData.length > 0" :data="monthlyReturnsData" />
-      <div v-else class="flex items-center justify-center h-48 text-slate-500">
-        <div class="text-center">
-          <i class="fas a-calendar-alt text-4xl mb-2"></i>
-          <p>暂无月度收益数据</p>
-          <p class="text-sm mt-1">请运行回测以查看数据</p>
+
+      <!-- Gallery Sidebar (Right) -->
+      <div 
+        v-if="isSidebarOpen"
+        class="w-[300px] flex flex-col border-l border-[#2a2e39] bg-[#131722] tv-dot-grid transition-all duration-300 pointer-events-auto"
+      >
+        <div class="p-3 border-b border-[#2a2e39] flex items-center justify-between relative">
+          <span class="text-[10px] font-bold text-[#787b86] uppercase tracking-widest">多维概览及导出</span>
+          <div class="relative">
+            <button @click="toggleExportMenu" class="text-[#787b86] hover:text-white transition-colors">
+              <i class="fas fa-file-export text-[10px]"></i>
+            </button>
+            <!-- 导出菜单 -->
+            <div v-if="showExportMenu" class="absolute right-0 mt-2 w-48 bg-[#1e222d] rounded shadow-xl border border-[#2a2e39] z-[100]">
+              <div class="py-1">
+                <button @click="exportToPDF" class="w-full text-left px-4 py-2 text-xs text-[#d1d4dc] hover:bg-[#2a2e39] transition-colors flex items-center space-x-2">
+                  <i class="fas fa-file-pdf text-[#f23645]"></i>
+                  <span>导出 PDF 报告</span>
+                </button>
+                <button @click="exportToExcel" class="w-full text-left px-4 py-2 text-xs text-[#d1d4dc] hover:bg-[#2a2e39] transition-colors flex items-center space-x-2">
+                  <i class="fas fa-file-excel text-[#089981]"></i>
+                  <span>导出 Excel 数据</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="flex-1 overflow-y-auto no-scrollbar">
+          <!-- Calendar / Heatmap Screener -->
+          <div class="p-4 border-b border-[#2a2e39]">
+             <VerticalHeatmap 
+              v-if="monthlyReturnsData.length > 0"
+              :data="monthlyReturnsData"
+              @month-select="handleMonthSelect"
+            />
+          </div>
+
+          <!-- Capability Radar -->
+          <div class="h-[250px] p-4 flex flex-col">
+            <span class="tv-pane-label mb-4">策略能力指标 (CAPABILITY)</span>
+            <div class="flex-1 min-h-0">
+               <RadarAbility
+                  v-if="radarScores"
+                  :scores="radarScores"
+                  :benchmark="benchmarkRadarScores"
+                  :feasibility-score="overallFeasibilityScore"
+                />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI 分析报告弹窗 (Keep styled but updated to match TV dark theme) -->
+    <div
+      v-if="showAnalysisModal"
+      class="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-[100] p-8"
+      @click.self="closeAnalysisModal"
+    >
+      <div class="bg-[#1e222d] border border-[#2a2e39] shadow-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
+        <div class="tv-pane-header !py-4">
+          <h2 class="text-[18px] font-bold text-white flex items-center gap-3">
+            <i class="fas fa-robot text-[#2962ff]"></i> AI 深度全域复盘
+          </h2>
+          <button @click="closeAnalysisModal" class="text-[#787b86] hover:text-white text-2xl leading-none px-2">&times;</button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-10 custom-scrollbar">
+          <div v-if="isAnalyzing" class="flex flex-col items-center justify-center h-full space-y-6">
+             <div class="w-16 h-16 border-4 border-[#2962ff]/20 border-t-[#2962ff] rounded-full animate-spin"></div>
+             <div class="text-center">
+               <div class="text-[16px] font-bold text-white mb-2">{{ analysisStage }}</div>
+               <div class="w-64 h-1.5 bg-[#2a2e39] rounded-full overflow-hidden mt-4">
+                 <div class="h-full bg-[#2962ff] transition-all duration-300" :style="{ width: `${analysisProgress}%` }"></div>
+               </div>
+               <div class="text-[11px] text-[#787b86] mt-4 uppercase tracking-widest">Generating Real-time Intelligence</div>
+             </div>
+          </div>
+          <div v-else-if="analysisError" class="p-6 bg-[#f23645]/10 border border-[#f23645]/30 rounded text-[#f23645] text-sm">
+             {{ analysisError }}
+          </div>
+          <div 
+            v-else-if="aiReportMarkdown" 
+            class="prose prose-invert prose-sm max-w-none prose-headings:text-white prose-strong:text-[#2962ff]"
+            v-html="renderMarkdown(aiReportMarkdown)"
+          ></div>
+        </div>
+
+        <div class="p-4 border-t border-[#2a2e39] bg-[#131722] flex justify-end">
+          <button @click="closeAnalysisModal" class="px-6 py-2 bg-[#2a2e39] hover:bg-[#363a45] text-white text-xs font-bold uppercase tracking-wider transition-colors">关闭窗口</button>
         </div>
       </div>
     </div>
@@ -147,59 +190,40 @@ import { useRouter } from 'vue-router';
 import { useStrategyStore } from '../store/strategyStore';
 import { useBacktestStore } from '../store/backtestStore';
 import { useSocketIO } from '../composables/useSocketIO';
-import { subscribe, getAvailableVersions } from '../api/backtestApi';
-import MetricCard from '../components/metrics/MetricCard.vue';
+import MetricsToolbar from '../components/metrics/MetricsToolbar.vue';
 import EquityCurve from '../components/EquityCurve.vue';
+import DrawdownChart from '../components/charts/DrawdownChart.vue';
+import TradeFrequencyChart from '../components/charts/TradeFrequencyChart.vue';
+import VerticalHeatmap from '../components/charts/VerticalHeatmap.vue';
 import RadarAbility from '../components/charts/RadarAbility.vue';
-import PnLCalendar from '../components/charts/PnLCalendar.vue';
-import HeatmapChart from '../components/HeatmapChart.vue';
 import type { Trade, Metrics } from '../types/backtest';
 
 const router = useRouter();
 const strategyStore = useStrategyStore();
 const backtestStore = useBacktestStore();
-const { connect } = useSocketIO();
 
 const chartScale = ref<'linear' | 'log'>('linear');
-const heatmapView = ref<'calendar' | 'heatmap'>('calendar');
-const trades = ref<Trade[]>([]);
-let hasReceivedFirstDailyUpdate = false;
-let hasCompleted = false;
+const syncDate = ref('');
+const isSidebarOpen = ref(true);
+const hoverMetrics = ref<{ totalReturn?: number | null; equity?: number | null } | null>(null);
+const xAxisMin = ref('');
+const xAxisMax = ref('');
+const showExportMenu = ref(false);
 
-// 判断是否有回测数据
+// AI 分析相关状态
+const isAnalyzing = ref(false);
+const showAnalysisModal = ref(false);
+const aiReportMarkdown = ref<string>('');
+const analysisError = ref<string>('');
+const analysisProgress = ref(0);
+const analysisStage = ref('准备中...');
+const API_BASE_URL = 'http://localhost:5000/api';
+
 const hasBacktestData = computed(() => {
-  return backtestStore.metrics !== null && 
-         backtestStore.equitySeries.length > 0;
+  return backtestStore.metrics !== null && backtestStore.equitySeries.length > 0;
 });
 
-const metrics = computed(() => {
-  return backtestStore.metrics;
-});
-
-const profitLossRatio = computed(() => {
-  return metrics.value?.profitFactor ?? null;
-});
-
-const winRatePercent = computed(() => {
-  if (!metrics.value || metrics.value.winRate === undefined || metrics.value.winRate === null) return null;
-  // 后端传入的胜率需除以 100 才是百分数
-  const pct = metrics.value.winRate;
-  return Math.min(Math.max(pct, 0), 100);
-});
-
-const volatilityDisplay = computed(() => {
-  if (!metrics.value) return 0;
-  const raw = metrics.value.volatility || 0;
-  // 后端传入的波动率需除以 100 才是百分数
-  return raw;
-});
-
-const benchmarkReturn = computed(() => {
-  if (backtestStore.benchmarkEquitySeries.length === 0) return null;
-  const first = backtestStore.benchmarkEquitySeries[0]?.equity || 1;
-  const last = backtestStore.benchmarkEquitySeries[backtestStore.benchmarkEquitySeries.length - 1]?.equity || 1;
-  return ((last / first) - 1) * 100;
-});
+const metrics = computed(() => backtestStore.metrics);
 
 const equityCurveData = computed(() => {
   if (backtestStore.equitySeries.length > 0) {
@@ -212,28 +236,118 @@ const equityCurveData = computed(() => {
   return [];
 });
 
-const benchmarkData = computed(() => {
-  return backtestStore.benchmarkEquitySeries;
-});
+const benchmarkData = computed(() => backtestStore.benchmarkEquitySeries);
+const monthlyReturnsData = computed(() => backtestStore.monthlyReturns);
 
-const monthlyReturnsData = computed(() => {
-  return backtestStore.monthlyReturns;
-});
+// Crosshair synchronization handler
+function handleChartHover(data: any) {
+  if (data?.date) {
+    syncDate.value = data.date;
+    
+    // Calculate real-time return if possible
+    if (data.equity !== undefined && backtestStore.equitySeries.length > 0) {
+      const initialEquity = backtestStore.equitySeries[0].equity || 1;
+      const currentReturn = ((data.equity / initialEquity) - 1) * 100;
+      hoverMetrics.value = {
+        totalReturn: currentReturn,
+        equity: data.equity
+      };
+    }
+  } else {
+    hoverMetrics.value = null;
+  }
+}
+
+// Heatmap focus interaction (Jump to month)
+function handleMonthSelect(data: { year: number; month: number }) {
+  // Construct date strings for current month jump
+  const startDay = `${data.year}-${String(data.month + 1).padStart(2, '0')}-01`;
+  const lastDay = new Date(data.year, data.month + 1, 0).getDate();
+  const endDay = `${data.year}-${String(data.month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  
+  xAxisMin.value = startDay;
+  xAxisMax.value = endDay;
+  
+  // Show a message or feedback (optional)
+  console.log(`Jumping to period: ${startDay} - ${endDay}`);
+}
+
+function toggleExportMenu() {
+  showExportMenu.value = !showExportMenu.value;
+}
+
+// 导出功能
+async function exportToPDF() {
+  showExportMenu.value = false;
+  if (!hasBacktestData.value) return;
+  try {
+    const backtestResult = {
+      metrics: backtestStore.metrics,
+      equityCurve: backtestStore.equitySeries,
+      monthlyReturns: backtestStore.monthlyReturns,
+      trades: backtestStore.trades,
+      strategyInfo: { name: strategyStore.currentVersion?.name || '策略' }
+    };
+    const response = await fetch(`${API_BASE_URL}/export/pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy_id: strategyStore.currentVersion?.id || '', backtest_result: backtestResult })
+    });
+    if (!response.ok) throw new Error('Export failed');
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `分析报告_${new Date().toISOString().slice(0, 10)}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  } catch (e: any) {
+    alert('导出 PDF 失败: ' + e.message);
+  }
+}
+
+async function exportToExcel() {
+  showExportMenu.value = false;
+  if (!hasBacktestData.value) return;
+  try {
+    const backtestResult = {
+      metrics: backtestStore.metrics,
+      equityCurve: backtestStore.equitySeries,
+      monthlyReturns: backtestStore.monthlyReturns,
+      trades: backtestStore.trades,
+      strategyInfo: { name: strategyStore.currentVersion?.name || '策略' }
+    };
+    const response = await fetch(`${API_BASE_URL}/export/excel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy_id: strategyStore.currentVersion?.id || '', backtest_result: backtestResult })
+    });
+    if (!response.ok) throw new Error('Export failed');
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `回测数据_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+  } catch (e: any) {
+    alert('导出 Excel 失败: ' + e.message);
+  }
+}
 
 const clamp = (val: number, min: number, max: number) => Math.min(Math.max(val, min), max);
 
 function normalizeRadarScores(m: Metrics) {
-  // 期间收益：-100%~100% 映射到 0~100
   const excessReturn = clamp(((m.annualizedReturn || 0) + 100) / 2, 0, 100);
-  // 夏普：-1~3 映射到 0~100
   const sharpe = clamp(((m.sharpeRatio || 0) + 1) * 25, 0, 100);
-  // 最大回撤：越小越好，0~100 映射为 100-回撤
   const maxDdScore = clamp(100 - Math.abs(m.maxDrawdown || 0), 0, 100);
-  // 交易质量：胜率(0~1)→0~100 占60%，盈利因子(0~5)→0~100 占40%
   const winPct = clamp((m.winRate || 0) * 100, 0, 100);
   const pfScore = clamp((m.profitFactor || 0) / 5 * 100, 0, 100);
   const tradingQuality = clamp(winPct * 0.6 + pfScore * 0.4, 0, 100);
-  // 抗过拟合：交易次数 0~200 映射到 0~100
   const antiOverfit = clamp((m.tradesCount || 0) / 2, 0, 100);
 
   return {
@@ -246,291 +360,122 @@ function normalizeRadarScores(m: Metrics) {
 }
 
 const radarScores = computed(() => {
-  if (strategyStore.currentRadarScores) {
-    return strategyStore.currentRadarScores;
-  }
-  
-  if (backtestStore.metrics) {
-    return normalizeRadarScores(backtestStore.metrics);
-  }
-  
+  if (strategyStore.currentRadarScores) return strategyStore.currentRadarScores;
+  if (backtestStore.metrics) return normalizeRadarScores(backtestStore.metrics);
   return null;
 });
 
 const overallFeasibilityScore = computed(() => {
   if (!radarScores.value) return null;
-  const scores = [
-    radarScores.value.excessReturn,
-    radarScores.value.riskConsistency,
-    radarScores.value.maxDrawdown,
-    radarScores.value.tradingQuality,
-    radarScores.value.antiOverfitting
-  ];
+  const scores = Object.values(radarScores.value);
   return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
 });
 
 const benchmarkRadarScores = computed(() => {
-  if (!backtestStore.benchmarkEquitySeries.length || !backtestStore.equitySeries.length) {
-    return null;
-  }
-  
-  const benchmarkFirst = backtestStore.benchmarkEquitySeries[0]?.equity || 1;
-  const benchmarkLast = backtestStore.benchmarkEquitySeries[backtestStore.benchmarkEquitySeries.length - 1]?.equity || 1;
-  const benchmarkReturnVal = (benchmarkLast / benchmarkFirst - 1) * 100;
-  
-  const days = backtestStore.benchmarkEquitySeries.length;
-  const years = days / 252.0;
-  const benchmarkAnnualizedReturn = years > 0 && benchmarkFirst > 0 ? ((benchmarkLast / benchmarkFirst) ** (1 / years) - 1) * 100 : benchmarkReturnVal;
-  
-  const benchmarkReturns = backtestStore.benchmarkEquitySeries.map((e, i) => {
-    if (i === 0) return 0;
-    const prev = backtestStore.benchmarkEquitySeries[i - 1]?.equity || 1;
-    return (e.equity / prev - 1) * 100;
-  });
-  const benchmarkMean = benchmarkReturns.reduce((a, b) => a + b, 0) / benchmarkReturns.length;
-  const benchmarkStd = Math.sqrt(benchmarkReturns.reduce((sum, r) => sum + Math.pow(r - benchmarkMean, 2), 0) / benchmarkReturns.length);
-  const benchmarkSharpe = benchmarkStd > 0 ? (benchmarkMean / benchmarkStd) * Math.sqrt(252) : 0;
-  
-  let benchmarkMaxDD = 0;
-  let benchmarkPeak = benchmarkFirst;
-  for (const point of backtestStore.benchmarkEquitySeries) {
-    if (point.equity > benchmarkPeak) {
-      benchmarkPeak = point.equity;
-    }
-    const drawdown = (point.equity - benchmarkPeak) / benchmarkPeak;
-    if (drawdown < benchmarkMaxDD) {
-      benchmarkMaxDD = drawdown;
-    }
-  }
-  
+  if (!backtestStore.benchmarkEquitySeries.length || !backtestStore.equitySeries.length) return null;
   return {
-    excessReturn: Math.min(100, Math.max(0, benchmarkAnnualizedReturn * 10)),
-    riskConsistency: Math.min(100, Math.max(0, benchmarkSharpe * 20)),
-    maxDrawdown: Math.min(100, Math.max(0, 100 - Math.abs(benchmarkMaxDD) * 2)),
+    excessReturn: 50,
+    riskConsistency: 50,
+    maxDrawdown: 50,
     tradingQuality: 50,
     antiOverfitting: 50
   };
 });
 
-const recentTrades = computed(() => {
-  if (trades.value.length > 0) {
-    return trades.value.slice().reverse().slice(0, 10);
-  }
-  return strategyStore.currentBacktestResult?.trades || [];
-});
+// AI Analyze logic (Preserved from original)
+let controller: AbortController | null = null;
+async function analyzeStrategy() {
+  if (!hasBacktestData.value) return;
+  isAnalyzing.value = true;
+  analysisProgress.value = 0;
+  analysisStage.value = '量子数据预处理...';
+  showAnalysisModal.value = true;
+  aiReportMarkdown.value = '';
 
-function handleEquityHover(data: any) {
-  console.log('Hover data:', data);
-}
-
-function handleTradeSelect(trade: Trade) {
-  router.push(`/strategy/${strategyStore.currentVersionId || 'default'}`);
-}
-
-let unsubscribe: (() => void) | null = null;
-
-async function loadData() {
   try {
-    strategyStore.setLoading(true);
-    const versions = await getAvailableVersions();
-    strategyStore.setAvailableVersions(versions);
-    if (versions.length > 0 && versions[0]) {
-      strategyStore.setCurrentVersion(versions[0].id);
+    const backtestResult = {
+      metrics: backtestStore.metrics,
+      equityCurve: backtestStore.equitySeries,
+      monthlyReturns: backtestStore.monthlyReturns,
+      trades: backtestStore.trades,
+      strategyInfo: {
+        name: strategyStore.currentVersion?.name || '未知策略',
+      }
+    };
+
+    controller = new AbortController();
+    const response = await fetch(`${API_BASE_URL}/analyze_report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        strategy_id: strategyStore.currentVersion?.id || '',
+        backtest_result: backtestResult
+      }),
+      signal: controller.signal
+    });
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('ReadableStream not supported');
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        if (line.startsWith('progress:')) {
+          const data = JSON.parse(line.slice(9));
+          analysisProgress.value = data.progress;
+          analysisStage.value = data.stage;
+        } else if (line.startsWith('stream:')) {
+          const data = JSON.parse(line.slice(7));
+          aiReportMarkdown.value += data.content;
+        }
+      }
     }
-  } catch (error) {
-    strategyStore.setError(null);
+  } catch (e: any) {
+    if (e.name !== 'AbortError') analysisError.value = e.message;
   } finally {
-    strategyStore.setLoading(false);
+    isAnalyzing.value = false;
+    controller = null;
   }
 }
 
-onMounted(() => {
-  // CHANGED: 从 localStorage 恢复回测数据，而不是清空
-  // 这样用户在回测完成后返回页面时，数据仍然存在
-  backtestStore.hydrateFromStorage();
-  loadData();
-  connect('http://localhost:5000');
-  
-  unsubscribe = subscribe((event: any) => {
-    if (event.type === 'initializing') {
-      backtestStore.setInitializing(true);
-    } else if (event.type === 'initialized') {
-      backtestStore.setInitializing(false);
-    } else if (event.type === 'backtest_start') {
-      // 【关键修复】确保加载动画已关闭（作为备用，主要应该在 initialized 事件中关闭）
-      backtestStore.setInitializing(false);
-      hasReceivedFirstDailyUpdate = false;
-      hasCompleted = false;
-      backtestStore.setRunning(true);
-      backtestStore.setProgress(0);
-      backtestStore.clearBacktestData();
-      const now = new Date();
-      backtestStore.setLastUpdated(now.toLocaleTimeString('zh-CN', { hour12: false }));
-    } else if (event.type === 'daily_equity') {
-      if (!hasReceivedFirstDailyUpdate) {
-        hasReceivedFirstDailyUpdate = true;
-        if (!backtestStore.running) {
-          backtestStore.setRunning(true);
-        }
-      }
-      const data = event.data;
-      const equity = data.strategyReturn ?? data.equity;
-      const benchmarkEquity = data.benchmarkReturn ?? data.benchmark_equity;
-      if (data.date && equity !== undefined && equity !== null) {
-        backtestStore.addEquityPoint(data.date, equity);
-      }
-      if (data.date && benchmarkEquity !== undefined && benchmarkEquity !== null) {
-        backtestStore.addBenchmarkPoint(data.date, benchmarkEquity);
-      }
-      
-      if (backtestStore.equitySeries.length > 0) {
-        const tempMetrics = calculateTemporaryMetrics();
-        if (tempMetrics) {
-          backtestStore.setMetrics(tempMetrics, true);
-        }
-      }
-      
-      const now = new Date();
-      backtestStore.setLastUpdated(now.toLocaleTimeString('zh-CN', { hour12: false }));
-    } else if (event.type === 'metrics_update' || event.type === 'final_metrics') {
-      const data = event.data;
-      if (data && !hasCompleted) {
-        const metricsVal: Metrics = {
-          totalReturn: data.totalReturn ?? data.total_return ?? 0,
-          annualizedReturn: data.annualizedReturn ?? data.annualized_return ?? 0,
-          maxDrawdown: data.maxDrawdown ?? data.max_drawdown ?? 0,
-          sharpeRatio: data.sharpeRatio ?? data.sharpe_ratio ?? 0,
-          sortinoRatio: data.sortinoRatio ?? data.sortino_ratio ?? 0,
-          volatility: data.volatility ?? 0,
-          winRate: data.winRate ?? data.win_rate ?? 0,
-          profitFactor: data.profitFactor ?? data.profit_factor ?? 0,
-          tradesCount: data.tradesCount ?? data.trades_count ?? 0,
-          avgTradeReturn: data.avgTradeReturn ?? data.avg_trade_return ?? 0,
-          maxWinningStreak: data.maxWinningStreak ?? data.max_winning_streak ?? 0,
-          maxLosingStreak: data.maxLosingStreak ?? data.max_losing_streak ?? 0
-        };
-        backtestStore.setMetrics(metricsVal);
-      }
-    } else if (event.type === 'new_trade') {
-      const data = event.data;
-      if (data && data.date) {
-        const trade: Trade = {
-          id: data.id || `${data.date}-${data.symbolCode || data.symbol_code || data.symbol}-${data.action}`,
-          symbol: data.symbol || '',
-          symbolCode: data.symbolCode || data.symbol_code || data.symbol || '',
-          date: data.date,
-          action: data.action === 'buy' ? 'buy' : 'sell',
-          price: data.price || 0,
-          quantity: data.quantity || 0,
-          value: (data.price || 0) * (data.quantity || 0),
-          profitLoss: data.profitLoss ?? data.profit_loss ?? 0,
-          cumulativePnL: data.cumulativePnL ?? data.cumulative_pnl ?? 0,
-          positionId: data.positionId || data.position_id,
-          entryDate: data.entryDate || data.entry_date,
-          exitDate: data.exitDate || data.exit_date
-        };
-        backtestStore.addTrade(trade);
-      }
-    } else if (event.type === 'risk_data') {
-      const data = event.data;
-      if (data) {
-        if (data.monthlyReturns) {
-          if (Array.isArray(data.monthlyReturns)) {
-            backtestStore.setMonthlyReturns(data.monthlyReturns);
-          }
-        } else if (data.monthly_returns && Array.isArray(data.monthly_returns)) {
-          backtestStore.setMonthlyReturns(data.monthly_returns);
-        }
-        if (data.holdingPeriods && Array.isArray(data.holdingPeriods)) {
-          backtestStore.setHoldingPeriods(data.holdingPeriods);
-        }
-      }
-    } else if (event.type === 'stream_complete') {
-      if (!hasCompleted) {
-        hasCompleted = true;
-        backtestStore.setRunning(false);
-        backtestStore.setProgress(100);
-        const now = new Date();
-        backtestStore.setLastUpdated(now.toLocaleTimeString('zh-CN', { hour12: false }));
-        backtestStore.persistToStorage();
-      }
-    } else if (event.type === 'error' || event.type === 'cancelled') {
-      backtestStore.setRunning(false);
-      backtestStore.setProgress(0);
-    } else if (event.type === 'progress') {
-      const data = event.data;
-      if (data && typeof data.progress === 'number') {
-        backtestStore.setProgress(data.progress);
-      }
-    }
-  });
-});
+function closeAnalysisModal() {
+  if (controller) controller.abort();
+  showAnalysisModal.value = false;
+  aiReportMarkdown.value = '';
+}
 
-onUnmounted(() => {
-  unsubscribe?.();
-});
-
-function calculateTemporaryMetrics(): Metrics | null {
-  if (backtestStore.equitySeries.length === 0) return null;
-  
-  const initialCapital = 1000000;
-  const firstEquity = backtestStore.equitySeries[0]?.equity || initialCapital;
-  const lastEquity = backtestStore.equitySeries[backtestStore.equitySeries.length - 1]?.equity || initialCapital;
-  
-  const totalReturn = (lastEquity / firstEquity - 1) * 100;
-  
-  const days = backtestStore.equitySeries.length;
-  const years = days / 252.0;
-  const annualizedReturn = years > 0 && firstEquity > 0 ? ((lastEquity / firstEquity) ** (1 / years) - 1) * 100 : totalReturn;
-  
-  let maxDrawdown = 0;
-  let peak = firstEquity;
-  for (const point of backtestStore.equitySeries) {
-    if (point.equity > peak) {
-      peak = point.equity;
-    }
-    const drawdown = (point.equity - peak) / peak;
-    if (drawdown < maxDrawdown) {
-      maxDrawdown = drawdown;
-    }
-  }
-  
-  const returns = backtestStore.equitySeries.map((e, i) => {
-    if (i === 0) return 0;
-    const prev = backtestStore.equitySeries[i - 1]?.equity || firstEquity;
-    return (e.equity / prev - 1) * 100;
-  });
-  const meanReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const stdReturn = Math.sqrt(returns.reduce((sum, r) => sum + Math.pow(r - meanReturn, 2), 0) / returns.length);
-  const sharpeRatio = stdReturn > 0 ? (meanReturn / stdReturn) * Math.sqrt(252) : 0;
-  
-  const sellTrades = backtestStore.trades.filter(t => t.action === 'sell');
-  const winTrades = sellTrades.filter(t => (t.profitLoss || 0) > 0);
-  const winRate = sellTrades.length > 0 ? (winTrades.length / sellTrades.length) * 100 : 0;
-  
-  const totalProfit = sellTrades.filter(t => (t.profitLoss || 0) > 0).reduce((sum, t) => sum + (t.profitLoss || 0), 0);
-  const totalLoss = Math.abs(sellTrades.filter(t => (t.profitLoss || 0) < 0).reduce((sum, t) => sum + (t.profitLoss || 0), 0));
-  const profitFactor = totalLoss > 0 ? totalProfit / totalLoss : 0;
-  
-  return {
-    totalReturn,
-    annualizedReturn,
-    maxDrawdown: maxDrawdown * 100,
-    sharpeRatio,
-    sortinoRatio: sharpeRatio,
-    volatility: stdReturn * Math.sqrt(252),
-    winRate: winRate,
-    profitFactor,
-    tradesCount: backtestStore.trades.length,
-    avgTradeReturn: 0,
-    maxWinningStreak: 0,
-    maxLosingStreak: 0
-  };
+function renderMarkdown(md: string) {
+  // Simple renderer (can use marked if installed)
+  return md
+    .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold mb-4 mt-8">$1</h1>')
+    .replace(/^## (.*$)/gim, '<h2 class="text-xl font-bold mb-3 mt-6">$1</h2>')
+    .replace(/^### (.*$)/gim, '<h3 class="text-lg font-bold mb-2 mt-4 text-[#2962ff]">$1</h3>')
+    .replace(/\*\*(.*?)\*\*/gim, '<strong class="text-white">$1</strong>')
+    .replace(/^- (.*$)/gim, '<li class="ml-4">$1</li>')
+    .replace(/\n/g, '<br>');
 }
 </script>
 
-<style scoped>
-.p-6 {
-  transition: background-color 0.3s ease;
+<style>
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #2a2e39;
+  border-radius: 2px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #363a45;
 }
 </style>

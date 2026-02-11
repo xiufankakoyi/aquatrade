@@ -1,0 +1,18 @@
+{
+  "strategy_id": "jq_volume_v1pro",
+  "version": "1.0",
+  "parameters": {
+    "market_cap_min": 200000,
+    "market_cap_max": 600000,
+    "volume_ratio_threshold": 3.0,
+    "ma_days": 5,
+    "min_list_days": 60,
+    "max_candidates": 1500,
+    "position_ratio": 0.2,
+    "max_stocks_per_day": 5
+  },
+  "metadata": {
+    "description": "Configuration for jq_volume_v1pro",
+    "last_modified": "2026-01-11 20:44:23"
+  }
+}

@@ -3,7 +3,8 @@
   显示该版本的交易记录表格、K线图和防守仓模块
 -->
 <template>
-  <div class="strategy-detail-page p-6 bg-gray-50 dark:bg-slate-900 dark:text-slate-100 min-h-screen">
+  <div class="strategy-detail-page p-4 md:p-6 bg-gray-50 dark:bg-slate-900 dark:text-slate-100 min-h-screen">
+  <ProgressBar :percentage="klineLoadingProgress" v-if="klineLoading" />
     <!-- 页面标题和返回按钮 -->
     <div class="mb-6 flex items-center justify-between">
       <div class="flex items-center space-x-4">
@@ -13,7 +14,7 @@
         >
           ← 返回 Dashboard
         </button>
-        <h1 class="text-3xl font-bold text-gray-800 dark:text-slate-100">
+        <h1 class="text-2xl md:text-3xl font-bold text-gray-800 dark:text-slate-100">
           策略详情：{{ versionName }}
         </h1>
       </div>
@@ -49,7 +50,7 @@
         <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4">
           <p class="text-sm text-gray-500 dark:text-slate-400 mb-1">最大回撤</p>
           <p class="text-2xl font-bold text-red-600 dark:text-red-400">
-            {{ formatPercent(backtestResult.metrics.maxDrawdown) }}
+            {{ formatPercent(backtestResult.metrics.maxDrawdown, true) }}
           </p>
         </div>
         <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4">
@@ -61,8 +62,8 @@
       </div>
 
       <!-- 交易记录表格 -->
-      <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-6">
-        <h2 class="text-xl font-semibold text-gray-800 dark:text-slate-100 mb-4">交易记录</h2>
+      <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 md:p-6">
+        <h2 class="text-lg md:text-xl font-semibold text-gray-800 dark:text-slate-100 mb-3 md:mb-4">交易记录</h2>
         <ResultsTable
           :trades="backtestResult.trades || []"
           @trade-select="handleTradeSelect"
@@ -70,11 +71,11 @@
       </div>
 
       <!-- K线图 -->
-      <div v-if="selectedTrade" class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-6">
-        <h2 class="text-xl font-semibold text-gray-800 dark:text-slate-100 mb-4">
+      <div v-if="selectedTrade" class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 md:p-6">
+        <h2 class="text-lg md:text-xl font-semibold text-gray-800 dark:text-slate-100 mb-3 md:mb-4">
           K线图：{{ selectedTrade.symbol }}
         </h2>
-        <div class="h-96">
+        <div class="min-h-[300px] md:h-96">
           <EquityCurve
             :kline-data="klineData"
             :highlight-ranges="highlightRanges"
@@ -86,18 +87,33 @@
       </div>
 
       <!-- 防守仓模块 -->
-      <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-6">
-        <h2 class="text-xl font-semibold text-gray-800 dark:text-slate-100 mb-4">防守仓仓位分析</h2>
+      <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 md:p-6">
+        <h2 class="text-lg md:text-xl font-semibold text-gray-800 dark:text-slate-100 mb-3 md:mb-4">防守仓仓位分析</h2>
         <PortfolioDefense
           :trades="backtestResult.trades || []"
         />
       </div>
     </div>
+
+    <!-- Deep Dive Modal -->
+    <TradeDeepDive
+      v-if="selectedDeepDiveTrade"
+      :is-open="isDeepDiveOpen"
+      :symbol-code="selectedDeepDiveTrade.symbolCode"
+      :symbol-name="selectedDeepDiveTrade.symbol"
+      :start-date="deepDiveStartDate"
+      :end-date="deepDiveEndDate"
+      :trades="backtestStore.trades"
+      :benchmark-code="backtestStore.lastRunParams?.benchmarkCode"
+      @close="isDeepDiveOpen = false"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
+import ProgressBar from '../components/ProgressBar.vue';
+import { useBacktestStore } from '../store/backtestStore';
 import { useRoute } from 'vue-router';
 import { useStrategyStore } from '../store/strategyStore';
 import { useBacktestStore } from '../store/backtestStore';
@@ -105,6 +121,7 @@ import { getStrategyDetail, getKlineData } from '../api/backtestApi';
 import ResultsTable from '../components/ResultsTable.vue';
 import PortfolioDefense from '../components/PortfolioDefense.vue';
 import EquityCurve from '../components/EquityCurve.vue';
+import TradeDeepDive from '../components/modals/TradeDeepDive.vue';
 import type { Trade } from '../types/backtest';
 import type { BacktestResult } from '../store/strategyStore';
 
@@ -113,14 +130,23 @@ interface Props {
 }
 
 const props = defineProps<Props>();
+const backtestStore = useBacktestStore();
 const route = useRoute();
 const strategyStore = useStrategyStore();
 const backtestStore = useBacktestStore();
 
 // 状态
 const selectedTrade = ref<Trade | null>(null);
+const klineLoading = ref(false);
+const klineLoadingProgress = ref<number | null>(null);
 const klineData = ref<any[]>([]);
 const highlightRanges = ref<Array<{ start: string; end: string }>>([]);
+
+// Deep Dive Modal 状态
+const selectedDeepDiveTrade = ref<Trade | null>(null);
+const isDeepDiveOpen = ref(false);
+const deepDiveStartDate = ref('');
+const deepDiveEndDate = ref('');
 
 // 从 store 获取数据
 const isLoading = computed(() => strategyStore.isLoading);
@@ -167,22 +193,58 @@ const versionName = computed(() => {
 });
 
 // 格式化百分比
-function formatPercent(value: number): string {
-  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`;
+function formatPercent(value: number, isDrawdown = false): string {
+  // 对于最大回撤，确保显示为负值且不加+号
+  if (isDrawdown) {
+    return `-${Math.abs(value).toFixed(2)}%`;
+  }
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}%`;
 }
 
 // 处理交易选择
 async function handleTradeSelect(trade: Trade) {
   selectedTrade.value = trade;
   
-  // 加载 K 线数据
-  if (trade.symbolCode || trade.symbol) {
+  // 用于弹窗分析
+  selectedDeepDiveTrade.value = trade;
+  isDeepDiveOpen.value = true;
+  
+  const symbolCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
+  if (symbolCode) {
+    // 计算分析窗口 (-20d / +10d)
+    const entry = new Date(trade.entryDate || trade.date);
+    const exit = trade.exitDate ? new Date(trade.exitDate) : new Date(entry);
+    
+    const start = new Date(entry);
+    start.setDate(start.getDate() - 20);
+    const end = new Date(exit);
+    end.setDate(end.getDate() + 10);
+
+    const formatDateStr = (date: Date) => date.toISOString().split('T')[0];
+    deepDiveStartDate.value = formatDateStr(start);
+    deepDiveEndDate.value = formatDateStr(end);
+    
     try {
-      const symbolCode = trade.symbolCode || trade.symbol;
-      const startDate = trade.entryDate || '2024-01-01';
-      const endDate = trade.exitDate || '2025-01-01';
-      
-      const kline = await getKlineData(symbolCode, startDate, endDate);
+      let cached = backtestStore.klineCache[symbolCode];
+if (cached) {
+  klineData.value = cached;
+  highlightRanges.value = trade.entryDate && trade.exitDate ? [{ start: trade.entryDate, end: trade.exitDate }] : [];
+} else {
+  klineLoading.value = true;
+  klineLoadingProgress.value = 0;
+  try {
+    const kline = await getKlineData(symbolCode, deepDiveStartDate.value, deepDiveEndDate.value);
+    klineData.value = kline;
+    backtestStore.klineCache[symbolCode] = kline;
+    highlightRanges.value = trade.entryDate && trade.exitDate ? [{ start: trade.entryDate, end: trade.exitDate }] : [];
+  } catch (err) {
+    console.error('加载 K 线数据失败:', err);
+  } finally {
+    klineLoading.value = false;
+    klineLoadingProgress.value = null;
+  }
+}
       klineData.value = kline;
       
       // 设置高亮范围
@@ -196,6 +258,17 @@ async function handleTradeSelect(trade: Trade) {
       console.error('加载 K 线数据失败:', err);
     }
   }
+}
+
+function normalizeSymbolCode(value?: string | null): string {
+  if (!value) return '';
+  const trimmed = value.trim().toUpperCase();
+  const match = trimmed.match(/(\d+)/);
+  if (match) {
+    const digits = match[1];
+    return digits.length < 6 ? digits.padStart(6, '0') : digits;
+  }
+  return trimmed;
 }
 
 // 加载策略详情

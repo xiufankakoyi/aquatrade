@@ -114,21 +114,42 @@
           <i v-else class="fas fa-spinner fa-spin"></i>
           <span>{{ isLoading ? '运行中...' : '运行回测' }}</span>
         </button>
+        <button
+          type="button"
+          @click="showDataUpdateModal"
+          class="w-10 h-10 flex items-center justify-center rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/50 transition-all"
+          title="同步市场数据"
+        >
+          <i class="fas fa-cloud-download-alt"></i>
+        </button>
+        <ThemeSwitcher />
       </div>
     </div>
   </header>
+
+  <DataUpdateModal ref="dataUpdateModalRef" />
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
 import { useSocketIO } from '../../composables/useSocketIO';
 import { useBacktestStore } from '../../store/backtestStore';
 import { useDashboardStore } from '../../store/dashboardStore';
 import { useHistoryStore } from '../../store/historyStore';
 import { useStreamingBacktest } from '../../composables/useStreamingBacktest';
 import { fetchStrategyProfiles } from '../../api/backtestApi';
+import DataUpdateModal from '../modals/DataUpdateModal.vue';
+
+const dataUpdateModalRef = ref<any>(null);
+
+const showDataUpdateModal = () => {
+    dataUpdateModalRef.value?.show();
+};
 
 const { connect } = useSocketIO();
+const router = useRouter();
+const route = useRoute();
 const backtestStore = useBacktestStore();
 const dashboardStore = useDashboardStore();
 const historyStore = useHistoryStore();
@@ -162,7 +183,7 @@ const selectedProfileId = ref<string | null>(null);
 // 回测参数
 const backtestParams = ref({
   startDate: '2024-05-20',
-  endDate: '2025-01-15',
+  endDate: '2024-05-25',
   benchmarkCode: '000300'
 });
 
@@ -185,6 +206,12 @@ function setQuickRange(type: '1y' | '3y' | 'ytd') {
 
 function handleStrategyChange() {
   dashboardStore.setSelectedStrategy(selectedStrategyId.value || '');
+  
+  // 如果当前在策略详情页，切换策略时需要更新路由
+  if (route.name === 'StrategyDetail') {
+    router.push({ name: 'StrategyDetail', params: { id: selectedStrategyId.value } });
+  }
+
   // 策略变化时刷新该策略下的预设列表
   const strategy = dashboardStore.selectedStrategy;
   profiles.value = [];
@@ -224,14 +251,14 @@ function handleVersionChange() {
         annualizedReturn: record.metrics.annualizedReturn,
         maxDrawdown: record.metrics.maxDrawdown,
         sharpeRatio: record.metrics.sharpeRatio,
-        sortinoRatio: 0,
-        volatility: 0,
-        winRate: 0,
-        profitFactor: 0,
-        tradesCount: 0,
-        avgTradeReturn: 0,
-        maxWinningStreak: 0,
-        maxLosingStreak: 0
+        sortinoRatio: record.metrics.sortinoRatio || 0,
+        volatility: record.metrics.volatility || 0,
+        winRate: record.metrics.winRate || 0,
+        profitFactor: record.metrics.profitFactor || 0,
+        tradesCount: record.metrics.tradesCount || 0,
+        avgTradeReturn: record.metrics.avgTradeReturn || 0,
+        maxWinningStreak: record.metrics.maxWinningStreak || 0,
+        maxLosingStreak: record.metrics.maxLosingStreak || 0
       };
     }
   }
@@ -274,7 +301,8 @@ function handleStopBacktest() {
 }
 
 onMounted(async () => {
-  connect('http://localhost:5000');
+  // 通过 Vite 代理连接，避免 CORS
+  connect(window.location.origin);
   await dashboardStore.loadStrategies();
   // CHANGED: 加载历史记录
   historyStore.loadFromStorage();

@@ -18,7 +18,7 @@ from core.strategies.strategy_framework import StrategyBase
 
 
 class StrategyFactory:
-    """策略工厂 - 自动扫描并注册策略类"""
+    """策略工厂 - 自动扫描并注册策略类（支持延迟加载）"""
 
     def __init__(self) -> None:
         # registry 统一使用 strategy_id 作为 key
@@ -28,7 +28,17 @@ class StrategyFactory:
 
         self._strategies_path = os.path.dirname(__file__)
         self._strategies_mtime = 0.0
-        self._discover_strategies(force_reload=True)
+        
+        # 【关键优化】不在初始化时扫描策略，而是延迟到第一次使用
+        # 这避免了导入 core.strategies 模块时就加载所有策略类
+        self._initialized = False
+    
+    def _ensure_initialized(self) -> None:
+        """确保策略已扫描（延迟初始化）"""
+        if not self._initialized:
+            self._discover_strategies(force_reload=False)
+            self._initialized = True
+
     
     def _discover_strategies(self, force_reload: bool = False) -> None:
         """自动发现所有继承自 StrategyBase 的策略类。"""
@@ -53,6 +63,17 @@ class StrategyFactory:
             # 重新加载后，更新 StrategyBase 引用
             from core.strategies.strategy_framework import StrategyBase as ReloadedStrategyBase
             current_strategy_base = ReloadedStrategyBase
+            
+            # 【重要修复】同时重新加载可能被用作中间基类的模块
+            # 如果不重载，会导致 issubclass 检查失效（因为类身份不匹配）
+            for base_module in ["core.strategies.vectorized_base", "core.strategies.vectorized_strategy_base"]:
+                if base_module in sys.modules:
+                    if debug_mode:
+                        logger.debug(f"重新加载中间基类模块: {base_module}")
+                    try:
+                        importlib.reload(sys.modules[base_module])
+                    except Exception as e:
+                        logger.warning(f"重新加载 {base_module} 失败: {e}")
 
         modules = list(pkgutil.iter_modules([self._strategies_path]))
         modules.sort(key=lambda item: item[1])  # 稳定顺序
@@ -113,13 +134,12 @@ class StrategyFactory:
         raw_id: Any = getattr(strategy_class, "strategy_id", None)
         raw_name: Any = getattr(strategy_class, "strategy_name", None)
 
-        if not isinstance(raw_name, str) or not raw_name.strip():
-            raw_name = raw_id if isinstance(raw_id, str) and raw_id.strip() else class_name
-        if not isinstance(raw_id, str) or not raw_id.strip():
-            raw_id = raw_name
+        if (not isinstance(raw_id, str) or not raw_id.strip()) and (not isinstance(raw_name, str) or not raw_name.strip()):
+            # 如果 ID 和名称都未定义，说明是基类，跳过注册
+            return
 
-        strategy_id = str(raw_id).strip() or class_name
-        strategy_name = str(raw_name).strip() or strategy_id
+        strategy_id = str(raw_id).strip() if isinstance(raw_id, str) and raw_id.strip() else str(raw_name).strip()
+        strategy_name = str(raw_name).strip() if isinstance(raw_name, str) and raw_name.strip() else strategy_id
 
         if strategy_id in self.registry:
             existing = self.registry[strategy_id]
@@ -221,6 +241,7 @@ class StrategyFactory:
 
     def _resolve_identifier_to_id(self, identifier: str) -> Optional[str]:
         """把旧 ID / 中文名 / 新 ID 统一解析为内部 strategy_id。"""
+        self._ensure_initialized()  # 延迟初始化
         self._auto_refresh_registry()
 
         if identifier in self.registry:
@@ -240,6 +261,7 @@ class StrategyFactory:
         return None
 
     def _get_available_strategies_instance(self) -> Dict[str, str]:
+        self._ensure_initialized()  # 延迟初始化
         self._auto_refresh_registry()
         strategies = {
             sid: self._id_to_name.get(sid, sid)
@@ -251,6 +273,7 @@ class StrategyFactory:
     def _get_strategy_by_name_instance(
         self, strategy_name: str
     ) -> Optional[Type[StrategyBase]]:
+        self._ensure_initialized()  # 延迟初始化
         self._auto_refresh_registry()
         sid = self._name_to_id.get(strategy_name)
         if not sid and strategy_name in self.registry:
@@ -258,10 +281,12 @@ class StrategyFactory:
         return self.registry.get(sid) if sid else None
 
     def _get_strategy_by_id_instance(self, strategy_id: str) -> Optional[Type[StrategyBase]]:
+        self._ensure_initialized()  # 延迟初始化
         self._auto_refresh_registry()
         return self.registry.get(strategy_id)
 
     def _list_strategies_instance(self) -> List[Dict[str, Any]]:
+        self._ensure_initialized()  # 延迟初始化
         self._auto_refresh_registry()
         result: List[Dict[str, Any]] = []
         for sid, cls in sorted(self.registry.items()):

@@ -1,78 +1,133 @@
 <template>
-  <div class="bg-[#151925] rounded-lg p-6 border border-slate-800">
-    <div class="flex items-center justify-between mb-4">
-      <h3 class="text-lg font-semibold text-white">当日持仓</h3>
-      <div v-if="positions.length === 0" class="text-base text-slate-400">
-        暂无持仓
+  <div class="bg-[#131722] rounded-lg border border-[#2a2e39] overflow-hidden flex flex-col h-full shadow-2xl">
+    <!-- Header -->
+    <div class="px-4 py-3 border-b border-[#2a2e39] flex items-center justify-between bg-[#1c202b]">
+      <div class="flex items-center gap-2">
+        <div class="w-1 h-4 bg-blue-500 rounded-full"></div>
+        <h3 class="text-sm font-bold text-[#d1d4dc] uppercase tracking-wider">当前持仓</h3>
+        <span v-if="positions.length > 0" class="ml-2 px-1.5 py-0.5 rounded bg-[#2a2e39] text-[10px] text-[#868993] font-mono">
+          {{ positions.length }}
+        </span>
       </div>
-    </div>
-    
-    <div v-if="positions.length > 0" class="space-y-4">
-      <!-- 表头 -->
-      <div class="grid grid-cols-4 gap-4 text-sm text-slate-400 pb-2 border-b border-slate-700/50">
-        <div class="font-medium">市值</div>
-        <div class="font-medium">收益率</div>
-        <div class="font-medium">可用数量</div>
-        <div class="font-medium">现价</div>
-      </div>
-      
-      <!-- 持仓数据 -->
-      <div
-        v-for="position in positions"
-        :key="position.symbolCode"
-        class="bg-[#1a1f2e] rounded-lg p-4 border border-slate-700/50"
-        :class="getColorClass(position.profitLoss)"
-      >
-        <div class="grid grid-cols-4 gap-4 text-base">
-          <!-- 第一行 -->
-          <div class="space-y-1">
-            <p class="text-xs text-slate-500 mb-1">标的名称</p>
-            <p class="text-lg font-bold text-white">{{ position.symbolName || position.symbolCode }}</p>
-          </div>
-          
-          <div class="space-y-1">
-            <p class="text-xs text-slate-500 mb-1">浮动盈亏</p>
-            <p class="text-lg font-semibold">{{ formatCurrency(position.profitLoss) }}</p>
-          </div>
-          
-          <div class="space-y-1">
-            <p class="text-xs text-slate-500 mb-1">持仓数量</p>
-            <p class="text-base font-medium text-slate-300">{{ formatQuantity(position.quantity) }}</p>
-          </div>
-          
-          <div class="space-y-1">
-            <p class="text-xs text-slate-500 mb-1">成本价</p>
-            <p class="text-base font-medium text-slate-300">¥{{ position.cost.toFixed(2) }} <span class="text-xs text-slate-500">(前复权)</span></p>
-          </div>
-          
-          <!-- 第二行 -->
-          <div class="space-y-1">
-            <p class="text-xs text-slate-500 mb-1">市值</p>
-            <p class="text-base font-medium text-slate-300">¥{{ position.positionValue.toFixed(2) }}</p>
-          </div>
-          
-          <div class="space-y-1">
-            <p class="text-xs text-slate-500 mb-1">收益率</p>
-            <p class="text-base font-semibold">{{ formatPercent(position.profitRatio) }}</p>
-          </div>
-          
-          <div class="space-y-1">
-            <p class="text-xs text-slate-500 mb-1">可用数量</p>
-            <p class="text-base font-medium text-slate-300">{{ formatQuantity(position.availableQuantity) }}</p>
-          </div>
-          
-          <div class="space-y-1">
-            <p class="text-xs text-slate-500 mb-1">现价</p>
-            <p class="text-base font-medium text-slate-300">¥{{ position.currentPrice.toFixed(2) }} <span class="text-xs text-slate-500">(前复权)</span></p>
-          </div>
+      <div class="flex items-center gap-4 text-[11px] font-medium">
+        <div class="flex flex-col items-end">
+          <span class="text-[#868993] leading-none mb-0.5">总盈亏</span>
+          <span :class="['font-bold leading-none', totalProfitLoss >= 0 ? 'text-[#089981]' : 'text-[#f23645]']">
+            {{ totalProfitLoss >= 0 ? '+' : '' }}{{ formatVal(totalProfitLoss) }}
+          </span>
         </div>
       </div>
     </div>
-    
-    <div v-else class="flex items-center justify-center h-32 text-slate-500">
-      <div class="text-center">
-        <i class="fas fa-box-open text-4xl mb-2"></i>
-        <p>暂无持仓</p>
+
+    <!-- Content -->
+    <div class="flex-1 overflow-y-auto custom-scrollbar">
+      <table v-if="positions.length > 0" class="w-full text-left border-collapse table-fixed">
+        <thead class="sticky top-0 bg-[#131722] z-10 shadow-sm">
+          <tr class="text-[11px] text-[#868993] uppercase tracking-tight">
+            <th class="px-4 py-2 font-medium w-[30%]">标的/数量</th>
+            <th class="px-2 py-2 font-medium w-[25%] text-right">成本/现价</th>
+            <th class="px-2 py-2 font-medium w-[25%] text-right">市值/盈亏</th>
+            <th class="px-4 py-2 font-medium w-[20%] text-right">收益率</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-[#2a2e39]/50">
+          <tr 
+            v-for="pos in positions" 
+            :key="pos.symbolCode"
+            class="hover:bg-[#1c202b] transition-colors group cursor-pointer"
+            @click="emit('analyze', pos)"
+          >
+            <!-- 标的与数量 -->
+            <td class="px-4 py-3">
+              <div class="flex flex-col">
+                <span class="text-sm font-bold text-[#d1d4dc] group-hover:text-blue-400 truncate">
+                  {{ pos.symbolName }}
+                </span>
+                <div class="flex items-center gap-1.5 mt-0.5">
+                  <span class="text-[10px] font-mono text-[#868993] bg-[#2a2e39]/50 px-1 rounded">
+                    {{ pos.symbolCode }}
+                  </span>
+                  <span class="text-[11px] text-[#d1d4dc] font-medium">
+                    {{ pos.quantity.toLocaleString() }}
+                  </span>
+                </div>
+              </div>
+            </td>
+
+            <!-- 价格对比 (成本/现价) -->
+            <td class="px-2 py-3 text-right">
+              <div class="flex flex-col">
+                <span class="text-[11px] text-[#868993] leading-tight mb-0.5">
+                  {{ pos.cost.toFixed(2) }}
+                </span>
+                <span class="text-xs font-bold text-[#d1d4dc] leading-tight">
+                  {{ pos.currentPrice.toFixed(2) }}
+                </span>
+              </div>
+            </td>
+
+            <!-- 市值与盈亏 -->
+            <td class="px-2 py-3 text-right">
+              <div class="flex flex-col">
+                <span class="text-[11px] text-[#d1d4dc] font-medium opacity-80 leading-tight mb-0.5">
+                  {{ formatCompact(pos.positionValue) }}
+                </span>
+                <span :class="['text-[11px] font-bold leading-tight', pos.profitLoss >= 0 ? 'text-[#089981]' : 'text-[#f23645]']">
+                  {{ pos.profitLoss >= 0 ? '+' : '' }}{{ formatVal(pos.profitLoss) }}
+                </span>
+              </div>
+            </td>
+
+            <!-- 收益率 -->
+            <td class="px-4 py-3 text-right">
+              <div :class="[
+                'inline-flex items-center justify-center px-1.5 py-1 rounded-sm text-[11px] font-bold min-w-[54px]',
+                pos.profitRatio >= 0 ? 'bg-[#089981]/10 text-[#089981]' : 'bg-[#f23645]/10 text-[#f23645]'
+              ]">
+                {{ pos.profitRatio >= 0 ? '+' : '' }}{{ pos.profitRatio.toFixed(2) }}%
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- Empty State -->
+      <div v-else class="flex flex-col items-center justify-center h-full text-[#5d606b] py-12">
+        <svg class="w-12 h-12 mb-3 opacity-20" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zM7 10h2v7H7v-7zm4-3h2v10h-2V7zm4 6h2v4h-2v-4z"/>
+        </svg>
+        <p class="text-[13px]">暂无公开持仓数据</p>
+        <p class="text-[11px] mt-1 opacity-60">请启动回测以查看实时持仓</p>
+      </div>
+    </div>
+
+    <!-- Footer Stats -->
+    <div v-if="positions.length > 0" class="px-4 py-3 bg-[#1c202b] border-t border-[#2a2e39] flex flex-col gap-3">
+      <div class="grid grid-cols-2 gap-4">
+        <div class="flex flex-col">
+          <span class="text-[10px] text-[#868993] uppercase">持仓总市值</span>
+          <span class="text-sm font-bold text-[#d1d4dc]">¥{{ totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</span>
+        </div>
+        <div class="flex flex-col items-end">
+          <span class="text-[10px] text-[#868993] uppercase">总平均收益</span>
+          <span :class="['text-sm font-bold', avgProfitRatio >= 0 ? 'text-[#089981]' : 'text-[#f23645]']">
+            {{ avgProfitRatio >= 0 ? '+' : '' }}{{ avgProfitRatio.toFixed(2) }}%
+          </span>
+        </div>
+      </div>
+      
+      <!-- New: Cash & Total Account Equity -->
+      <div v-if="totalEquity > 0" class="pt-3 border-t border-[#2a2e39]/50 grid grid-cols-2 gap-4">
+        <div class="flex flex-col">
+          <span class="text-[10px] text-blue-400 uppercase font-bold">账户总净值</span>
+          <span class="text-sm font-bold text-[#d1d4dc]">¥{{ totalEquity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</span>
+        </div>
+        <div class="flex flex-col items-end">
+          <span class="text-[10px] text-amber-500 uppercase font-bold">可用现金 (估算)</span>
+          <span :class="['text-sm font-bold', (totalEquity - totalValue) >= 0 ? 'text-[#d1d4dc]' : 'text-[#f23645]']">
+            ¥{{ (totalEquity - totalValue).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
+          </span>
+        </div>
       </div>
     </div>
   </div>
@@ -85,7 +140,6 @@ import type { HoldingPeriod } from '../types/backtest';
 type HoldingPeriodWithPricing = HoldingPeriod & {
   quantity?: number;
   entryPrice?: number;
-  availableQuantity?: number;
 };
 
 interface Position {
@@ -97,124 +151,131 @@ interface Position {
   positionValue: number;
   profitLoss: number;
   profitRatio: number;
-  availableQuantity: number;
 }
 
 interface Props {
   holdingPeriods?: HoldingPeriodWithPricing[];
   currentDate: string;
-  latestPrices?: Record<string, number>; // symbolCode -> latest price
+  latestPrices?: Record<string, number>;
+  totalEquity?: number; // NEW: Passes from parent to sync with chart
 }
 
 const props = withDefaults(defineProps<Props>(), {
   holdingPeriods: () => [],
-  currentDate: () => new Date().toISOString().slice(0, 10),
-  latestPrices: () => ({})
+  currentDate: () => '',
+  latestPrices: () => ({}),
+  totalEquity: 0
 });
 
-// 统一代码格式，避免大小写/前后缀差异导致价格查不到
+const emit = defineEmits<{
+  (e: 'analyze', pos: Position): void;
+}>();
+
+/**
+ * 统一代码格式：规范为 6 位数字代码 (针对 A 股)
+ * 例如 1 -> 000001, 1222 -> 001222
+ */
 const normalizeSymbolCode = (value?: string): string => {
   if (!value) return '';
   const trimmed = value.trim().toUpperCase();
-  const match = trimmed.match(/(\d{6})/);
-  return match ? match[1] : trimmed;
+  const match = trimmed.match(/(\d+)/);
+  if (match) {
+    // CHANGED: 补齐 6 位，解决 00 开头股票无法查询名称的问题
+    const digits = match[1];
+    return digits.length < 6 ? digits.padStart(6, '0') : digits;
+  }
+  return trimmed;
 };
 
-// 计算当前持仓（exitDate 为 null 或未卖出的持仓）
 const positions = computed<Position[]>(() => {
-  const currentPositions: Position[] = [];
-  
-  // 筛选出当前持仓（exitDate 为 null 或空）
   const openPositions = props.holdingPeriods.filter(
     hp => !hp.exitDate || hp.exitDate === null
   );
-  
-  // 按 symbolCode 分组，处理同一标的的多次买入
+
   const positionMap = new Map<string, {
     symbolCode: string;
     symbolName: string;
     totalQuantity: number;
     totalCost: number;
-    entryDates: string[];
   }>();
-  
+
   openPositions.forEach(hp => {
     const rawSymbolCode = hp.symbolCode || '';
     const symbolCode = normalizeSymbolCode(rawSymbolCode);
-    const symbolName = hp.symbolName || rawSymbolCode || symbolCode;
+    const symbolName = hp.symbolName || rawSymbolCode;
     const quantity = hp.quantity || 0;
     const entryPrice = hp.entryPrice || 0;
-    const entryDate = hp.entryDate || '';
-    
+
     if (!symbolCode || quantity <= 0) return;
-    
+
     if (positionMap.has(symbolCode)) {
       const existing = positionMap.get(symbolCode)!;
       existing.totalQuantity += quantity;
       existing.totalCost += quantity * entryPrice;
-      existing.entryDates.push(entryDate);
     } else {
       positionMap.set(symbolCode, {
         symbolCode,
         symbolName,
         totalQuantity: quantity,
-        totalCost: quantity * entryPrice,
-        entryDates: [entryDate]
+        totalCost: quantity * entryPrice
       });
     }
   });
-  
-  // 转换为 Position 数组
-  positionMap.forEach((pos, symbolCode) => {
+
+  const list: Position[] = [];
+  positionMap.forEach((pos, code) => {
     const avgCost = pos.totalQuantity > 0 ? pos.totalCost / pos.totalQuantity : 0;
-    // CHANGED: 优先使用 API 获取的回测结束日期前复权价格
-    // 如果还没有获取到价格，暂时使用成本价（但会在价格获取后自动更新）
-    const currentPrice = props.latestPrices[normalizeSymbolCode(symbolCode)] ?? avgCost;
+    // 使用逻辑与后端同步后的 normalizeCode 找价格
+    const currentPrice = props.latestPrices[code] ?? avgCost;
+    
     const positionValue = pos.totalQuantity * currentPrice;
     const profitLoss = positionValue - pos.totalCost;
-    const profitRatio = avgCost > 0 ? (profitLoss / pos.totalCost) * 100 : 0;
-    
-    currentPositions.push({
-      symbolCode,
+    const profitRatio = pos.totalCost > 0 ? (profitLoss / pos.totalCost) * 100 : 0;
+
+    list.push({
+      symbolCode: code,
       symbolName: pos.symbolName,
       quantity: pos.totalQuantity,
       cost: avgCost,
       currentPrice,
       positionValue,
       profitLoss,
-      profitRatio,
-      availableQuantity: pos.totalQuantity // 假设全部可用（T+1 规则已在后端处理）
+      profitRatio
     });
   });
-  
-  return currentPositions.sort((a, b) => b.positionValue - a.positionValue);
+
+  return list.sort((a, b) => b.positionValue - a.positionValue);
 });
 
-// 格式化货币
-function formatCurrency(value: number): string {
-  const sign = value >= 0 ? '+' : '';
-  return `${sign}¥${Math.abs(value).toFixed(2)}`;
+const totalValue = computed(() => positions.value.reduce((sum, p) => sum + p.positionValue, 0));
+const totalProfitLoss = computed(() => positions.value.reduce((sum, p) => sum + p.profitLoss, 0));
+const totalCost = computed(() => positions.value.reduce((sum, p) => sum + (p.quantity * p.cost), 0));
+const avgProfitRatio = computed(() => totalCost.value > 0 ? (totalProfitLoss.value / totalCost.value) * 100 : 0);
+
+function formatVal(val: number) {
+  if (Math.abs(val) >= 10000) return (val / 10000).toFixed(2) + '万';
+  return val.toFixed(2);
 }
 
-// 格式化百分比
-function formatPercent(value: number): string {
-  const sign = value >= 0 ? '+' : '';
-  return `${sign}${value.toFixed(2)}%`;
-}
-
-// 格式化数量（确保是100的整数倍显示）
-function formatQuantity(value: number): string {
-  return value.toLocaleString('zh-CN', { maximumFractionDigits: 0 });
-}
-
-function getColorClass(value: number): string {
-  return value >= 0 ? 'text-red-400' : 'text-green-400';
+function formatCompact(val: number) {
+  if (val >= 100000000) return (val / 100000000).toFixed(2) + '亿';
+  if (val >= 10000) return (val / 10000).toFixed(2) + '万';
+  return val.toFixed(0);
 }
 </script>
 
 <style scoped>
-/* 确保 Grid 布局正确显示 */
-.grid {
-  display: grid;
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #2a2e39;
+  border-radius: 2px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #363a45;
 }
 </style>

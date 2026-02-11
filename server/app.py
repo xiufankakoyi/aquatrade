@@ -390,6 +390,22 @@ logger = get_logger(__name__)
 
 try:
     from server.routes import register_routes
+    def init_db_async():
+        try:
+            from config.config import Config
+            from data_svc.database.db_utils import ensure_tables
+            import sqlite3
+            conn = sqlite3.connect(Config.DB_PATH)
+            ensure_tables(conn)
+            conn.close()
+            logger.info(f"数据库异步初始化成功: {Config.DB_PATH}")
+        except Exception as db_err:
+            logger.error(f"数据库异步初始化失败: {db_err}")
+
+    # 使用线程进行异步初始化，避免阻塞主进程启动 (解决 Granian 502 问题)
+    import threading
+    threading.Thread(target=init_db_async, daemon=True).start()
+        
     register_routes(app)
     logger.info("路由注册成功")
 except Exception as e:
@@ -561,7 +577,31 @@ def _sanitize_json_data(data):
 
 @app.route('/api/strategies', methods=['GET'])
 def get_strategies():
-    """获取策略列表"""
+    """
+    获取策略列表
+    ---
+    tags:
+      - Strategies
+    responses:
+      200:
+        description: List of available strategies
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+            data:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  safeId:
+                    type: string
+    """
     try:
         from core.strategies.strategy_factory import get_factory
         factory = get_factory()
@@ -1398,18 +1438,106 @@ def api_get_strategy_profile(profile_id: int):
 @app.route('/api/strategy/<version_id>', methods=['GET'])
 def get_strategy_detail(version_id):
     """
-    获取策略详情（包括回测结果）
-    注意：由于系统使用流式回测，数据保存在前端的 sessionStorage 中
-    此接口返回空数据结构，实际数据应该从前端的 backtestStore 获取
+    获取策略详情（包括回测结果和交易记录）
+    从数据库中查询该策略的最新回测结果和对应的交易记录
     """
     try:
-        # 检查是否是有效的策略名称
-        available_strategies = get_api().get_strategy_list()
-        strategy_names = [s['id'] for s in available_strategies]
+        import sqlite3
+        import json
         
-        if version_id in strategy_names:
-            # 返回符合前端 BacktestResult 接口的空数据结构
-            # 前端应该从 backtestStore 中获取实际的回测数据
+        # 数据库连接 - 使用配置中心的路径
+        from config.config import Config
+        db_path = Config.DB_PATH
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # 添加调试信息
+        print(f"[DEBUG] 查询策略: {version_id}")
+        
+        # 查询该策略的最新回测结果
+        cursor.execute('''
+            SELECT * FROM backtest_results 
+            WHERE strategy_name = ? 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        ''', (version_id,))
+        
+        backtest_result = cursor.fetchone()
+        
+        if backtest_result:
+            print(f"[DEBUG] 找到回测结果: ID={backtest_result['id']}, 交易次数={backtest_result['trade_count']}")
+            
+            # 查询对应的交易记录
+            cursor.execute('''
+                SELECT COUNT(*) FROM trade_records 
+                WHERE backtest_id = ?
+            ''', (backtest_result['id'],))
+            
+            trade_count = cursor.fetchone()[0]
+            print(f"[DEBUG] 交易记录数量: {trade_count}")
+            
+            # 查询详细交易记录
+            cursor.execute('''
+                SELECT * FROM trade_records 
+                WHERE backtest_id = ? 
+                ORDER BY date ASC
+            ''', (backtest_result['id'],))
+            
+            trade_records = cursor.fetchall()
+            
+            # 格式化交易记录
+            trades = []
+            for record in trade_records:
+                trades.append({
+                    "id": record['id'],
+                    "date": record['date'],
+                    "symbol": record['stock_code'],
+                    "symbolCode": record['stock_code'],
+                    "name": record['stock_name'],
+                    "action": record['action'],
+                    "price": record['price'],
+                    "quantity": record['shares'],
+                    "amount": record['amount'],
+                    "commission": 0,  # 数据库中没有该字段，默认为0
+                    "profitLoss": record['profit_loss'],
+                    "roi": record['profit_loss'] / record['amount'] if record['amount'] != 0 else 0,
+                    "cumulativePnL": record['profit_loss'],  # 简单处理，实际应该累积计算
+                    "entryDate": record['date'] if record['action'] == 'buy' else None,
+                    "exitDate": record['date'] if record['action'] == 'sell' else None
+                })
+            
+            # 累积计算盈亏
+            cumulative_pnl = 0
+            for trade in trades:
+                cumulative_pnl += trade['profitLoss']
+                trade['cumulativePnL'] = cumulative_pnl
+                
+            print(f"[DEBUG] 格式化后的交易记录数量: {len(trades)}")
+            
+            # 构造返回数据
+            return jsonify({
+                "versionId": version_id,
+                "metrics": {
+                    "totalReturn": backtest_result['total_return'],
+                    "annualizedReturn": backtest_result['annual_return'],
+                    "maxDrawdown": backtest_result['max_drawdown'],
+                    "sharpeRatio": backtest_result['sharpe_ratio'],
+                    "winRate": backtest_result['win_rate'],
+                    "tradesCount": backtest_result['trade_count'],
+                    "profitFactor": backtest_result['profit_factor'],
+                    "volatility": 0,  # 数据库中没有该字段，默认为0
+                    "sortinoRatio": backtest_result['sortino_ratio'],
+                    "avgTradeReturn": sum(trade['profitLoss'] for trade in trades if trade['action'] == 'sell') / backtest_result['trade_count'] if backtest_result['trade_count'] != 0 else 0,
+                    "maxWinningStreak": 0,  # 数据库中没有该字段，默认为0
+                    "maxLosingStreak": 0  # 数据库中没有该字段，默认为0
+                },
+                "equityCurve": [],  # 暂时不返回 equity curve
+                "monthlyReturns": [],  # 暂时不返回 monthly returns
+                "trades": trades
+            })
+        else:
+            # 如果没有回测结果，返回空数据结构
             return jsonify({
                 "versionId": version_id,
                 "metrics": {
@@ -1428,13 +1556,18 @@ def get_strategy_detail(version_id):
                 },
                 "equityCurve": [],
                 "monthlyReturns": [],
-                "trades": []  # 空数组，不是占位符
+                "trades": []
             })
-        else:
-            return jsonify({"error": f"策略版本 {version_id} 不存在"}), 404
             
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except:
+            pass
 
 # ---------------- Socket.IO 连接事件 ---------------- #
 

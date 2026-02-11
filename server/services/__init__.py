@@ -1,22 +1,14 @@
 """
 服务层模块
-提供业务逻辑和数据处理服务
+
+负责业务逻辑的封装和处理。
+
+注意：本模块不再批量导出服务类，请使用明确的导入路径，例如：
+    from server.services.backtest_service import BacktestService
+    from server.services.strategy_service import StrategyService
+
+这种方式避免了不必要的模块加载，提升启动性能。
 """
-from server.services.backtest_visualization_service import BacktestVisualizationService
-from server.services.data_initialization_service import DataInitializationService
-from server.services.stock_data_service import StockDataService
-from server.services.strategy_service import StrategyService
-from server.services.backtest_service import BacktestService
-from server.services.metrics_service import MetricsService
-from server.services.guba_service import GubaService
 
-__all__ = [
-    'BacktestVisualizationService',
-    'DataInitializationService',
-    'StockDataService',
-    'StrategyService',
-    'BacktestService',
-    'MetricsService',
-    'GubaService',
-]
-
+# 空文件，强制使用完整路径导入
+# 例如：from server.services.backtest_service import BacktestService

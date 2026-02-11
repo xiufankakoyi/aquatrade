@@ -38,15 +38,31 @@ class BacktestVisualizationAPI:
     def _normalize_symbol_code(symbol_code: Optional[str]) -> str:
         if not symbol_code: return ''
         code = str(symbol_code).strip().upper()
-        match = re.search(r'(\d{6})', code)
-        return match.group(1) if match else code
+        match = re.search(r'(\d+)', code)
+        if match:
+            # CHANGED: Back to stripping zeros for database compatibility.
+            # The database stores '1', not '000001'. Padding is handled at the UI layer.
+            return str(int(match.group(1)))
+        return code
     
     def _ensure_initialized(self) -> None:
         if self._initialized: return
         from config.logger import get_logger
         logger = get_logger(__name__)
         try:
-            self.data_query = OptimizedStockDataQuery(self.db_path)
+            # CHANGED: Switch to Unified Data Layer
+            use_unified = os.getenv("USE_UNIFIED_DATA", "1") == "1"
+            
+            if use_unified:
+                try:
+                    from data_svc.unified_data_query import UnifiedDataQueryAdapter
+                    self.data_query = UnifiedDataQueryAdapter(self.db_path)
+                except Exception as e:
+                    logger.warning(f"Failed to load UnifiedDataManager: {e}")
+                    self.data_query = OptimizedStockDataQuery(self.db_path)
+            else:
+                self.data_query = OptimizedStockDataQuery(self.db_path)
+                
             self.backtest_engine = OptimizedBacktestEngine(self.data_query)
             self.stock_info_map = self._load_stock_info()
             self._initialized = True
@@ -70,14 +86,14 @@ class BacktestVisualizationAPI:
             if df.empty:
                 return {}
             
-            # CHANGED: 确保 stock_code 是6位数字格式，作为字典的 key
+            # CHANGED: 统一使用 _normalize_symbol_code 处理 stock_code，确保与查找时的 normalization 一致
             stock_info_dict = {}
             for _, row in df.iterrows():
                 code = str(row['stock_code']).strip()
                 name = str(row.get('stock_name', '')).strip()
-                # 标准化为6位数字代码
-                code_6 = code.zfill(6) if len(code) <= 6 else code[-6:]
-                stock_info_dict[code_6] = name
+                # 统一标准化
+                norm_code = self._normalize_symbol_code(code)
+                stock_info_dict[norm_code] = name
             
             logger = get_logger(__name__)
             logger.debug(f"加载股票信息: {len(stock_info_dict)} 条记录")
@@ -96,6 +112,12 @@ class BacktestVisualizationAPI:
             if self.data_query is None:
                 return 1.0
             
+            # CHANGED: Adapter Support
+            if hasattr(self.data_query, 'get_latest_daily'):
+                row = self.data_query.get_latest_daily(symbol_code)
+                factor = row.get('adj_factor', 1.0) if row else 1.0
+                return float(factor) if factor is not None and not pd.isna(factor) else 1.0
+
             # 使用 data_query 的 _query_df 方法，支持 DuckDB 和 SQLite
             query = """
                 SELECT adj_factor 
@@ -129,7 +151,7 @@ class BacktestVisualizationAPI:
             return df
         
         # 【性能优化】只在需要修改时才 copy
-        need_copy = any(col in df.columns for col in ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20', 'ma60'])
+        need_copy = any(col in df.columns for col in ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20'])
         if need_copy:
             df = df.copy()
         
@@ -151,7 +173,7 @@ class BacktestVisualizationAPI:
         qfq_ratio = df['adj_factor'] / df['latest_factor']
         
         # 【性能优化】向量化应用到所有价格列（一次性计算，比循环快）
-        price_cols = ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20', 'ma60']
+        price_cols = ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20']
         for col in price_cols:
             if col in df.columns:
                 # 使用向量化操作，一次性计算所有行
@@ -462,36 +484,47 @@ class BacktestVisualizationAPI:
                 base_factor = self._get_global_latest_factor(code)
 
                 # 2. 查询目标日期的价格
-                # 如果指定了 target_date，查那天的；没指定查最新一天的
-                if target_date:
-                    query = """
-                        SELECT trade_date, open, close, prev_close, adj_factor 
-                        FROM stock_daily 
-                        WHERE stock_code = ? AND trade_date <= ?
-                        ORDER BY trade_date DESC 
-                        LIMIT 1
-                    """
-                    params = [code, target_date]
+                # CHANGED: Adapter Support
+                if hasattr(self.data_query, 'get_latest_daily'):
+                    row = self.data_query.get_latest_daily(code, target_date)
+                    if not row:
+                        continue
+                    trade_date = row.get('trade_date')
+                    raw_open = row.get('open')
+                    raw_close = row.get('close')
+                    raw_prev = row.get('prev_close')
+                    current_factor = float(row.get('adj_factor', 1.0) or 1.0)
                 else:
-                    query = """
-                        SELECT trade_date, open, close, prev_close, adj_factor 
-                        FROM stock_daily 
-                        WHERE stock_code = ?
-                        ORDER BY trade_date DESC 
-                        LIMIT 1
-                    """
-                    params = [code]
-                
-                df = self.data_query._query_df(query, params)
-                if df.empty:
-                    continue
-                
-                row = df.iloc[0]
-                trade_date = row['trade_date']
-                raw_open = row.get('open')
-                raw_close = row.get('close')
-                raw_prev = row.get('prev_close')
-                current_factor = float(row.get('adj_factor', 1.0) or 1.0)
+                    # Legacy SQL
+                    if target_date:
+                        query = """
+                            SELECT trade_date, open, close, prev_close, adj_factor 
+                            FROM stock_daily 
+                            WHERE stock_code = ? AND trade_date <= ?
+                            ORDER BY trade_date DESC 
+                            LIMIT 1
+                        """
+                        params = [code, target_date]
+                    else:
+                        query = """
+                            SELECT trade_date, open, close, prev_close, adj_factor 
+                            FROM stock_daily 
+                            WHERE stock_code = ?
+                            ORDER BY trade_date DESC 
+                            LIMIT 1
+                        """
+                        params = [code]
+                    
+                    df = self.data_query._query_df(query, params)
+                    if df.empty:
+                        continue
+                    
+                    row = df.iloc[0]
+                    trade_date = row['trade_date']
+                    raw_open = row.get('open')
+                    raw_close = row.get('close')
+                    raw_prev = row.get('prev_close')
+                    current_factor = float(row.get('adj_factor', 1.0) or 1.0)
                 
                 # 3. 前复权计算，优先使用开盘价；没有开盘价时回退收盘价
                 raw_price = raw_open if raw_open is not None and not pd.isna(raw_open) else raw_close
@@ -504,7 +537,8 @@ class BacktestVisualizationAPI:
                 latest_map[code] = {
                     "date": trade_date,
                     "price": float(f"{qfq_price:.2f}"),
-                    "prev_close": float(f"{qfq_prev:.2f}")
+                    "prev_close": float(f"{qfq_prev:.2f}"),
+                    "name": self.stock_info_map.get(code, "") 
                 }
         except Exception as e:
             print(f"获取最新价格失败: {e}")
@@ -518,9 +552,21 @@ class BacktestVisualizationAPI:
         if not self._initialized:
             self._ensure_initialized()
 
-        # 为每次回测创建独立的数据查询和回测引擎，避免并发共享同一个 DuckDB 连接导致异常
-        local_data_query = OptimizedStockDataQuery(self.db_path)
-        local_engine = OptimizedBacktestEngine(local_data_query)
+            # CHANGED: Switch to Unified Data Layer
+            use_unified = os.getenv("USE_UNIFIED_DATA", "1") == "1"
+            
+            if use_unified:
+                try:
+                    from data_svc.unified_data_query import UnifiedDataQueryAdapter
+                    local_data_query = UnifiedDataQueryAdapter(self.db_path)
+                    # print("DEBUG: Using UnifiedDataQueryAdapter for local run")
+                except Exception as e:
+                    print(f"Failed to load UnifiedDataManager, falling back: {e}")
+                    local_data_query = OptimizedStockDataQuery(self.db_path)
+            else:
+                local_data_query = OptimizedStockDataQuery(self.db_path)
+                
+            local_engine = OptimizedBacktestEngine(local_data_query)
         
         try:
             creation_kwargs: Dict[str, Any] = params or {}
@@ -541,7 +587,8 @@ class BacktestVisualizationAPI:
                         'date': data.get('date'),
                         'total_value': data.get('strategyReturn', 0)
                     })
-                elif update_type == 'new_trade_engine':
+                elif update_type == 'new_trade' or update_type == 'new_trade_engine':
+                    # CHANGED: 监听正确的事件类型，同时兼容两种事件名
                     # CHANGED: 收集完整的交易记录，包括所有字段
                     trade = {
                         'date': data.get('date'),
@@ -552,7 +599,10 @@ class BacktestVisualizationAPI:
                         'commission': data.get('commission', 0),
                         'entry_date': data.get('entry_date'),
                         'exit_date': data.get('exit_date'),
-                        'position_id': data.get('position_id')
+                        'position_id': data.get('position_id'),
+                        'profit_loss': data.get('profit_loss', 0),
+                        'roi': data.get('roi'),
+                        'holding_days': data.get('holding_days')
                     }
                     trades_log.append(trade)
                 elif update_type == 'final_metrics':
@@ -582,7 +632,7 @@ class BacktestVisualizationAPI:
             
             # 调用转换函数
             return self._convert_backtest_results(
-                results_df, trades_log, strategy.name, start_date, end_date
+                results_df, trades_log, strategy_name, start_date, end_date
             )
         except Exception as e:
             print(f"运行回测错误: {e}")
@@ -642,23 +692,26 @@ class BacktestVisualizationAPI:
              exit_date = trade.get('exit_date')
              
              # CHANGED: 计算持有周期（天数）
-             holding_days = None
-             if entry_date and exit_date:
-                 try:
-                     from datetime import datetime
-                     entry_dt = datetime.strptime(entry_date, '%Y-%m-%d')
-                     exit_dt = datetime.strptime(exit_date, '%Y-%m-%d')
-                     holding_days = (exit_dt - entry_dt).days
-                 except:
-                     pass
-             elif entry_date and trade['action'] == 'sell':
-                 try:
-                     from datetime import datetime
-                     entry_dt = datetime.strptime(entry_date, '%Y-%m-%d')
-                     trade_dt = datetime.strptime(trade['date'], '%Y-%m-%d')
-                     holding_days = (trade_dt - entry_dt).days
-                 except:
-                     pass
+             # 优先使用引擎计算好的 holding_days
+             holding_days = trade.get('holding_days')
+             if holding_days is None:
+                 if entry_date and exit_date:
+                     try:
+                         from datetime import datetime
+                         entry_dt = datetime.strptime(entry_date, '%Y-%m-%d')
+                         exit_dt = datetime.strptime(exit_date, '%Y-%m-%d')
+                         holding_days = (exit_dt - entry_dt).days
+                     except:
+                         pass
+                 elif entry_date and trade['action'] == 'sell':
+                     try:
+                         from datetime import datetime
+                         entry_dt = datetime.strptime(entry_date, '%Y-%m-%d')
+                         trade_dt = datetime.strptime(trade['date'], '%Y-%m-%d')
+                         holding_days = (trade_dt - entry_dt).days
+                     except:
+                         pass
+
              
              # CHANGED: 手续费为万分之五，不足五元按五元算
              commission_base = trade.get('commission', trade['price'] * trade['quantity'] * 0.0005)
@@ -676,12 +729,16 @@ class BacktestVisualizationAPI:
              if holding_days_from_engine is not None:
                  holding_days = holding_days_from_engine
              
+             # CHANGED: 确保返回给前端的代码始终补齐 6 位，以便 UI 匹配名称和图片
+             # 内部数据库匹配依然使用 raw_symbol_code (已 strip 零)
+             ui_symbol_code = raw_symbol_code.zfill(6) if raw_symbol_code.isdigit() else raw_symbol_code
+
              formatted_trades.append({
                 "id": f"trade-{trade['date']}-{raw_symbol_code}-{trade['action']}",
                 "date": trade['date'],
-                "symbol": self.stock_info_map.get(raw_symbol_code, raw_symbol_code), # <-- 修复了股票名称
-                "symbolCode": raw_symbol_code,  # <--- Add this
-                "symbol_code": raw_symbol_code, # <--- Add this for safety
+                "symbol": self.stock_info_map.get(ui_symbol_code, self.stock_info_map.get(raw_symbol_code, raw_symbol_code)), # 这里的 key 改为补齐后的值
+                "symbolCode": ui_symbol_code,  # UI 使用补齐后的代码
+                "symbol_code": ui_symbol_code, # 保持一致
                 "action": trade['action'],
                 "price": trade['price'],  # 前复权价格（来自回测引擎）
                 "quantity": trade['quantity'],
@@ -741,146 +798,143 @@ class BacktestVisualizationAPI:
         }
 
     def _calculate_metrics_from_df(self, results_df: pd.DataFrame, trades_log: List[Dict]) -> Dict:
-            """ 用于流式回测的最终指标计算 """
-            initial_capital = self.initial_capital
-            final_value = results_df['total_value'].iloc[-1]
-            total_return = (final_value / initial_capital - 1) * 100
+        """ 用于流式回测的最终指标计算 """
+        initial_capital = self.initial_capital
+        final_value = results_df['total_value'].iloc[-1]
+        total_return = (final_value / initial_capital - 1) * 100
 
-            days = len(results_df)
-            years = days / 252.0
-            annualized_return = ((final_value / initial_capital) ** (1 / years) - 1) * 100 if years > 0 else total_return
+        days = len(results_df)
+        years = days / 252.0
+        annualized_return = ((final_value / initial_capital) ** (1 / years) - 1) * 100 if years > 0 else total_return
 
-            results_df['cummax'] = results_df['total_value'].cummax()
-            results_df['drawdown'] = (results_df['total_value'] - results_df['cummax']) / results_df['cummax']
-            max_drawdown = results_df['drawdown'].min() * 100
+        results_df['cummax'] = results_df['total_value'].cummax()
+        results_df['drawdown'] = (results_df['total_value'] - results_df['cummax']) / results_df['cummax']
+        max_drawdown = results_df['drawdown'].min() * 100
 
-            # 日收益率
-            daily_returns = results_df['total_value'].pct_change().dropna()
-            if len(daily_returns) > 1:
-                dr_mean = daily_returns.mean()
-                dr_std = daily_returns.std()
-                sharpe_ratio = (dr_mean / dr_std) * np.sqrt(252) if dr_std > 0 else 0
+        # 日收益率
+        daily_returns = results_df['total_value'].pct_change().dropna()
+        if len(daily_returns) > 1:
+            dr_mean = daily_returns.mean()
+            dr_std = daily_returns.std()
+            sharpe_ratio = (dr_mean / dr_std) * np.sqrt(252) if dr_std > 0 else 0
 
-                downside_returns = daily_returns[daily_returns < 0]
-                if len(downside_returns) > 0:
-                    downside_std = downside_returns.std()
-                    sortino_ratio = (dr_mean / downside_std) * np.sqrt(252) if downside_std > 0 else 0
-                else:
-                    sortino_ratio = 0
-
-                volatility = dr_std * np.sqrt(252) * 100  # 年化波动率（%）
+            downside_returns = daily_returns[daily_returns < 0]
+            if len(downside_returns) > 0:
+                downside_std = downside_returns.std()
+                sortino_ratio = (dr_mean / downside_std) * np.sqrt(252) if downside_std > 0 else 0
             else:
-                sharpe_ratio = 0
                 sortino_ratio = 0
-                volatility = 0
 
-            # 交易统计
-            trades_count = len(trades_log)
-            win_trades = 0
-            total_pnl = 0
-            total_profit = 0
-            total_loss = 0
+            volatility = dr_std * np.sqrt(252) * 100  # 年化波动率（%）
+        else:
+            sharpe_ratio = 0
+            sortino_ratio = 0
+            volatility = 0
 
-            max_win_streak = 0
-            max_loss_streak = 0
-            current_win_streak = 0
-            current_loss_streak = 0
+        # 交易统计
+        trades_count = len(trades_log)
+        win_trades = 0
+        total_pnl = 0
+        total_profit = 0
+        total_loss = 0
 
-            sum_trade_return_pct = 0.0  # 用来算“平均每笔收益率（%）”
+        max_win_streak = 0
+        max_loss_streak = 0
+        current_win_streak = 0
+        current_loss_streak = 0
 
-            positions: Dict[str, Dict[str, float]] = {}
-            for trade in trades_log:
-                action = trade['action']
-                symbol = str(trade['symbol'])
-                qty = trade['quantity']
-                price = trade['price']
+        sum_trade_return_pct = 0.0  # 用来算“平均每笔收益率（%）”
 
-                if action == 'sell':
-                    avg_cost = positions.get(symbol, {}).get('cost', price)
-                    pnl = (price - avg_cost) * qty
+        # 使用回测引擎已经计算好的profit_loss字段，而不是重新计算
+        for trade in trades_log:
+            action = trade['action']
+            
+            if action == 'sell':
+                # 优先使用回测引擎已经计算好的profit_loss字段
+                pnl = trade.get('profit_loss', 0)
+                
+                # 如果没有profit_loss字段，再使用回测引擎计算的roi和value来计算
+                if pnl == 0 and 'roi' in trade and 'value' in trade:
+                    pnl = (trade['roi'] / 100) * trade['value']
 
-                    # 统计盈亏次数 & 盈利/亏损总额
-                    if pnl > 0:
-                        win_trades += 1
-                        total_profit += pnl
-                        current_win_streak += 1
-                        max_win_streak = max(max_win_streak, current_win_streak)
-                        current_loss_streak = 0
-                    elif pnl < 0:
-                        total_loss += abs(pnl)
-                        current_loss_streak += 1
-                        max_loss_streak = max(max_loss_streak, current_loss_streak)
-                        current_win_streak = 0
-                    else:
-                        current_win_streak = 0
-                        current_loss_streak = 0
+                # 统计盈亏次数 & 盈利/亏损总额
+                if pnl > 0:
+                    win_trades += 1
+                    total_profit += pnl
+                    current_win_streak += 1
+                    max_win_streak = max(max_win_streak, current_win_streak)
+                    current_loss_streak = 0
+                elif pnl < 0:
+                    total_loss += abs(pnl)
+                    current_loss_streak += 1
+                    max_loss_streak = max(max_loss_streak, current_loss_streak)
+                    current_win_streak = 0
+                else:
+                    current_win_streak = 0
+                    current_loss_streak = 0
 
-                    total_pnl += pnl
+                total_pnl += pnl
 
-                    # 单笔收益率（相对于成本）
-                    exposure = avg_cost * qty
+                # 单笔收益率（相对于成本）
+                # 使用回测引擎已经计算好的trade_return_pct或roi字段
+                if 'roi' in trade:
+                    sum_trade_return_pct += trade['roi']
+                elif 'trade_return_pct' in trade:
+                    sum_trade_return_pct += trade['trade_return_pct']
+                else:
+                    # 如果没有这些字段，再使用pnl和cost计算
+                    avg_cost = trade.get('entry_price', trade.get('price', 0))
+                    exposure = avg_cost * trade.get('quantity', 0)
                     if exposure > 0:
                         trade_return_pct = (pnl / exposure) * 100
                         sum_trade_return_pct += trade_return_pct
 
-                elif action == 'buy':
-                    if symbol not in positions:
-                        positions[symbol] = {'qty': 0, 'cost': 0}
-                    prev_qty = positions[symbol]['qty']
-                    prev_cost = positions[symbol]['cost']
+        sell_trades_count = len([t for t in trades_log if t['action'] == 'sell'])
+        win_rate = (win_trades / sell_trades_count) * 100 if sell_trades_count > 0 else 0
+        profit_factor = total_profit / total_loss if total_loss > 0 else 0
+        avg_trade_return = (sum_trade_return_pct / sell_trades_count) if sell_trades_count > 0 else 0
 
-                    new_qty = prev_qty + qty
-                    new_cost = (prev_cost * prev_qty + qty * price) / new_qty if new_qty > 0 else price
+        def _to_scalar(x: Any) -> float:
+            try:
+                if isinstance(x, (int, float)):
+                    return float(x)
+                arr = np.asarray(x)
+                if arr.shape == ():
+                    return float(arr)
+                return float(arr.mean())
+            except Exception:
+                return 0.0
 
-                    positions[symbol]['qty'] = new_qty
-                    positions[symbol]['cost'] = new_cost
+        total_return_v = _to_scalar(total_return)
+        annualized_return_v = _to_scalar(annualized_return)
+        max_drawdown_v = _to_scalar(max_drawdown)
+        sharpe_ratio_v = _to_scalar(sharpe_ratio)
+        sortino_ratio_v = _to_scalar(sortino_ratio)
+        volatility_v = _to_scalar(volatility)
+        win_rate_v = _to_scalar(win_rate)
+        profit_factor_v = _to_scalar(profit_factor)
+        avg_trade_return_v = _to_scalar(avg_trade_return)
 
-            sell_trades_count = len([t for t in trades_log if t['action'] == 'sell'])
-            win_rate = (win_trades / sell_trades_count) * 100 if sell_trades_count > 0 else 0
-            profit_factor = total_profit / total_loss if total_loss > 0 else 0
-            avg_trade_return = (sum_trade_return_pct / sell_trades_count) if sell_trades_count > 0 else 0
+        # Calmar 比率 = 年化收益率 / |最大回撤|
+        calmar_ratio_v = 0.0
+        if abs(max_drawdown_v) > 1e-8:
+            calmar_ratio_v = annualized_return_v / abs(max_drawdown_v)
 
-            def _to_scalar(x: Any) -> float:
-                try:
-                    if isinstance(x, (int, float)):
-                        return float(x)
-                    arr = np.asarray(x)
-                    if arr.shape == ():
-                        return float(arr)
-                    return float(arr.mean())
-                except Exception:
-                    return 0.0
-
-            total_return_v = _to_scalar(total_return)
-            annualized_return_v = _to_scalar(annualized_return)
-            max_drawdown_v = _to_scalar(max_drawdown)
-            sharpe_ratio_v = _to_scalar(sharpe_ratio)
-            sortino_ratio_v = _to_scalar(sortino_ratio)
-            volatility_v = _to_scalar(volatility)
-            win_rate_v = _to_scalar(win_rate)
-            profit_factor_v = _to_scalar(profit_factor)
-            avg_trade_return_v = _to_scalar(avg_trade_return)
-
-            # Calmar 比率 = 年化收益率 / |最大回撤|
-            calmar_ratio_v = 0.0
-            if abs(max_drawdown_v) > 1e-8:
-                calmar_ratio_v = annualized_return_v / abs(max_drawdown_v)
-
-            return {
-                "totalReturn": round(total_return_v, 2),
-                "annualizedReturn": round(annualized_return_v, 2),
-                "maxDrawdown": round(abs(max_drawdown_v), 2),
-                "sharpeRatio": round(sharpe_ratio_v, 2),
-                "sortinoRatio": round(sortino_ratio_v, 2),
-                "volatility": round(volatility_v, 2),
-                "winRate": round(win_rate_v, 1),
-                "profitFactor": round(profit_factor_v, 2),
-                "tradesCount": trades_count,
-                "avgTradeReturn": round(avg_trade_return_v, 2),       # 【注意】驼峰命名，单位 %
-                "maxWinningStreak": int(max_win_streak),
-                "maxLosingStreak": int(max_loss_streak),
-                "calmarRatio": round(calmar_ratio_v, 3),
-            }
+        return {
+            "totalReturn": round(total_return_v, 2),
+            "annualizedReturn": round(annualized_return_v, 2),
+            "maxDrawdown": round(max_drawdown_v, 2),
+            "sharpeRatio": round(sharpe_ratio_v, 2),
+            "sortinoRatio": round(sortino_ratio_v, 2),
+            "volatility": round(volatility_v, 2),
+            "winRate": round(win_rate_v, 1),
+            "profitFactor": round(profit_factor_v, 2),
+            "tradesCount": trades_count,
+            "avgTradeReturn": round(avg_trade_return_v, 2),       # 【注意】驼峰命名，单位 %
+            "maxWinningStreak": int(max_win_streak),
+            "maxLosingStreak": int(max_loss_streak),
+            "calmarRatio": round(calmar_ratio_v, 3),
+        }
 
 
     def _extract_equity_curve_from_df(self, results_df: pd.DataFrame) -> Dict:
@@ -1043,6 +1097,7 @@ class BacktestVisualizationAPI:
         # ==============================================================================
         local_data_query = None
         local_engine = None
+        update_count = 0 # Initialize here to prevent UnboundLocalError in finally block
         
         # CHANGED: 确保数据库已初始化（懒加载）
         init_start = time.perf_counter()
@@ -1153,7 +1208,6 @@ class BacktestVisualizationAPI:
             logger.debug("engine_generator 创建完成，开始迭代")
 
             # 3. 循环遍历引擎的【产出】
-            update_count = 0
             data_processing_time = 0
             for update in engine_generator:
                 update_count += 1
@@ -1169,7 +1223,7 @@ class BacktestVisualizationAPI:
                 if update['type'] == 'new_trade_engine':
                     
                     trade_data = update['data']
-                    symbol_code = self._normalize_symbol_code(trade_data.get('symbol') or trade_data.get('symbol_code'))
+                    symbol_code = self._normalize_symbol_code(trade_data.get('symbol') or trade_data.get('symbol_code') or trade_data.get('code'))
                     if not symbol_code:
                         continue
                     position_id = trade_data.get('position_id') or f"{symbol_code}_{trade_data['date']}"
@@ -1186,7 +1240,7 @@ class BacktestVisualizationAPI:
                             "symbol_code": symbol_code,
                             "action": trade_data['action'],
                             "price": trade_data['price'],
-                            "quantity": trade_data['quantity'],
+                            "quantity": trade_data.get('quantity') or trade_data.get('shares'),
                             "profitLoss": trade_data.get('profit_loss', 0),
                             "cumulativePnL": trade_data.get('cumulative_pnl', 0),
                             "positionId": position_id,
@@ -1270,9 +1324,10 @@ class BacktestVisualizationAPI:
                 elif update['type'] == 'daily_equity_engine':
                     engine_data = update['data']
                     current_date = engine_data['date']
-                    equity = engine_data['strategyReturn']
+                    # 【防御性修复】优先使用 strategyReturn，回退到 equity，最后默认为 0
+                    equity = engine_data.get('strategyReturn', engine_data.get('equity', 0.0))
                     
-                    # 调试：记录收到的 daily_equity_engine 事件
+                    # 记录回测进度数据
                     if update_count <= 3 or update_count % 50 == 0:
                         logger.debug(f"[STREAM] visualization_api 收到 daily_equity_engine: date={current_date}, equity={equity:.2f}")
                     

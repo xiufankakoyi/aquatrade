@@ -23,7 +23,7 @@ def calculate_qfq_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         return df
     
     # 【性能优化】只在需要修改时才 copy
-    need_copy = any(col in df.columns for col in ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20', 'ma60'])
+    need_copy = any(col in df.columns for col in ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20'])
     if need_copy:
         df = df.copy()
     
@@ -45,7 +45,7 @@ def calculate_qfq_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     qfq_ratio = df['adj_factor'] / df['latest_factor']
     
     # 【性能优化】向量化应用到所有价格列（一次性计算，比循环快）
-    price_cols = ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20', 'ma60']
+    price_cols = ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20']
     for col in price_cols:
         if col in df.columns:
             # 使用向量化操作，一次性计算所有行

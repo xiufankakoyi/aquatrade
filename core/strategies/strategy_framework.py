@@ -1,9 +1,12 @@
 # strategies/strategy_framework.py
 
-import pandas as pd
+from typing import TYPE_CHECKING
 from functools import wraps
 from config.config import Config
 from core.utils.price_adjustment import apply_forward_adjustment
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 def simple_strategy(required_days=30):
     """
@@ -17,6 +20,7 @@ def simple_strategy(required_days=30):
     def decorator(strategy_func):
         @wraps(strategy_func)
         def wrapper(self, current_date, stock_pool, data_query):
+            import pandas as pd  # 延迟导入
             # 记录所需历史长度
             self.required_days = max(getattr(self, "required_days", 0), required_days)
             return self._optimized_generate_signals(
@@ -33,7 +37,7 @@ class StrategyBase:
     """策略基类：负责批量取数、批量执行，并缓存富信号"""
     
     # CHANGED: 策略类必须声明 strategy_name 属性
-    strategy_name = "策略基类"
+    # strategy_name = "策略基类"
 
     def __init__(self, name: str | None = None):
         # CHANGED: 优先使用传入的 name，否则使用类属性 strategy_name
@@ -46,8 +50,12 @@ class StrategyBase:
         self.current_portfolio = {}
         self.current_cash = 0.0
 
-        # 每日最新的“富信号”：{code: {action, weight, score, params}}
+        # 每日最新的"富信号"：{code: {action, weight, score, params}}
         self.last_rich_signals = {}
+        
+        # 持仓状态管理（由引擎自动维护）
+        # 格式：{stock_code: {'entry_date': '2024-01-01', 'days_held': 5, 'entry_price': 10.0, ...}}
+        self.holding_state = {}
         # CHANGED: 默认执行价格（'open' 或 'close'），可以在子类里覆盖
         self.execution_price = {
             "buy": "close",
@@ -81,6 +89,21 @@ class StrategyBase:
         本基类默认返回空字典，调用方应在为空时回退到 dataclass 自动推断等逻辑。
         """
         return {}
+
+    def get_required_indicators(self) -> list:
+        """
+        返回策略所需的指标列表
+        
+        子类可以覆盖此方法，返回指标配置列表，例如：
+            return [
+                {'type': 'ma', 'column': 'close', 'window': 20, 'name': 'ma20'},
+                {'type': 'rsi', 'column': 'close', 'window': 14, 'name': 'rsi14'},
+                {'type': 'atr', 'window': 14, 'name': 'atr14'},
+            ]
+        
+        默认返回空列表（表示不需要额外指标）
+        """
+        return []
 
     # ====== 引擎每天开头会调用，用来把账户状态塞进策略 ======
     def set_runtime_context(self, current_date, portfolio, cash):
@@ -132,7 +155,7 @@ class StrategyBase:
 
     # ====== 以下方法都可以在子类里按需重写 ======
 
-    def _pre_screen_stocks(self, stock_pool: pd.DataFrame) -> pd.DataFrame:
+    def _pre_screen_stocks(self, stock_pool: "pd.DataFrame") -> "pd.DataFrame":
         """
         默认的基础过滤：市值、价格、停牌、涨停、ST/科创/创业板等
         """
@@ -167,15 +190,17 @@ class StrategyBase:
         shift=0,
         start_date=None,
         min_periods=None,
-    ) -> pd.DataFrame:
+    ) -> "pd.DataFrame":
         """
         统一的 MA 计算工具：
         - 返回每只股票在 end_date 当日（或上一日）的原值 + MA 值
         - shift=1 表示 MA 只统计到前一日（常用于量比等指标）
         """
         if not stock_codes:
+            import pandas as pd  # 延迟导入
             return pd.DataFrame()
 
+        import pandas as pd  # 延迟导入
         try:
             end_ts = pd.to_datetime(end_date)
         except Exception:
@@ -214,7 +239,7 @@ class StrategyBase:
             d = pd.to_datetime(current_date)
         return (d - pd.Timedelta(days=self.required_days)).strftime("%Y-%m-%d")
 
-    def _batch_prepare_data(self, stocks: pd.DataFrame, current_date, data_query):
+    def _batch_prepare_data(self, stocks: "pd.DataFrame", current_date, data_query):
         """
         批量拉取历史 K 线，减少 DB 调用次数
         """
@@ -263,7 +288,7 @@ class StrategyBase:
 
         return prepared
 
-    def _batch_execute_strategy(self, stocks: pd.DataFrame, prepared_data, strategy_func):
+    def _batch_execute_strategy(self, stocks: "pd.DataFrame", prepared_data, strategy_func):
         """
         批量执行单票策略函数：
         strategy_func(self, stock_code, current_row, history_df) ->

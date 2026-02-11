@@ -192,4 +192,86 @@ class StrategyService:
 
         # 4. 实在啥都没有，就返回空
         return []
+    
+    def get_strategy_code(self, strategy_id: str) -> str:
+        """
+        获取策略的源代码
+        
+        参数:
+            strategy_id: 策略ID或名称
+        
+        返回:
+            str: 策略源代码，如果找不到则返回空字符串
+        """
+        try:
+            import os
+            from config.config import Config
+            
+            # 1. 尝试从策略工厂获取策略类，然后获取模块文件路径
+            strategy_class = StrategyFactory.get_factory().get_strategy_by_name(strategy_id)
+            if strategy_class:
+                # 获取策略类所在的模块
+                module = strategy_class.__module__
+                # 将模块名转换为文件路径
+                module_path = module.replace('.', os.sep)
+                
+                # 尝试多个可能的路径
+                possible_paths = [
+                    os.path.join(Config.BASE_DIR, f"{module_path}.py"),
+                    os.path.join(Config.BASE_DIR, "core", "strategies", f"{module_path.split('.')[-1]}.py"),
+                ]
+                
+                # 如果是 user 目录下的策略
+                if 'user' in module_path or strategy_id.startswith('ai_gen_'):
+                    user_file = os.path.join(Config.BASE_DIR, 'core', 'strategies', 'user', f"{strategy_id}.py")
+                    possible_paths.insert(0, user_file)
+                
+                # 尝试读取文件
+                for file_path in possible_paths:
+                    if os.path.exists(file_path):
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            return f.read()
+                
+                # 如果找不到文件，尝试通过 inspect 获取源代码
+                import inspect
+                try:
+                    source = inspect.getsource(strategy_class)
+                    return source
+                except (OSError, TypeError):
+                    pass
+            
+            # 2. 如果策略工厂找不到，尝试直接读取 user 目录下的文件
+            if strategy_id.startswith('ai_gen_'):
+                user_file = os.path.join(Config.BASE_DIR, 'core', 'strategies', 'user', f"{strategy_id}.py")
+                if os.path.exists(user_file):
+                    with open(user_file, 'r', encoding='utf-8') as f:
+                        return f.read()
+            
+            # 3. 尝试在 strategies 目录下查找
+            strategies_dir = os.path.join(Config.BASE_DIR, 'core', 'strategies')
+            for root, dirs, files in os.walk(strategies_dir):
+                # 跳过 __pycache__ 和 templates 目录
+                dirs[:] = [d for d in dirs if d not in ['__pycache__', 'templates']]
+                
+                for file in files:
+                    if file.endswith('.py') and not file.startswith('_'):
+                        # 检查文件名是否匹配策略ID
+                        if strategy_id in file or file.replace('.py', '') == strategy_id:
+                            file_path = os.path.join(root, file)
+                            try:
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                                    # 检查文件内容中是否包含策略类
+                                    if strategy_id in content or f'class {strategy_id}' in content:
+                                        return content
+                            except Exception:
+                                continue
+            
+            return ""
+            
+        except Exception as e:
+            print(f"获取策略源代码失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return ""
 

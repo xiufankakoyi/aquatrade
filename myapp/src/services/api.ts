@@ -35,7 +35,7 @@ async function request<T>(
 
   try {
     const response = await fetch(url, config);
-    
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       throw new ApiError(
@@ -46,7 +46,7 @@ async function request<T>(
     }
 
     const data: ApiResponse<T> = await response.json();
-    
+
     if (!data.success) {
       throw new ApiError(data.error || '请求失败', response.status);
     }
@@ -87,16 +87,16 @@ export const apiService = {
     endDate: string
   ): Promise<KlineData[]> {
     const { emitEvent, onEvent } = useSocketIO();
-    
+
     return new Promise((resolve, reject) => {
       const requestId = `kline_${Date.now()}_${Math.random()}`;
       let timeout: ReturnType<typeof setTimeout>;
-      
+
       const unsubscribe = onEvent('kline_data', (response: KlineResponse) => {
         if (response.request_id === requestId) {
           clearTimeout(timeout);
           unsubscribe();
-          
+
           if (response.error) {
             reject(new ApiError(response.error));
           } else {
@@ -122,6 +122,16 @@ export const apiService = {
   async restartBackend(): Promise<void> {
     await request('/restart-backend', {
       method: 'POST',
+    });
+  },
+
+  async generateStrategy(description: string, name?: string): Promise<{ filename: string; message: string }> {
+    return await request('/strategies/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        description,
+        name: name || 'AI策略',
+      }),
     });
   },
 };

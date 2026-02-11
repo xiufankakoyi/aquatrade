@@ -1,4 +1,10 @@
-# Python
+# ============================================
+# AquaTrade 量化交易平台 - Git忽略配置
+# ============================================
+
+# ============================================
+# Python 相关
+# ============================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -21,10 +27,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-venv/
-env/
-ENV/
-.venv
+*.manifest
+*.spec
 pip-log.txt
 pip-delete-this-directory.txt
 .pytest_cache/
@@ -37,9 +41,21 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
-*.log
+*.mo
+*.pot
 
-# Node.js
+# 虚拟环境
+venv/
+ENV/
+env/
+.env/
+.venv/
+env.bak/
+venv.bak/
+
+# ============================================
+# Node.js 相关
+# ============================================
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -51,35 +67,80 @@ package-lock.json
 yarn.lock
 pnpm-lock.yaml
 
-# 数据库文件
+# ============================================
+# 数据库文件 (大文件，不上传)
+# ============================================
 *.db
 *.db-shm
 *.db-wal
 *.sqlite
 *.sqlite3
-
-# 数据文件
-data/
-parquet_data/
-*.csv
-*.parquet
 *.duckdb
-*.jsonl
+*.duckdb.wal
+
+# ============================================
+# 数据文件 (超大文件，不上传)
+# ============================================
+# QuestDB 数据目录
+data/questdb/db/
+data/questdb/import/
+qdb_data/
+
+# Parquet 数据文件
+*.parquet
+parquet_data/
+
+# CSV 数据文件
+*.csv
+
+# LanceDB 文件
 *.lance
 *.txn
 *.manifest
+
+# JSONL 大文件
+*.jsonl
+
+# Redis 数据
+*.rdb
+*.aof
 Redis/
+redis_data/
 
-# 构建产物
-dist/
-dist-ssr/
-build/
-*.local
+# ============================================
+# AI 模型权重文件 (超大，不上传)
+# ============================================
+# GGUF 模型文件
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.onnx
+*.mlmodel
 
+# 模型目录
+models/weights/
+models/finetune_hub/venv/
+models/finetune_hub/node_modules/
+
+# ============================================
 # 日志文件
+# ============================================
 *.log
 logs/
 *.log.*
+log/
+.cursor/
+
+# ============================================
+# 报告和临时文件
+# ============================================
+# 性能报告
+data/reports/*.json
+data/database/perf_report_*.json
 
 # 临时文件
 tmp/
@@ -89,10 +150,24 @@ temp/
 *.swp
 *.swo
 *~
-.DS_Store
-Thumbs.db
 
+# 爬虫临时数据
+data/spider_data/
+data_lake/
+quant/data_lake/
+
+# ============================================
+# 构建产物
+# ============================================
+dist/
+dist-ssr/
+build/
+*.local
+out/
+
+# ============================================
 # IDE 和编辑器
+# ============================================
 .vscode/
 .idea/
 *.sublime-project
@@ -104,74 +179,42 @@ Thumbs.db
 *.sln
 *.sw?
 
-# 环境变量和配置
-.env
-.env.local
-.env.*.local
-*.env
-config.local.json
-secrets.json
-
+# ============================================
 # 操作系统文件
+# ============================================
 .DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
+Thumbs.db
+desktop.ini
 
-# 缓存目录
-.cache/
-cache/
-*.cache
-.huggingface/
-.transformers/
-*.npy
+# ============================================
+# 环境配置文件 (包含敏感信息)
+# ============================================
+# 注意: .env 文件包含API密钥，不应该上传
+# 但是 .env.template 是模板，应该上传
+.env
+.env.local
+.env.*.local
+!.env.template
 
-# 测试和覆盖率
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.hypothesis/
-*.cover
-*.py,cover
-coverage.xml
-*.xml
+# ============================================
+# 测试和沙盒
+# ============================================
+sandbox/*.txt
+sandbox/verify_output*.txt
 
-# Jupyter Notebook
-.ipynb_checkpoints
-*.ipynb
+# ============================================
+# Git 相关
+# ============================================
+.git/
 
-# 机器学习模型文件
-qwen_sentiment_lora/
-*.safetensors
-*.bin
-*.pt
-*.pth
-*.ckpt
-*.h5
-*.pkl
-*.joblib
-
-# 优化和实验存储
-optuna_storage/
-wandb/
-mlruns/
-.neptune/
-
+# ============================================
 # 其他
-*.bak
-*.backup
-*.old
-heatmaps/*.png
-assets/*.png
-*.bat
-!start.bat
-!stop.bat
-test_data.json
-1.txt
-2.txt
-3.txt
+# ============================================
+*.pid
+*.seed
+*.pid.lock

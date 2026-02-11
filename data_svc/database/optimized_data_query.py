@@ -20,6 +20,10 @@ import os
 import time
 import sqlite3
 from functools import lru_cache
+
+# Error handling imports
+from core.error_handler import ErrorHandler, ErrorLevel, capture_error
+from core.error_handler.exceptions import NoBackendError
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple, FrozenSet, Any
 import pandas as pd
@@ -69,91 +73,115 @@ class OptimizedStockDataQuery:
         self._profile_verbose = os.getenv("DB_PROFILE_VERBOSE", "0") == "1"
         self._profile_threshold = float(os.getenv("DB_PROFILE_THRESHOLD", "0.02"))
 
-        # 【核心修复】默认使用 LanceDB 后端（最快），可通过环境变量切换
-        # DB_BACKEND=lancedb (默认，最快) | duckdb | sqlite
-        backend = os.getenv("DB_BACKEND", "lancedb").lower()
+        # 【核心修复】后端优先级：QuestDB > DuckDB (Parquet) > 报错（不崩溃）
+        backend = os.getenv("DB_BACKEND", "questdb").lower()
         self._logger.warning(f"[DB] 环境变量 DB_BACKEND={backend} (原始值: {os.getenv('DB_BACKEND', 'NOT SET')})")
-        self._use_lancedb = backend == "lancedb"
-        self._use_duckdb = backend == "duckdb"
-        self._logger.warning(f"[DB] 后端选择: use_lancedb={self._use_lancedb}, use_duckdb={self._use_duckdb}")
-
-        # --- LanceDB 后端（最快）---
-        if self._use_lancedb:
+        # 初始化标志
+        self._use_questdb = False
+        self._use_duckdb = False
+        self._use_lancedb = False # Added for LanceDB support
+        # 先尝试 QuestDB
+        if backend == "questdb":
             try:
-                self._logger.warning("[DB] 尝试初始化 LanceDB 后端...")
-                from data_svc.lance_manager import LanceDBManager
-                
-                # 为所有表创建 LanceDBManager 实例
-                self.lance_manager = LanceDBManager(table_name="stock_daily")
-                self.lance_benchmark = LanceDBManager(table_name="benchmark_data")
-                self.lance_limit_status = LanceDBManager(table_name="stock_limit_status")
-                self.lance_stock_info = LanceDBManager(table_name="stock_info")
-                
-                self._logger.warning(f"[DB] ✓ 使用 LanceDB 后端（零拷贝到 Polars）")
-                self._logger.warning(f"[DB] ✓ 已初始化所有表: stock_daily, benchmark_data, stock_limit_status, stock_info")
-            except ImportError as e:
-                self._logger.error(f"[DB] ✗ LanceDB 不可用，回退到 DuckDB: {e}")
-                self._use_lancedb = False
-                self._use_duckdb = True
+                from data_svc.database.questdb_manager import get_questdb_manager
+                self.questdb_manager = get_questdb_manager()
+                if not self.questdb_manager.health_check():
+                    raise RuntimeError("QuestDB 服务不可用")
+                self._use_questdb = True
+                self._logger.warning("[DB] [OK] 使用 QuestDB 后端（时序数据库）")
+                self._logger.warning(f"[DB] [OK] QuestDB 连接成功: {self.questdb_manager.host}:{self.questdb_manager.http_port}")
             except Exception as e:
-                self._logger.error(f"[DB] ✗ LanceDB 初始化失败，回退到 DuckDB: {e}", exc_info=True)
-                self._use_lancedb = False
+                from core.error_handler import ErrorHandler, ErrorLevel
+                ErrorHandler.capture(e, level=ErrorLevel.WARNING, category="database", context={"backend": "questdb"})
+                self._logger.warning(f"[DB] QuestDB 初始化失败，尝试 DuckDB: {e}")
+        # 若未使用 QuestDB，尝试 DuckDB（Parquet）
+        if not self._use_questdb:
+            try:
+                import duckdb
                 self._use_duckdb = True
+                self._logger.warning("[DB] [OK] 使用 DuckDB + Parquet 后端")
+                # 初始化 DuckDB 连接（后续在 _use_duckdb 分支使用）
+            except Exception as e:
+                from core.error_handler import ErrorHandler, ErrorLevel
+                ErrorHandler.capture(e, level=ErrorLevel.ERROR, category="database", context={"backend": "duckdb"})
+                self._logger.error(f"[DB] DuckDB 初始化失败，系统无可用后端: {e}")
+                # 标记为无可用后端，后续会抛出自定义异常
+        # 若仍未有后端，记录致命错误
+        if not (self._use_questdb or self._use_duckdb):
+            from core.error_handler import ErrorHandler, ErrorLevel
+            err_msg = "没有可用的数据库后端（QuestDB 或 DuckDB）"
+            ErrorHandler.capture(RuntimeError(err_msg), level=ErrorLevel.CRITICAL, category="database")
+            self._logger.critical(err_msg)
+            # 为防止后续属性错误，设置占位属性
+            self.conn = None
+            self.questdb_manager = None
+            # 继续初始化但后续查询将返回空结果
 
         # --- DuckDB + Parquet 后端 ---
-        if self._use_duckdb:
-            if duckdb is None:
-                raise RuntimeError("DB_BACKEND=duckdb，但未安装 duckdb，请先: pip install duckdb pyarrow")
+        # --- QuestDB 后端 (主要) ---
+        if backend == "questdb":
+            try:
+                self._logger.warning("[DB] 尝试初始化 QuestDB 后端...")
+                from data_svc.database.questdb_manager import get_questdb_manager
+                self.questdb_manager = get_questdb_manager()
+                if not self.questdb_manager.health_check():
+                    raise RuntimeError("QuestDB 服务不可用，请确保 QuestDB 已启动")
+                self._use_questdb = True
+                self._logger.warning("[DB] [OK] 使用 QuestDB 后端（时序数据库）")
+                self._logger.warning(f"[DB] [OK] QuestDB 连接成功: {self.questdb_manager.host}:{self.questdb_manager.http_port}")
+            except Exception as e:
+                from core.error_handler import ErrorHandler, ErrorLevel
+                ErrorHandler.capture(e, level=ErrorLevel.WARNING, category="database", context={"backend": "questdb"})
+                self._logger.warning(f"[DB] QuestDB 初始化失败，将尝试使用 DuckDB: {e}")
+                self._use_questdb = False
 
+        # --- DuckDB + Parquet 后端 (备用/主要) ---
+        # 即使使用了 QuestDB，也初始化 DuckDB 以备不时之需（双重保底）
+        # 或者如果 backend 显式指定为 duckdb，则作为主要后端
+        try:
+            import duckdb
             # parquet 目录：优先使用 Config.PARQUET_DIR，其次使用环境变量，最后使用默认值
             parquet_dir_env = os.getenv("PARQUET_DIR")
             if parquet_dir_env:
                 if os.path.isabs(parquet_dir_env):
                     self.parquet_dir = parquet_dir_env
                 else:
-                    # 相对路径：相对于项目根目录
                     self.parquet_dir = os.path.join(Config.BASE_DIR, parquet_dir_env)
             else:
-                # 使用 Config 中的配置
                 self.parquet_dir = Config.PARQUET_DIR
-            self._logger.info(f"[DB] 使用 DuckDB + Parquet 后端: dir={self.parquet_dir}")
-
-            # DuckDB 内存库
+            
+            # 初始化 DuckDB 连接
             self.conn = duckdb.connect()
-
+            
             # 注册 parquet 视图
             self._register_parquet_views()
             
-            # 优化：为 DuckDB 创建索引（虽然使用 Parquet，但索引可以优化查询计划）
-            # DuckDB 支持在视图上创建索引，可以显著提升查询性能
+            # 优化：为 DuckDB 创建索引
             try:
                 cur = self.conn.cursor()
-                # 为 trade_date 创建索引（优化 get_trading_dates 查询）
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_daily_date ON stock_daily(trade_date)")
-                # 为 (trade_date, stock_code) 创建复合索引（优化 get_stock_pool 查询）
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_daily_date_code ON stock_daily(trade_date, stock_code)")
-                # 为 stock_code 创建索引（优化单股票查询）
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_daily_code ON stock_daily(stock_code)")
-                # 为 benchmark_data 的 date 列创建索引（优化 get_trading_dates 查询）
                 try:
                     cur.execute("CREATE INDEX IF NOT EXISTS idx_benchmark_data_date ON benchmark_data(date)")
-                    self._logger.info("[DB] benchmark_data 索引创建成功")
                 except Exception as e:
-                    self._logger.warning(f"[DB] benchmark_data 索引创建失败: {e}")
-                self._logger.info("[DB] DuckDB 索引创建完成")
-            except Exception as e:
-                self._logger.warning(f"[DB] DuckDB 索引创建失败（可能不支持）: {e}")
-        else:
-            # --- 原来的 SQLite 后端 ---
-            self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self._logger.info(f"[DB] 使用 SQLite 后端: path={self.db_path}")
+                    pass
+            except Exception:
+                pass
 
-            # 确保数据库表存在
-            ensure_tables(self.conn)
-
-            # 统一 PRAGMA 设置，延迟 ANALYZE
-            apply_performance_pragmas(self.conn, read_only=False, defer_analyze=True)
-            ensure_indexes(self.conn, defer_analyze=True)
+            # 如果没有启用 QuestDB，或者显式指定 DuckDB，则把 DuckDB 标记为可用
+            self._use_duckdb = True 
+            self._logger.info(f"[DB] [OK] DuckDB + Parquet 后端已就绪 (作为{'备用' if self._use_questdb else '主'}后端): dir={self.parquet_dir}")
+            
+        except Exception as e:
+            from core.error_handler import ErrorHandler, ErrorLevel
+            ErrorHandler.capture(e, level=ErrorLevel.ERROR, category="database", context={"backend": "duckdb"})
+            self._logger.error(f"[DB] DuckDB 初始化失败: {e}")
+            if not self._use_questdb:
+                 self._logger.critical("无法初始化 QuestDB 也无法初始化 DuckDB，系统将无法查询数据")
+            self.conn = None # 确保 conn 为 None，如果 DuckDB 初始化失败
+        
+        # No SQLite fallback; if no backend is available, self.conn remains None and queries will return empty results
 
         # 预编译常用查询语句（可选优化）
         self._prepared_queries = {}
@@ -181,6 +209,7 @@ class OptimizedStockDataQuery:
         # 优化：预加载所有交易日期到内存（延迟到首次使用时）
         # 避免启动时耗时
         self._preload_dates_done = False
+        self._views_registered = False
 
 
     def _profile(self, func_name: str, stage: str) -> _DBStageTimer:
@@ -194,16 +223,53 @@ class OptimizedStockDataQuery:
                 self._register_parquet_views()
             
             # 查询所有交易日期（只查询一次）
-            query = "SELECT DISTINCT date AS trade_date FROM benchmark_data ORDER BY date"
+            # 【修复】QuestDB 使用 timestamp 列名，DuckDB 视图使用 date 列名
+            # 【修复】QuestDB 要求 ORDER BY 列必须在 SELECT 列表中
+            if self._use_questdb:
+                query = "SELECT DISTINCT timestamp AS trade_date FROM benchmark_data ORDER BY trade_date"
+            else:
+                query = "SELECT DISTINCT date AS trade_date FROM benchmark_data ORDER BY trade_date"
             df = self._query_df(query, None)
             
             if df is not None and not df.empty:
                 self._all_trading_dates_cache = df["trade_date"].tolist()
                 self._logger.info(f"[DB] 预加载交易日期完成: {len(self._all_trading_dates_cache)} 个日期")
             else:
-                self._logger.warning("[DB] 预加载交易日期失败: 查询结果为空")
+                self._logger.warning("[DB] 预加载交易日期失败: 查询结果为空，尝试从 stock_daily 加载")
+                # Fallback to stock_daily
+                query_fallback = "SELECT DISTINCT trade_date FROM stock_daily ORDER BY 1"
+                df_fallback = self._query_df(query_fallback, None)
+                if df_fallback is not None and not df_fallback.empty:
+                    self._all_trading_dates_cache = df_fallback["trade_date"].tolist()
+                    self._logger.info(f"[DB] 从 stock_daily 预加载交易日期成功: {len(self._all_trading_dates_cache)} 个日期")
+                else:
+                    self._logger.warning("[DB] 预加载交易日期失败: stock_daily 也为空")
         except Exception as e:
-            self._logger.warning(f"[DB] 预加载交易日期失败: {e}")
+            msg = str(e).lower()
+            self._logger.warning(f"[DB] 预加载交易日期异常: {e}")
+            if "benchmark_data" in msg or "does not exist" in msg:
+                self._logger.warning(f"[DB] benchmark_data 不存在，尝试从 stock_daily 加载交易日期")
+                try:
+                    # 获取交易日期列表：现在已有 stock_daily 视图/表
+                    # 【核心优化】QuestDB 使用 SAMPLE BY 极速获取日期
+                    if self._use_questdb:
+                        query_fallback = "SELECT trade_date, count() FROM stock_daily SAMPLE BY 1d"
+                    else:
+                        query_fallback = "SELECT DISTINCT trade_date FROM stock_daily ORDER BY 1"
+                        
+                    df_fallback = self._query_df(query_fallback, None)
+                    if df_fallback is not None and not df_fallback.empty:
+                        col = "trade_date" if "trade_date" in df_fallback.columns else df_fallback.columns[0]
+                        # 如果是 timestamp 类型，转换为字符串
+                        if pd.api.types.is_datetime64_any_dtype(df_fallback[col]):
+                            self._all_trading_dates_cache = df_fallback[col].dt.strftime("%Y-%m-%d").tolist()
+                        else:
+                            self._all_trading_dates_cache = df_fallback[col].astype(str).str[:10].tolist()
+                        self._logger.info(f"[DB] 从 {query_fallback.split('FROM ')[1].split(' ')[0]} 预加载交易日期成功: {len(self._all_trading_dates_cache)} 个日期")
+                except Exception as e2:
+                    self._logger.warning(f"[DB] 预加载交易日期二次失败: {e2}")
+            else:
+                self._logger.warning(f"[DB] 预加载交易日期失败: {e}")
     
     def _register_parquet_views(self) -> None:
         """
@@ -293,15 +359,18 @@ class OptimizedStockDataQuery:
         预热数据库连接：执行一次简单查询，初始化连接和缓存
         """
         try:
-            self.conn.execute("SELECT 1").fetchone()
+            if self.conn: # Only attempt if conn is not None (i.e., not QuestDB or no backend)
+                self.conn.execute("SELECT 1").fetchone()
 
-            if not self._use_duckdb:
-                # 只有 SQLite 才有 sqlite_master
-                self.conn.execute(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
-                ).fetchone()
+                if not self._use_duckdb:
+                    # 只有 SQLite 才有 sqlite_master
+                    self.conn.execute(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
+                    ).fetchone()
 
-            self._logger.info("[DB] 数据库连接预热完成")
+                self._logger.info("[DB] 数据库连接预热完成")
+            else:
+                self._logger.info("[DB] 无需预热连接 (QuestDB 或无后端)")
         except Exception as e:
             self._logger.warning(f"[DB] 数据库连接预热失败: {e}")
 
@@ -320,6 +389,9 @@ class OptimizedStockDataQuery:
         if table in self._table_columns_cache:
             return self._table_columns_cache[table]
         try:
+            if self.conn is None: # No backend available
+                return frozenset()
+
             if self._use_duckdb:
                 # DuckDB: 使用 DESCRIBE 或 SELECT * LIMIT 0
                 try:
@@ -342,16 +414,28 @@ class OptimizedStockDataQuery:
     def _query_df(self, sql: str, params=None) -> pd.DataFrame:
         """
         统一的查询 -> DataFrame：
-        - sqlite: 用 pandas.read_sql
+        - questdb: 用 questdb_manager.query()
         - duckdb: 用 conn.execute(...).df()
+        - sqlite: 用 pandas.read_sql
         """
-        if self._use_duckdb:
+        if self._use_questdb:
+            # QuestDB 使用 questdb_manager
+            import polars as pl
+            df_pl = self.questdb_manager.query(sql)
+            if df_pl.is_empty():
+                return pd.DataFrame()
+            return df_pl.to_pandas(use_pyarrow_extension_array=False)
+        elif self._use_duckdb:
             if params is None:
                 return self.conn.execute(sql).df()
             else:
                 # duckdb 支持 ? 占位符
                 return self.conn.execute(sql, params).df()
         else:
+            # No backend available or SQLite fallback
+            if self.conn is None:
+                ErrorHandler.capture(NoBackendError("No database backend available"), level=ErrorLevel.ERROR, category="database")
+                return pd.DataFrame()
             return pd.read_sql(sql, self.conn, params=params)
 
     def _filter_existing_columns(self, columns: List[str]) -> List[str]:
@@ -398,6 +482,8 @@ class OptimizedStockDataQuery:
 
         try:
             with self._profile("get_adjustment_factors", "column_check"):
+                if self.conn is None: # No backend available
+                    return {}
                 cursor = self.conn.execute("SELECT * FROM stock_daily LIMIT 0")
                 columns = [desc[0] for desc in cursor.description]
                 if 'adj_factor' not in columns:
@@ -432,6 +518,7 @@ class OptimizedStockDataQuery:
             print(f"[DB] 获取复权因子失败: {e}")
             return {}
     
+    @capture_error(category="database")
     def get_trading_dates(self, start_date=None, end_date=None):
         """
         CHANGED: 获取交易日列表，添加性能监控和索引优化
@@ -442,8 +529,8 @@ class OptimizedStockDataQuery:
             self._warmup_connection()
             self._warmup_done = True
         
-        # 延迟预加载交易日期：在首次查询时执行（仅 DuckDB 模式）
-        if not self._preload_dates_done and self._use_duckdb:
+        # 延迟预加载交易日期：在首次查询时执行（DuckDB 和 QuestDB 模式都需要）
+        if not self._preload_dates_done:
             try:
                 self._preload_all_trading_dates()
                 self._preload_dates_done = True
@@ -484,7 +571,7 @@ class OptimizedStockDataQuery:
                 return filtered_dates
         
         # 优先使用 LanceDB（极速查询）
-        if self._use_lancedb:
+        if self._use_lancedb and hasattr(self, 'lance_benchmark'):
             try:
                 t1 = time.perf_counter()
                 # 从 benchmark_data 表获取交易日期（使用 LanceDB，极速）
@@ -527,20 +614,86 @@ class OptimizedStockDataQuery:
             self._register_parquet_views()
         
         # 查询 benchmark_data (只有 3万行)
-        query = "SELECT DISTINCT date AS trade_date FROM benchmark_data"
-        params = []
+        if self._use_questdb:
+             # Try QuestDB query logic first
+             try:
+                 # QuestDB 'base_daily' uses 'timestamp' column for time, 'stock_code' for code
+                 # 【核心优化】QuestDB 使用 SAMPLE BY 极速获取日期
+                 query = "SELECT trade_date, count() FROM stock_daily"
+                 where_clauses = []
+                 if start_date: where_clauses.append(f"trade_date >= '{start_str}'")
+                 if end_date: where_clauses.append(f"trade_date <= '{end_str}'")
+                 if where_clauses: query += " WHERE " + " AND ".join(where_clauses)
+                 query += " SAMPLE BY 1d"
+                 
+                 t1 = time.perf_counter()
+                 df = self._query_df(query, None) # QuestDB uses sql string only
+                 dates = df["trade_date"].tolist() if not df.empty else []
+                 
+                 # QuestDB format conversion
+                 if dates and hasattr(dates[0], 'strftime'):
+                     dates = [d.strftime('%Y-%m-%d') for d in dates]
+                 elif dates and isinstance(dates[0], str) and 'T' in dates[0]:
+                     dates = [d.split('T')[0] for d in dates]
+
+                 elapsed = time.perf_counter() - t0
+                 if elapsed > 0.05:
+                     self._logger.warning(f"[DB] get_trading_dates (QuestDB) {start_str}~{end_str} -> {len(dates)} dates in {elapsed:.3f}s")
+                 
+                 # Cache logic same as below...
+                 if start_str is None and end_str is None:
+                     self._all_trading_dates_cache = dates.copy()
+                 self._add_to_cache(cache_key, dates)
+                 return dates
+
+             except Exception as e:
+                 # Capture error but DO NOT CRASH. Fallback to DuckDB.
+                 from core.error_handler import ErrorHandler, ErrorLevel
+                 ErrorHandler.capture(e, level=ErrorLevel.WARNING, category="database", context={"backend": "questdb", "fallback": "duckdb"})
+                 self._logger.warning(f"[DB] QuestDB get_trading_dates failed, falling back to DuckDB/Parquet: {e}")
+                 # Proceed to DuckDB logic below
         
-        if start_date and end_date:
-            query += " WHERE date BETWEEN ? AND ?"
-            params = [start_str, end_str]
-        elif start_date:
-            query += " WHERE date >= ?"
-            params = [start_str]
-        elif end_date:
-            query += " WHERE date <= ?"
-            params = [end_str]
+        # --- DuckDB / Fallback Logic ---
+        if self.conn:  # DuckDB connection exists
+            # Fallback to stock_daily if benchmark_data doesn't exist
+            # Try to query benchmark_data first, but catch error and rewrite query if needed
+            # Since we can't easily "try" a query without executing, we will assume benchmark_data
+            # If the user reported benchmark_data missing, we can just check if we can query it cheaply?
+            # Or simplified: Use benchmark_data query by default, but if it fails deep inside, we might need a retry loop?
+            # A better approach here: check if view exists or just setup the query string.
+            # But wait, self._query_df is called below.
+            # If we want to support fallback for DuckDB table missing, we should probably do it inside the main try/except or structured here.
             
-        query += " ORDER BY date"
+            # Let's check table existence (cheaply) or just default to stock_daily if we suspect issue?
+            # User log shows: "table does not exist [table=benchmark_data]"
+            
+            # We will use a nested approach:
+            # 1. Prepare benchmark_data query
+            query = "SELECT DISTINCT date AS trade_date FROM benchmark_data"
+            params = []
+            if start_date and end_date:
+                query += " WHERE date BETWEEN ? AND ?"
+                params = [start_str, end_str]
+            elif start_date:
+                query += " WHERE date >= ?"
+                params = [start_str]
+            elif end_date:
+                query += " WHERE date <= ?"
+                params = [end_str]
+            query += " ORDER BY 1"
+            
+            # To be safe against "table not found", we can try executing it now.
+            try:
+                # Test execution (limit 1) to check if table exists
+                # This adds overhead but ensures safety.
+                # Or we can just let it run below. But if it fails below, the outer try/except captures it as "get_trading_dates failed".
+                # We need to handle the specific "table not found" for DuckDB.
+                pass
+            except:
+                pass
+        else:
+            # unexpected: no backend at all
+            return []
         
         try:
             t1 = time.perf_counter()
@@ -548,6 +701,12 @@ class OptimizedStockDataQuery:
             t2 = time.perf_counter()
             
             dates = df["trade_date"].tolist()
+            # QuestDB returns timestamps; convert to string date format if needed
+            if dates and hasattr(dates[0], 'strftime'):
+                 dates = [d.strftime('%Y-%m-%d') for d in dates]
+            elif dates and isinstance(dates[0], str) and 'T' in dates[0]:
+                 dates = [d.split('T')[0] for d in dates]
+
             elapsed = time.perf_counter() - t0
             
             if elapsed > 0.05:
@@ -560,19 +719,45 @@ class OptimizedStockDataQuery:
             # 缓存结果
             self._add_to_cache(cache_key, dates)
             
-            # 优化：如果查询范围较大，尝试从预加载的缓存中过滤（如果存在）
-            if self._all_trading_dates_cache is not None and len(dates) > 10:
-                # 如果查询结果很多，说明可能是大范围查询，下次可以直接从缓存过滤
-                pass
-            
             return dates
         except Exception as e:
-            # #region agent log
-            import traceback
-            import json
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"optimized_data_query.py:422","message":"SQL查询失败","data":{"error":str(e)},"sessionId":"debug-session","runId":"pre-fix","hypothesisId":"E"}) + "\n")
-            # #endregion
+            # Fallback for DuckDB if benchmark_data is missing
+            if self.conn and "benchmark_data" in str(e) and "does not exist" in str(e):
+                 try:
+                    self._logger.warning("[DB] benchmark_data missing in DuckDB, falling back to stock_daily")
+                    query = "SELECT DISTINCT trade_date FROM stock_daily"
+                    params = []
+                    if start_date and end_date:
+                        query += " WHERE trade_date BETWEEN ? AND ?"
+                        params = [start_str, end_str]
+                    elif start_date:
+                        query += " WHERE trade_date >= ?"
+                        params = [start_str]
+                    elif end_date:
+                        query += " WHERE trade_date <= ?"
+                        params = [end_str]
+                    query += " ORDER BY trade_date"
+                    
+                    df = self._query_df(query, params)
+                    dates = df["trade_date"].tolist() if not df.empty else []
+                    
+                    # Cache logic
+                    self._add_to_cache(cache_key, dates)
+                    return dates
+                 except Exception as e2:
+                    e = e2 # Update error to the new one
+            
+            # Safe logging: ensure directory exists or just log to application logger
+            try:
+                log_dir = r'd:\aquatrade\.cursor'
+                if not os.path.exists(log_dir):
+                    os.makedirs(log_dir, exist_ok=True)
+                import json
+                with open(os.path.join(log_dir, 'debug.log'), 'a', encoding='utf-8') as f:
+                    f.write(json.dumps({"timestamp":int(time.time()*1000),"message":"get_trading_dates failed","error":str(e)}) + "\n")
+            except Exception:
+                pass # Ignore logging errors
+            
             self._logger.error(f"获取交易日失败: {e}")
             return []
     
@@ -664,6 +849,7 @@ class OptimizedStockDataQuery:
             self._logger.error(f"获取下一个交易日失败 ({date_str}): {e}")
             return None
     
+    @capture_error(category="database")
     def get_trading_calendar(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[str]:
         """
         获取交易日历（交易日列表）
@@ -722,6 +908,7 @@ class OptimizedStockDataQuery:
             return False
             
     # --- 【【最终修复：KeyError: 'is_limit_up'】】 ---
+    @capture_error(category="database")
     def get_all_daily_data_for_period(self, start_date: str, end_date: str, filters: Optional[Dict] = None) -> pd.DataFrame:
         """
         【【新】】向量化查询：一次性获取回测期间的所有股票数据
@@ -737,7 +924,7 @@ class OptimizedStockDataQuery:
         
         start_str = self._convert_date(start_date)
         end_str = self._convert_date(end_date)
-        backend_name = 'LanceDB' if self._use_lancedb else ('DuckDB' if self._use_duckdb else 'SQLite')
+        backend_name = 'LanceDB' if self._use_lancedb else ('DuckDB' if self._use_duckdb else ('QuestDB' if self._use_questdb else 'SQLite'))
         print(f"向量化加载 {start_str} 到 {end_str} 的所有数据 (Backend: {backend_name})...")
 
         cache_key = f"all_data_{start_str}_{end_str}"
@@ -836,10 +1023,6 @@ class OptimizedStockDataQuery:
                     if col in df_res_pl.columns:
                         fill_exprs.append(pl.col(col).fill_null(0))
                 
-                # 补全 ma60 (如果不存在)
-                if 'ma60' not in df_res_pl.columns:
-                    fill_exprs.append(pl.lit(0.0).alias('ma60'))
-                
                 # 执行 Polars 变换
                 if fill_exprs:
                     df_res_pl = df_res_pl.with_columns(fill_exprs)
@@ -878,6 +1061,68 @@ class OptimizedStockDataQuery:
 
             except Exception as e:
                 self._logger.error(f"[DB] LanceDB 向量化加载失败，回退到 SQL: {e}", exc_info=True)
+                # 失败后继续执行下方的 QuestDB/SQL 逻辑...
+
+        # --- QuestDB 路径：使用时序数据库查询 ---
+        # 【优化】跳过 QuestDB 的复杂 JOIN 查询，直接使用 DuckDB 路径
+        # 原因：QuestDB 的三表 JOIN (stock_daily + factors_momentum + factors_valuation) 性能差，容易超时
+        # DuckDB 通过 Parquet 视图查询更快
+        if False and self._use_questdb and hasattr(self, 'questdb_manager'):
+            try:
+                import polars as pl
+                
+                t_questdb_start = time.perf_counter()
+                self._logger.info(f"[QuestDB] 开始查询数据: {start_str} 到 {end_str}")
+                
+                # 【简化】只查询 stock_daily，不 JOIN 其他表（避免超时）
+                sql = f"""
+                    SELECT 
+                        stock_code,
+                        to_str(trade_date, 'yyyy-MM-dd') AS trade_date,
+                        open,
+                        high,
+                        low,
+                        close,
+                        prev_close,
+                        volume,
+                        amount,
+                        adj_factor
+                    FROM stock_daily
+                    WHERE trade_date BETWEEN '{start_str}' AND '{end_str}'
+                        AND volume > 0
+                        AND close IS NOT NULL
+                    ORDER BY 1, 2
+                """
+                
+                # 使用 QuestDBManager 查询
+                df_pl = self.questdb_manager.query(sql)
+                
+                if df_pl.is_empty():
+                    self._logger.warning(f"[QuestDB] 查询结果为空: {start_str} 到 {end_str}")
+                    return pd.DataFrame()
+                
+                # 转换为 Pandas
+                result = df_pl.to_pandas(use_pyarrow_extension_array=False)
+                
+                # 填充缺失值（简化版，不依赖 JOIN 的列）
+                fill_cols = ['is_limit_up', 'is_limit_down', 'is_suspended', 'is_st', 'is_kc', 'is_cy']
+                for col in fill_cols:
+                    if col not in result.columns:
+                        result[col] = 0
+                    else:
+                        result[col] = result[col].fillna(0)
+                
+                t_questdb_end = time.perf_counter()
+                total_time = t_questdb_end - t_questdb_start
+                print(f"向量化加载完成 (QuestDB): {len(result)} 行数据，总耗时: {total_time:.2f}s")
+                self._logger.info(f"[性能] QuestDB 查询耗时: {total_time:.2f}s, 行数: {len(result)}")
+                
+                # 缓存结果
+                self._add_to_cache(cache_key, result)
+                return result
+                
+            except Exception as e:
+                self._logger.error(f"[DB] QuestDB 查询失败，回退到 SQL: {e}", exc_info=True)
                 # 失败后继续执行下方的 SQL 逻辑...
 
         # --- 回退路径：使用 SQL 查询（DuckDB 或 SQLite）---
@@ -922,45 +1167,42 @@ class OptimizedStockDataQuery:
             
             if conditions:
                 query = base_query + " AND " + " AND ".join(conditions)
-            
+            else:
+                query = base_query
+
             # 【性能监控】查询 stock_daily 和 stock_info
             t_sql_start = time.perf_counter()
-            result = self._query_df(query, params)
+            # 【重要修复】强制使用 DuckDB 连接执行回退查询，而不是使用 self._query_df
+            # 因为 _query_df 可能会再次路由到 QuestDB
+            if self.conn:
+                result = self.conn.execute(query, params).df()
+            else:
+                result = self._query_df(query, params)
             t_sql_end = time.perf_counter()
-            self._logger.info(f"[性能] SQL 查询耗时: {t_sql_end - t_sql_start:.2f}s, 行数: {len(result)}")
+            self._logger.info(f"[性能] SQL 查询耗时 (回退路由到 DuckDB): {t_sql_end - t_sql_start:.2f}s, 行数: {len(result)}")
             
             if result.empty:
                 print(f"向量化加载完成: 0 行数据")
                 return pd.DataFrame()
             
-            # 3. 加载 Limit Status (改用全量内存过滤，耗时 2s -> 0s)
+            # 3. 加载 Limit Status (优化：使用 Polars 避免 to_pandas 开销)
             t_limit_start = time.perf_counter()
             
-            # 获取全量缓存 (第一次慢，之后 0ms)
-            full_limit = self._get_limit_status_from_memory_cache()
-            
-            # 内存切片 (极速)
-            if not full_limit.empty:
-                # 确保 trade_date 是字符串或一致的类型
-                # 假设 full_limit['trade_date'] 已经是字符串
-                mask = (full_limit['trade_date'] >= start_str) & (full_limit['trade_date'] <= end_str)
-                limit_df = full_limit[mask]
-            else:
-                limit_df = pd.DataFrame()
+            # 【性能优化】使用 Polars 读取，避免 to_pandas 的 3s 开销
+            limit_pl = self._read_stock_limit_status_polars(start_date=start_str, end_date=end_str)
             
             t_limit_end = time.perf_counter()
-            self._logger.info(f"[性能] Limit Status 内存切片耗时: {t_limit_end - t_limit_start:.4f}s")
+            self._logger.info(f"[性能] Limit Status Polars 查询耗时: {t_limit_end - t_limit_start:.4f}s, 行数: {len(limit_pl)}")
             
             # 【性能优化】优化 merge 操作
             t_merge_start = time.perf_counter()
-            if not limit_df.empty:
-                # 优化：只选择需要的列，减少内存拷贝
-                limit_cols = ['stock_code', 'trade_date', 'is_limit_up', 'is_limit_down', 'is_suspended']
-                limit_subset = limit_df[limit_cols].copy()
+            if len(limit_pl) > 0:
+                # 转换为 Pandas 用于 merge（仅在需要时转换）
+                limit_df = limit_pl.to_pandas()
                 
                 # 使用 sort=False 避免排序，提升性能
                 result = result.merge(
-                    limit_subset,
+                    limit_df,
                     on=['stock_code', 'trade_date'],
                     how='left',
                     sort=False  # 避免排序，提升性能
@@ -1250,6 +1492,7 @@ class OptimizedStockDataQuery:
             self._logger.error(f"批量查询股票池失败: {e}", exc_info=True)
             return None
     
+    @capture_error(category="database")
     def get_stock_pool(self, date, filters=None, use_cache=True, columns=None):
         """
         获取指定日期的股票池
@@ -1502,7 +1745,7 @@ class OptimizedStockDataQuery:
         
         # 【性能优化】只在需要修改时才 copy，避免不必要的内存分配
         need_copy = False
-        cols_to_check = ['is_limit_up', 'is_limit_down', 'is_suspended', 'is_st', 'ma60']
+        cols_to_check = ['is_limit_up', 'is_limit_down', 'is_suspended', 'is_st']
         for col in cols_to_check:
             if col not in df.columns:
                 need_copy = True
@@ -1554,17 +1797,6 @@ class OptimizedStockDataQuery:
         else:
             result['is_st'] = result['is_st'].fillna(False)
         
-        # 4. 补全 ma60（60日均线）- 直接向量化填充 0，不再使用 rolling(60) 计算
-        if 'ma60' not in result.columns:
-            # 【性能优化】直接向量化填充 0，避免复杂的 rolling 计算
-            result['ma60'] = 0.0
-            if 'ma60' not in self.__class__._logged_warnings:
-                self.__class__._logged_warnings.add('ma60')
-                self._logger.warning(f"字段 'ma60' 缺失，已使用默认值 0.0 填充（不再计算 rolling(60)）")
-        else:
-            # ma60 存在，直接 fillna（fillna 对没有 NaN 的列也很快）
-            result['ma60'] = result['ma60'].fillna(0.0)
-        
         return result
     
     def _add_to_cache(self, key, value):
@@ -1577,7 +1809,8 @@ class OptimizedStockDataQuery:
             del self._cache[oldest_key]
         self._cache[key] = value
     
-    def get_stock_history(self, stock_code, start_date, end_date, use_cache=True, columns=None):
+    @capture_error(category="database")
+    def get_stock_history(self, stock_code: str, start_date: str, end_date: str, use_cache: bool = True, columns=None):
         """
         CHANGED: 只取所需列，避免 SELECT *
         """
@@ -1731,6 +1964,7 @@ class OptimizedStockDataQuery:
         query = f"SELECT {column_str} FROM stock_info WHERE stock_code = ?"
         return self._query_df(query, [stock_code])
     
+    @capture_error(category="database")
     def preload_backtest_data(self, start_date: str, end_date: str) -> None:
         """
         CHANGED: 预加载回测期间的所有数据到内存
@@ -1887,6 +2121,46 @@ class OptimizedStockDataQuery:
         except Exception as e:
             self._logger.error(f"[DB] 读取 stock_limit_status 失败: {e}", exc_info=True)
             return pd.DataFrame(columns=['stock_code', 'trade_date', 'is_limit_up', 'is_limit_down', 'is_suspended'])
+    
+    def _read_stock_limit_status_polars(self, start_date: str = None, end_date: str = None,
+                                        stock_codes: List[str] = None, trade_date: str = None):
+        """
+        [新增] 返回 Polars DataFrame（避免 to_pandas 开销）
+        """
+        try:
+            import polars as pl
+            
+            parquet_dir = getattr(Config, 'PARQUET_DIR', 'parquet_data')
+            parquet_file = Path(parquet_dir) / 'stock_limit_status.parquet'
+            parquet_path = str(parquet_file.resolve()).replace('\\', '/')
+            
+            if not parquet_file.exists():
+                return pl.DataFrame()
+            
+            lazy_df = pl.scan_parquet(parquet_path)
+            
+            if trade_date:
+                lazy_df = lazy_df.filter(pl.col('trade_date') == trade_date)
+            elif start_date and end_date:
+                lazy_df = lazy_df.filter(
+                    (pl.col('trade_date') >= start_date) & 
+                    (pl.col('trade_date') <= end_date)
+                )
+            elif start_date:
+                lazy_df = lazy_df.filter(pl.col('trade_date') >= start_date)
+            elif end_date:
+                lazy_df = lazy_df.filter(pl.col('trade_date') <= end_date)
+            
+            if stock_codes:
+                lazy_df = lazy_df.filter(pl.col('stock_code').is_in(stock_codes))
+            
+            lazy_df = lazy_df.select(['stock_code', 'trade_date', 'is_limit_up', 'is_limit_down', 'is_suspended'])
+            
+            return lazy_df.collect()
+            
+        except Exception as e:
+            self._logger.error(f"[DB] 读取 stock_limit_status (Polars) 失败: {e}")
+            return pl.DataFrame()
     
     def _get_limit_status_from_memory_cache(self) -> pd.DataFrame:
         """

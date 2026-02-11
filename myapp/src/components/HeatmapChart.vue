@@ -9,7 +9,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick, computed, markRaw } from 'vue';
 import * as echarts from 'echarts';
 import type { EChartsOption } from 'echarts';
 import type { MonthlyReturn } from '../types/backtest';
@@ -75,7 +75,7 @@ const yearRange = computed(() => {
 function initChart() {
   if (!chartContainer.value) return;
 
-  chartInstance = echarts.init(chartContainer.value);
+  chartInstance = markRaw(echarts.init(chartContainer.value));
   updateChart();
 }
 

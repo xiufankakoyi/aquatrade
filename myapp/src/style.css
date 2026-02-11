@@ -1,11 +1,58 @@
 /* 移除所有 Vite 默认样式，替换为你项目需要的样式 */
 /* 你 index.html 中的 <style> 标签内容 */
+:root {
+  /* 深色主题 - TradingView Dark Theme */
+  --bg-primary: #131722;
+  --bg-secondary: #1E222D;
+  --bg-card: #1E222D;
+  --bg-modal: #1E222D;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --border-color: #2A2E39;
+  --border-card: #2A2E39;
+  --accent-primary: #2962FF;
+  --accent-secondary: #2962FF;
+  --success-color: #089981;
+  --warning-color: #f59e0b;
+  --error-color: #F23645;
+  --scrollbar-thumb: #2A2E39;
+  --scrollbar-track: transparent;
+  --nav-link-hover: rgba(41, 98, 255, 0.1);
+  --nav-link-active: rgba(41, 98, 255, 0.1);
+  --table-header: #1E222D;
+}
+
+/* 浅色主题 */
+[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-modal: #ffffff;
+  --text-primary: #1e293b;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border-color: #e2e8f0;
+  --border-card: #e2e8f0;
+  --accent-primary: #8b5cf6;
+  --accent-secondary: #6366f1;
+  --success-color: #10b981;
+  --warning-color: #f59e0b;
+  --error-color: #ef4444;
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-track: transparent;
+  --nav-link-hover: rgba(26, 86, 219, 0.1);
+  --nav-link-active: rgba(26, 86, 219, 0.1);
+  --table-header: #f1f5f9;
+}
+
 body {
   font-family: 'Inter', system-ui, sans-serif;
-  background-color: #0b0e14;
-  color: #e2e8f0;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
   margin: 0;
   padding: 0;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* 全局滚动条样式 - 深色模式美化 */
@@ -16,22 +63,22 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--scrollbar-track);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3f3f46;
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #52525b;
+  background: var(--text-muted);
 }
 
 /* Firefox 滚动条样式 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #3f3f46 transparent;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 .nav-link {
@@ -39,32 +86,40 @@ body {
 }
 
 .nav-link:hover {
-  background-color: rgba(26, 86, 219, 0.1);
+  background-color: var(--nav-link-hover);
 }
 
 .nav-link.active {
-  background-color: rgba(26, 86, 219, 0.1);
-  border-left: 3px solid #1a56db;
+  background-color: var(--nav-link-active);
+  border-left: 3px solid var(--accent-primary);
 }
 
 .card {
   transition: all 0.3s ease;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: 6px;
 }
 
 .card:hover {
   box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
 }
 
-.metric-value {
+.metric-value,
+.amount,
+.percentage,
+.number {
+  font-family: 'JetBrains Mono', 'Roboto Mono', monospace;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' on;
 }
 
 .positive {
-  color: #10b981;
+  color: var(--success-color);
 }
 
 .negative {
-  color: #ef4444;
+  color: var(--error-color);
 }
 
 .chart-container {
@@ -79,7 +134,7 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(255, 255, 255, 0.8);
+  background-color: rgba(0, 0, 0, 0.8);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -87,11 +142,11 @@ body {
 }
 
 .spinner {
-  border: 4px solid rgba(0, 0, 0, 0.1);
+  border: 4px solid var(--border-color);
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  border-left-color: #1a56db;
+  border-left-color: var(--accent-primary);
   animation: spin 1s linear infinite;
 }
 
@@ -112,7 +167,7 @@ body {
 .table-header {
   position: sticky;
   top: 0;
-  background-color: #f1f5f9;
+  background-color: var(--table-header);
   z-index: 1;
 }
 
@@ -150,14 +205,15 @@ body {
 }
 
 .modal {
-  background-color: white;
-  border-radius: 8px;
+  background-color: var(--bg-modal);
+  border-radius: 6px;
   width: 90%;
   max-width: 1200px;
   max-height: 90vh;
   overflow-y: auto;
   transform: translateY(-20px);
   transition: all 0.3s ease;
+  border: 1px solid var(--border-card);
 }
 
 .modal-overlay.active .modal {
@@ -166,7 +222,7 @@ body {
 
 .modal-header {
   padding: 16px 24px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-color);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -175,7 +231,7 @@ body {
 .modal-title {
   font-size: 18px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .modal-close {
@@ -183,12 +239,12 @@ body {
   border: none;
   font-size: 20px;
   cursor: pointer;
-  color: #94a3b8;
+  color: var(--text-secondary);
   transition: color 0.2s ease;
 }
 
 .modal-close:hover {
-  color: #ef4444;
+  color: var(--error-color);
 }
 
 .modal-body {
@@ -197,7 +253,7 @@ body {
 
 .modal-footer {
   padding: 16px 24px;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--border-color);
   display: flex;
   justify-content: flex-end;
   gap: 12px;
@@ -213,23 +269,23 @@ body {
 }
 
 .modal-btn-primary {
-  background-color: #1a56db;
-  color: white;
+  background-color: var(--accent-primary);
+  color: var(--text-primary);
   border: none;
 }
 
 .modal-btn-primary:hover {
-  background-color: #1e40af;
+  background-color: var(--accent-secondary);
 }
 
 .modal-btn-secondary {
-  background-color: #f1f5f9;
-  color: #1e293b;
-  border: none;
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
 }
 
 .modal-btn-secondary:hover {
-  background-color: #e2e8f0;
+  background-color: var(--border-color);
 }
 
 /* K线图容器 */
@@ -242,16 +298,17 @@ body {
 
 /* 持有周期信息 */
 .holding-period-info {
-  background-color: #f8fafc;
-  border-radius: 8px;
+  background-color: var(--bg-secondary);
+  border-radius: 6px;
   padding: 16px;
   margin-bottom: 24px;
+  border: 1px solid var(--border-color);
 }
 
 .holding-period-title {
   font-size: 16px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--text-primary);
   margin-bottom: 8px;
 }
 
@@ -268,14 +325,14 @@ body {
 
 .holding-period-label {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--text-muted);
   margin-bottom: 4px;
 }
 
 .holding-period-value {
   font-size: 14px;
   font-weight: 500;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 /* 响应式调整 */

@@ -311,7 +311,7 @@ def run_backtest_background(
                         _emit_large_data(socketio_instance, sid, 'risk_update', data, logger)
 
                 elif t == 'stream_complete':
-                    socketio_instance.emit('stream_complete', {"message": "回测完成"}, to=sid)
+                    socketio_instance.emit('stream_complete', data or {"message": "回测完成"}, to=sid)
                     logger.info("后台线程回测完成")
                     return
             except Exception as emit_err:

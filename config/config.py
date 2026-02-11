@@ -1,52 +1,63 @@
 """
-配置文件
+配置文件 (config/config.py)
+聚合 Setting 模块与动态生成的路径配置。
 """
 import os
+from pathlib import Path
+from config.setting import Setting
 
 class Config:
-    """配置类"""
-    # 1. 获取项目根目录
-    # config/config.py -> config/ -> AquaTrade/
+    """配置类 - 统一引用 Setting 模块"""
+    # 1. 基础路径配置
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     
-    # 2. 数据库路径：基于项目根目录动态生成
-    # 优先使用环境变量，否则使用默认路径
-    DB_PATH = os.environ.get('DB_PATH') or os.path.join(
-        BASE_DIR, 'data_svc', 'database', 'stock_data.db'
+    # 2. 数据库配置
+    # 优先使用环境变量路径，否则使用默认
+    DB_PATH = Setting.DB_PATH or os.path.join(
+        BASE_DIR, 'data', 'database', 'stock_data.db'
     )
+    DB_BACKEND = Setting.DB_BACKEND
     
-    # 3. Parquet 数据目录
-    PARQUET_DIR = os.path.join(BASE_DIR, 'parquet_data')
+    # 3. 核心目录
+    PARQUET_DIR = os.path.join(BASE_DIR, 'data', 'parquet_data')
+    SPIDER_DATA_DIR = os.path.join(BASE_DIR, 'data', 'spider_data')
+    LOGS_DIR = os.path.join(BASE_DIR, 'logs')
+    MODELS_DIR = os.path.join(BASE_DIR, 'models')
     
-    # 4. 爬虫数据目录
-    SPIDER_DATA_DIR = os.path.join(BASE_DIR, 'data_svc', 'spider', 'data')
+    # 4. 核心 Token & API Key (从 Setting 读取)
+    TUSHARE_TOKEN = Setting.TUSHARE_TOKEN
+    DRAGON_USERNAME = Setting.DRAGON_USERNAME
+    DRAGON_PASSWORD = Setting.DRAGON_PASSWORD
+    DRAGON_TOKEN = Setting.DRAGON_TOKEN
+    FEISHU_WEBHOOK = Setting.FEISHU_WEBHOOK
     
-    # 股票过滤配置
-    EXCLUDE_ST = True  # 排除 ST 股票
-    EXCLUDE_KC = True  # 排除科创板
-    EXCLUDE_CY = True  # 排除创业板
+    # LLM 配置
+    LLM_API_BASE = Setting.LLM_API_BASE
+    LLM_API_KEY = Setting.LLM_API_KEY
+    LLM_MODEL_NAME = Setting.LLM_MODEL_NAME
+    LLM_TEMPERATURE = 0.1
+    LLM_MAX_TOKENS = 4096
     
-    # 市值过滤
-    MIN_MARKET_CAP = 20_000  # 最小市值（万元）
-    MAX_MARKET_CAP = 5_000_000  # 最大市值（万元）
+    # 5. 策略行情阈值
+    MIN_MARKET_CAP = Setting.MIN_MARKET_CAP
+    MAX_MARKET_CAP = Setting.MAX_MARKET_CAP
+    MIN_PRICE = Setting.MIN_PRICE
+    INITIAL_CAPITAL = Setting.INITIAL_CAPITAL
     
-    # 价格过滤
-    MIN_PRICE = 5.0  # 最小价格
+    # 过滤开关
+    EXCLUDE_ST = True
+    EXCLUDE_KC = True
+    EXCLUDE_CY = True
     
-    # 交易配置
-    INITIAL_CAPITAL = 1_000_000  # 初始资金（元）
-    COMMISSION_RATE = 0.0005  # CHANGED: 佣金费率（万分之五）
-    MIN_COMMISSION = 5.0  # CHANGED: 最低手续费（元）
-    SELL_TAX = 0.001  # CHANGED: 卖出印花税（千分之一，0.1%）
-    BOARD_LOT = 100  # 每手股数
+    # 交易细则
+    COMMISSION_RATE = 0.0005
+    MIN_COMMISSION = 5.0
+    SELL_TAX = 0.001
+    BOARD_LOT = 100
     
-    # GPU 加速配置
-    USE_GPU_ACCELERATION = os.getenv('USE_GPU', 'false').lower() == 'true'
-    
-    # Redis 配置（用于异步任务队列和消息传递）
+    # 6. 环境/中间件配置
+    USE_GPU_ACCELERATION = Setting.USE_GPU
     REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
     REDIS_TASK_QUEUE = os.getenv('REDIS_TASK_QUEUE', 'aqua_tasks')
     REDIS_NOTIFICATION_CHANNEL_PREFIX = os.getenv('REDIS_NOTIFICATION_CHANNEL_PREFIX', 'aqua_notifications')
-    
-    # Optuna Redis Storage 配置
     OPTUNA_REDIS_STORAGE_URL = os.getenv('OPTUNA_REDIS_STORAGE_URL', 'redis://localhost:6379/0')

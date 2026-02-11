@@ -26,7 +26,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick, markRaw } from 'vue';
 import * as echarts from 'echarts';
 import { fetchLdaTopics, type LdaTopicData } from '../api/backtestApi';
 
@@ -77,7 +77,7 @@ function initChart() {
     chartInstance.dispose();
   }
 
-  chartInstance = echarts.init(chartContainer.value);
+  chartInstance = markRaw(echarts.init(chartContainer.value));
   updateChart();
 }
 

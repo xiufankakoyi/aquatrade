@@ -1,3 +1,80 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  --tv-bg: #131722;
+  --tv-pane-bg: #1c202b;
+  --tv-border: #2a2e39;
+  --tv-text-muted: #787b86;
+  --tv-text-active: #d1d4dc;
+  --tv-green: #089981;
+  --tv-red: #f23645;
+  --tv-blue: #2962ff;
+}
+
+@layer base {
+  body {
+    @apply bg-[#131722] text-[#d1d4dc];
+  }
+}
+
+@layer components {
+  .tv-pane {
+    @apply bg-transparent overflow-hidden flex flex-col relative;
+  }
+
+  .tv-pane-header-flat {
+    @apply absolute top-2 left-3 z-10 flex items-center space-x-2 pointer-events-none;
+  }
+
+  .tv-pane-label {
+    @apply text-[10px] font-bold text-[#787b86] uppercase tracking-[0.2em] opacity-60;
+  }
+
+  .tv-dot-grid {
+    background-image: radial-gradient(#2a2e39 1px, transparent 0);
+    background-size: 24px 24px;
+  }
+
+  .tv-text-mono {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  }
+
+  /* Breathing animation for status lights */
+  @keyframes breathe {
+
+    0%,
+    100% {
+      opacity: 0.4;
+    }
+
+    50% {
+      opacity: 1;
+      transform: scale(1.2);
+    }
+  }
+
+  .animate-breathe {
+    animation: breathe 2s infinite ease-in-out;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2e39;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #363a45;
+}

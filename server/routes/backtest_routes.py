@@ -1,8 +1,11 @@
 """
 回测相关路由
 """
-from flask import Blueprint, request
+from flask import Blueprint, request, Response
 from server.performance_utils import json_response
+import pandas as pd
+import io
+import json
 
 backtest_bp = Blueprint('backtest', __name__, url_prefix='/api')
 
@@ -52,3 +55,99 @@ def run_backtest():
         logger = get_logger(__name__)
         logger.error(f"回测失败: {e}", exc_info=True)
         return json_response({"success": False, "error": str(e)}, status_code=500)
+
+
+@backtest_bp.route('/analyze_report', methods=['POST'])
+def analyze_report():
+    """
+    接收前端发来的回测结果，让 AI 进行分析
+    
+    请求体:
+        {
+            "strategy_id": "ai_gen_12345",
+            "backtest_result": { ...完整的回测结果... }
+        }
+    
+    返回:
+        流式响应，包含进度更新和最终报告
+    """
+    try:
+        from server.services.analysis_service import AnalysisService
+        from server.services.strategy_service import StrategyService
+        from config.logger import get_logger
+        import json
+        
+        logger = get_logger(__name__)
+        
+        data = request.get_json() or {}
+        strategy_id = data.get('strategy_id', '')
+        backtest_result = data.get('backtest_result')
+        
+        if not backtest_result:
+            return json_response(
+                {"success": False, "error": "回测结果不能为空"}, 
+                status_code=400
+            )
+        
+        def generate_report_stream():
+            """生成带有进度更新的流式响应"""
+            # 发送初始进度
+            yield f"progress:{json.dumps({'progress': 0, 'stage': '准备分析数据...'})}\n"
+            
+            # 1. 获取策略源代码 (为了让 AI 结合逻辑看数据)
+            strategy_code = ""
+            if strategy_id:
+                try:
+                    strategy_service = StrategyService()
+                    yield f"progress:{json.dumps({'progress': 10, 'stage': '获取策略源代码...'})}\n"
+                    strategy_code = strategy_service.get_strategy_code(strategy_id)
+                    if not strategy_code:
+                        logger.warning(f"无法获取策略 {strategy_id} 的源代码，将仅基于回测数据进行分析")
+                except Exception as e:
+                    logger.warning(f"获取策略源代码失败: {e}，将仅基于回测数据进行分析")
+            
+            yield f"progress:{json.dumps({'progress': 25, 'stage': '数据预处理...'})}\n"
+            
+            # 2. 生成分析报告
+            analysis_service = AnalysisService()
+            
+            # 从回测结果中获取策略名称
+            strategy_name = (
+                backtest_result.get('strategyInfo', {}).get('name') or 
+                strategy_id or 
+                '未知策略'
+            )
+            
+            logger.info(f"开始生成策略分析报告: {strategy_name} (ID: {strategy_id})")
+            
+            yield f"progress:{json.dumps({'progress': 50, 'stage': 'AI 深度分析中...'})}\n"
+            
+            # 开启真正的流式文本生成
+            for chunk in analysis_service.generate_review_stream(
+                strategy_name=strategy_name,
+                backtest_result=backtest_result,
+                strategy_code=strategy_code
+            ):
+                yield f"stream:{json.dumps({'content': chunk})}\n"
+            
+            yield f"progress:{json.dumps({'progress': 100, 'stage': '分析完成'})}\n"
+        
+        # 返回流式响应
+        return Response(
+            generate_report_stream(),
+            mimetype='text/plain',
+            headers={
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no'
+            }
+        )
+        
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"生成分析报告失败: {e}", exc_info=True)
+        return json_response(
+            {"success": False, "error": f"生成分析报告失败: {str(e)}"}, 
+            status_code=500
+        )

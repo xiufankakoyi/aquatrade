@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  questdb:
+    image: questdb/questdb:latest
+    container_name: questdb_aquatrade
+    ports:
+      - "9000:9000"
+      - "8812:8812"
+      - "9009:9009"
+    environment:
+      - QDB_INSTANCE_NAME=aquatrade
+    sysctls:
+      - vm.max_map_count=1048576
+    volumes:
+      - ./qdb_data:/var/lib/questdb

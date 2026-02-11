@@ -22,7 +22,7 @@
             <span>总览看板</span>
           </router-link>
           <router-link
-            to="/strategy"
+            :to="`/strategy/${dashboardStore.selectedStrategyId || ''}`"
             class="flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
             :class="$route.path.startsWith('/strategy') ? 'bg-indigo-500/20 text-indigo-400' : 'text-slate-300 hover:bg-slate-800'"
           >
@@ -52,6 +52,22 @@
           >
             <i class="fas fa-comments w-5"></i>
             <span>股票风评</span>
+          </router-link>
+          <router-link
+            to="/strategy-generator"
+            class="flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            :class="$route.path === '/strategy-generator' ? 'bg-indigo-500/20 text-indigo-400' : 'text-slate-300 hover:bg-slate-800'"
+          >
+            <i class="fas fa-robot w-5"></i>
+            <span>AI 策略生成器</span>
+          </router-link>
+          <router-link
+            to="/dragon-eye"
+            class="flex items-center space-x-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors"
+            :class="$route.path === '/dragon-eye' ? 'bg-indigo-500/20 text-indigo-400' : 'text-slate-300 hover:bg-slate-800'"
+          >
+            <i class="fas fa-dragon w-5"></i>
+            <span>DragonEye 龙虎榜</span>
           </router-link>
         </div>
       </div>
@@ -97,5 +113,8 @@
 </template>
 
 <script setup lang="ts">
+import { useDashboardStore } from '../../store/dashboardStore';
+
+const dashboardStore = useDashboardStore();
 </script>
 

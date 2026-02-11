@@ -5,7 +5,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick, markRaw } from 'vue';
 import * as echarts from 'echarts';
 import type { EChartsOption } from 'echarts';
 
@@ -26,7 +26,7 @@ let chartInstance: echarts.ECharts | null = null;
 
 function initChart() {
   if (!chartContainer.value) return;
-  chartInstance = echarts.init(chartContainer.value);
+  chartInstance = markRaw(echarts.init(chartContainer.value));
   updateChart();
 }
 

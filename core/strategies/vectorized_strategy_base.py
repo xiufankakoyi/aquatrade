@@ -41,7 +41,7 @@ class VectorizedStrategyBase(StrategyBase):
     3. 利用 Pandas/NumPy 的向量化操作，性能提升 100-1000 倍
     """
     
-    strategy_name = "向量化策略基类"
+    # Base class for vectorized strategies
     
     def __init__(self, name: str | None = None):
         super().__init__(name)

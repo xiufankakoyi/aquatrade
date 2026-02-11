@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { ref, computed } from 'vue';
+import { ref, computed, shallowRef } from 'vue';
 import { apiService } from '../services/api';
 import { useSocketIO } from '../composables/useSocketIO';
 import type { KlineData } from '../types/api';
@@ -13,7 +13,7 @@ export interface TradeMarker {
 }
 
 export const useKlineStore = defineStore('kline', () => {
-  const klineData = ref<KlineData[]>([]);
+  const klineData = shallowRef<KlineData[]>([]);
   const selectedSymbol = ref<string>('');
   const tradeMarkers = ref<TradeMarker[]>([]);
   const isLoading = ref(false);
@@ -43,14 +43,15 @@ export const useKlineStore = defineStore('kline', () => {
     }
   }
 
+  function setSelectedSymbol(symbol: string) {
+    selectedSymbol.value = symbol;
+  }
+
   function addTradeMarker(marker: TradeMarker) {
     const existingIndex = tradeMarkers.value.findIndex(
       m => m.date === marker.date && m.action === marker.action
     );
     if (existingIndex >= 0) {
-      tradeMarkers.value[existingIndex] = marker;
-    } else {
-      tradeMarkers.value.push(marker);
     }
   }
 
@@ -60,8 +61,6 @@ export const useKlineStore = defineStore('kline', () => {
 
   function clearKlineData() {
     klineData.value = [];
-    selectedSymbol.value = '';
-    dateRange.value = null;
   }
 
   const markersForDate = computed(() => {
@@ -82,6 +81,6 @@ export const useKlineStore = defineStore('kline', () => {
     clearTradeMarkers,
     clearKlineData,
     markersForDate,
+    setSelectedSymbol,
   };
 });
-

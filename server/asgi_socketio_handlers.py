@@ -35,6 +35,8 @@ def register_handlers(sio):
     Args:
         sio: socketio.AsyncServer 实例
     """
+    print(f"\n{'='*80}\n[SOCKET.IO] Registering event handlers...\n{'='*80}\n")
+    
     from config.logger import get_logger
     logger = get_logger(__name__)
     
@@ -45,6 +47,7 @@ def register_handlers(sio):
     async def connect(sid, environ):
         """客户端连接事件"""
         try:
+            print(f"\n{'='*80}\n[SOCKET.IO] Client connected! sid={sid}\n{'='*80}\n")
             logger.debug(f"Socket.IO 客户端已连接: {sid}")
         except Exception as e:
             logger.error(f"Socket.IO 连接处理失败: {e}")
@@ -69,6 +72,8 @@ def register_handlers(sio):
         
         注意：回测逻辑本身可能还是同步的，需要在后台线程中运行
         """
+        print(f"\n\n{'='*80}\n[BACKTEST] Event handler called! sid={sid}\n{'='*80}\n\n")
+        
         from threading import Event
         from server.visualization_api import BacktestVisualizationAPI
         from config.logger import get_logger
@@ -152,8 +157,8 @@ def register_handlers(sio):
                     # 原问题：逐条发送导致网络拥塞和事件循环压力
                     # 解决方案：使用缓冲池，每 100ms 或满 50条 发送一次
                     # ==============================================================================
-                    BATCH_INTERVAL = 0.1  # 100ms 批处理间隔
-                    BATCH_SIZE = 50  # 每批最多 50 条消息
+                    BATCH_INTERVAL = 0.05  # 50ms 批处理间隔（加快感知流式）
+                    BATCH_SIZE = 20  # 每批最多 20 条消息（使图表更新更平滑）
                     
                     # 缓冲池：按事件类型分类缓冲
                     buffers = {
@@ -347,7 +352,7 @@ def register_handlers(sio):
                             elif t == 'stream_complete':
                                 flush_buffers()  # 完成前刷新所有缓冲
                                 asyncio.run_coroutine_threadsafe(
-                                    send_update('stream_complete', {"message": "回测完成"}),
+                                    send_update('stream_complete', update_data or {"message": "回测完成"}),
                                     loop
                                 )
                                 return
@@ -378,14 +383,22 @@ def register_handlers(sio):
                                 len(buffers['daily_equity']) >= BATCH_SIZE):
                                 flush_buffers()
                         
-                        elif t == 'new_trade_engine':
+                        elif t == 'new_trade' or t == 'new_trade_engine':
+                            # 【修复】处理从 visualization_api.py 转换后的 new_trade 事件
+                            # visualization_api.py 已经将 new_trade_engine 转换为 new_trade
                             # 加入交易缓冲池
                             buffers['new_trade'].append(update_data)
+                            
+                            # 调试：记录收到的 new_trade 事件
+                            logger.debug(f"[STREAM] 收到 new_trade 事件 #{update_count}: symbol={update_data.get('symbolCode')}")
                             
                             # 检查是否需要刷新缓冲
                             if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
                                 len(buffers['new_trade']) >= BATCH_SIZE):
                                 flush_buffers()
+                        
+                        elif 'new_trade_engine' == 'disabled_legacy_check': # placeholder to keep structure aligned if needed
+                            pass
                         
                         elif t == 'signal':
                             # 加入信号缓冲池
@@ -431,13 +444,30 @@ def register_handlers(sio):
                         loop
                     )
                 finally:
-                    # 确保所有缓冲都被刷新
+                    # 【关键修复】确保所有资源被立即释放
                     try:
                         flush_buffers()
                     except Exception:
                         pass
+                    
+                    # 显式清理 API 实例和数据查询对象
+                    try:
+                        if 'api' in locals():
+                            # 清理预加载数据
+                            if hasattr(api, 'data_query') and hasattr(api.data_query, '_preloaded_data_pl'):
+                                api.data_query._preloaded_data_pl = None
+                            if hasattr(api, 'data_query') and hasattr(api.data_query, '_cache'):
+                                api.data_query._cache.clear()
+                            # 清除 API 引用
+                            del api
+                    except Exception as e:
+                        logger.warning(f"清理 API 资源时出错: {e}")
+                    
+                    # 立即从活跃回测中移除
                     if sid in active_backtests:
                         del active_backtests[sid]
+                    
+                    logger.info(f"回测资源已清理，可以立即开始新的回测")
             
             # 在后台线程中运行
             await loop.run_in_executor(None, run_backtest)
@@ -458,6 +488,50 @@ def register_handlers(sio):
             del active_backtests[sid]
         else:
             await sio.emit('backtest_cancel_ack', {"message": "当前没有正在运行的回测"}, room=sid)
-    
-    logger.info("ASGI SocketIO 事件处理器已注册")
+
+    @sio.event
+    async def request_kline(sid, data):
+        """
+        请求 K 线数据（异步版本）
+        解决由于切换到 ASGI 后 request_kline 事件未处理导致的 K 线空白问题
+        """
+        symbol_code = data.get('symbol_code')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        request_id = data.get('request_id')
+
+        if not symbol_code:
+            await sio.emit('kline_data', {"error": "缺少 symbol_code", "request_id": request_id}, room=sid)
+            return
+
+        logger.debug(f"📈 [SOCKET] 请求 K 线 {symbol_code} | {start_date} ~ {end_date}")
+        
+        try:
+            from server.visualization_api import BacktestVisualizationAPI
+            # 在后台线程中运行数据库查询，避免阻塞事件循环
+            def fetch_kline():
+                api_instance = BacktestVisualizationAPI()
+                # 注意：visualization_api.py 内部会调用 _normalize_symbol_code
+                history = api_instance.get_symbol_kline(symbol_code, start_date, end_date)
+                symbol_name = api_instance.stock_info_map.get(api_instance._normalize_symbol_code(symbol_code), symbol_code)
+                return history, symbol_name
+
+            loop = asyncio.get_event_loop()
+            history, symbol_name = await loop.run_in_executor(None, fetch_kline)
+
+            await sio.emit('kline_data', {
+                "request_id": request_id,
+                "symbol_code": symbol_code,
+                "symbolCode": symbol_code,
+                "symbol_name": symbol_name,
+                "data": history
+            }, room=sid)
+        except Exception as e:
+            logger.error(f"处理 request_kline 失败: {e}", exc_info=True)
+            await sio.emit('kline_data', {
+                "error": str(e),
+                "request_id": request_id
+            }, room=sid)
+
+    logger.info("ASGI SocketIO 事件处理器已注册 (包含 request_kline)")
 

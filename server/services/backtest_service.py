@@ -59,7 +59,8 @@ class BacktestService:
                         'date': data.get('date'),
                         'total_value': data.get('strategyReturn', 0)
                     })
-                elif update_type == 'new_trade_engine':
+                elif update_type == 'new_trade' or update_type == 'new_trade_engine':
+                    # CHANGED: 监听正确的事件类型，同时兼容两种事件名
                     # CHANGED: 收集完整的交易记录，包括所有字段
                     trade = {
                         'date': data.get('date'),
@@ -70,7 +71,10 @@ class BacktestService:
                         'commission': data.get('commission', 0),
                         'entry_date': data.get('entry_date'),
                         'exit_date': data.get('exit_date'),
-                        'position_id': data.get('position_id')
+                        'position_id': data.get('position_id'),
+                        'profit_loss': data.get('profit_loss', 0),
+                        'roi': data.get('roi'),
+                        'holding_days': data.get('holding_days')
                     }
                     trades_log.append(trade)
                 elif update_type == 'final_metrics':
@@ -100,7 +104,7 @@ class BacktestService:
             
             # 调用转换函数
             return self.convert_backtest_results(
-                results_df, trades_log, strategy.name, start_date, end_date
+                results_df, trades_log, strategy_name, start_date, end_date
             )
         except Exception as e:
             print(f"运行回测错误: {e}")

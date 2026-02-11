@@ -110,6 +110,19 @@ def ensure_indexes(conn: sqlite3.Connection, defer_analyze: bool = True) -> None
         "CREATE INDEX IF NOT EXISTS idx_stock_daily_volume ON stock_daily(volume) WHERE volume > 0",
 
         "CREATE INDEX IF NOT EXISTS idx_stock_daily_date_mv_volume ON stock_daily(trade_date, total_mv, volume)",
+        
+        # 7. backtest_results 索引
+        "CREATE INDEX IF NOT EXISTS idx_backtest_results_strategy ON backtest_results(strategy_name)",
+        "CREATE INDEX IF NOT EXISTS idx_backtest_results_created ON backtest_results(created_at)",
+        
+        # 8. trade_records 索引
+        "CREATE INDEX IF NOT EXISTS idx_trade_records_backtest ON trade_records(backtest_id)",
+        "CREATE INDEX IF NOT EXISTS idx_trade_records_stock ON trade_records(stock_code)",
+        "CREATE INDEX IF NOT EXISTS idx_trade_records_date ON trade_records(date)",
+        
+        # 9. optimization_results 索引
+        "CREATE INDEX IF NOT EXISTS idx_optimization_backtest ON optimization_results(backtest_id)",
+        "CREATE INDEX IF NOT EXISTS idx_optimization_strategy ON optimization_results(strategy_name)",
     ]
     
     for index_sql in indexes:
@@ -226,6 +239,68 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
                 date DATE NOT NULL,
                 close REAL NOT NULL,
                 UNIQUE(code, date)
+            )
+        """)
+    
+    # 检查 backtest_results 表是否存在
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='backtest_results'")
+    if cur.fetchone() is None:
+        print("[DB] 创建 backtest_results 表...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_name TEXT NOT NULL,
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                initial_capital REAL NOT NULL,
+                final_capital REAL NOT NULL,
+                total_return REAL NOT NULL,
+                annual_return REAL NOT NULL,
+                max_drawdown REAL NOT NULL,
+                sharpe_ratio REAL NOT NULL,
+                sortino_ratio REAL NOT NULL,
+                win_rate REAL NOT NULL,
+                profit_factor REAL NOT NULL,
+                trade_count INTEGER NOT NULL,
+                params TEXT NOT NULL,  -- JSON 格式的参数
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    
+    # 检查 trade_records 表是否存在
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='trade_records'")
+    if cur.fetchone() is None:
+        print("[DB] 创建 trade_records 表...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS trade_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                backtest_id INTEGER NOT NULL,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT NOT NULL,
+                action TEXT NOT NULL,  -- 'buy' 或 'sell'
+                date DATE NOT NULL,
+                price REAL NOT NULL,
+                shares REAL NOT NULL,
+                amount REAL NOT NULL,
+                profit_loss REAL,
+                FOREIGN KEY (backtest_id) REFERENCES backtest_results(id)
+            )
+        """)
+    
+    # 检查 optimization_results 表是否存在
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='optimization_results'")
+    if cur.fetchone() is None:
+        print("[DB] 创建 optimization_results 表...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS optimization_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_name TEXT NOT NULL,
+                backtest_id INTEGER NOT NULL,
+                params TEXT NOT NULL,  -- JSON 格式的参数
+                score REAL NOT NULL,
+                rank INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (backtest_id) REFERENCES backtest_results(id)
             )
         """)
     

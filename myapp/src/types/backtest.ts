@@ -37,6 +37,7 @@ export interface Trade {
   entry_price?: number;  // 后端返回的 FIFO 匹配的开仓价
   exit_price?: number;  // 后端返回的 FIFO 匹配的平仓价
   roi?: number;  // 后端返回的收益率
+  indicators?: Record<string, any>; // 新增：交易时的指标快照
 }
 
 // 回撤接口

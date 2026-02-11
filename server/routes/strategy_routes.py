@@ -138,3 +138,45 @@ def get_profile(profile_id: int):
         logger.error(f"获取预设失败: {e}", exc_info=True)
         return json_response({"success": False, "error": str(e)}, status_code=500)
 
+
+@strategy_bp.route('/strategies/generate', methods=['POST'])
+def generate_strategy():
+    """使用 AI 生成策略代码"""
+    try:
+        data = request.get_json() or {}
+        user_description = data.get('description', '').strip()
+        strategy_name = data.get('name', 'AI策略').strip()
+        
+        if not user_description:
+            return json_response(
+                {"success": False, "error": "策略描述不能为空"}, 
+                status_code=400
+            )
+        
+        if not strategy_name:
+            strategy_name = "AI策略"
+        
+        from server.services.strategy_generator import StrategyGenerator
+        generator = StrategyGenerator()
+        
+        filename = generator.create_strategy(
+            user_description=user_description,
+            strategy_name=strategy_name
+        )
+        
+        return json_response({
+            "success": True,
+            "data": {
+                "filename": filename,
+                "message": f"策略已成功生成并保存为 {filename}"
+            }
+        })
+        
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"生成策略失败: {e}", exc_info=True)
+        return json_response(
+            {"success": False, "error": f"生成策略失败: {str(e)}"}, 
+            status_code=500
+        )
