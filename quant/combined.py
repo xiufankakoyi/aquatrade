@@ -1,13 +1,15 @@
 import json
 import os
 import csv
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 import requests
 
 class StockDataCleaner:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, output_dir):
         self.data_dir = data_dir
         self.date = os.path.basename(data_dir)
+        self.output_dir = output_dir
         self.data = {}
         self.load_data()
     
@@ -29,12 +31,205 @@ class StockDataCleaner:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     self.data[key] = json.load(f)
     
+    def find_date_data(self, data_list, date_str):
+        """从数据列表中找到指定日期的数据"""
+        for item in data_list:
+            if item.get('date') == date_str:
+                return item
+        return None
+    
+    def get_previous_trading_day(self, date_str):
+        """获取前一个交易日（跳过周末）"""
+        date = datetime.strptime(date_str, '%Y-%m-%d')
+        while True:
+            date -= timedelta(days=1)
+            if date.weekday() < 5:  # 0-4 是周一到周五
+                return date.strftime('%Y-%m-%d')
+    
+    def format_change(self, current, previous):
+        """格式化变化量"""
+        change = current - previous
+        if change > 0:
+            return f"增{change:.0f}家", f"+{change/previous*100:.1f}%" if previous != 0 else "+∞%"
+        elif change < 0:
+            return f"减{abs(change):.0f}家", f"{change/previous*100:.1f}%" if previous != 0 else "-∞%"
+        else:
+            return "持平", "0%"
+    
+    def format_pct_change(self, current, previous):
+        """格式化百分比变化"""
+        change = current - previous
+        if change > 0:
+            return f"+{change*100:.1f}pct"
+        elif change < 0:
+            return f"{change*100:.1f}pct"
+        else:
+            return "持平"
+    
+    def get_trend_description(self, change_pct, metric_type='general'):
+        """根据变化幅度给出趋势描述"""
+        abs_change = abs(change_pct)
+        direction = "回暖" if change_pct > 0 else "降温" if change_pct < 0 else "稳定"
+        
+        if abs_change < 0.05:
+            return f"基本{direction}"
+        elif abs_change < 0.15:
+            return f"小幅{direction}"
+        elif abs_change < 0.30:
+            return f"明显{direction}"
+        elif abs_change < 0.50:
+            return f"大幅{direction}"
+        else:
+            return f"巨幅{direction}"
+    
+    def analyze_theme_changes(self, current_themes, previous_themes):
+        """分析主题变化"""
+        current_dict = {t['name']: t['count'] for t in current_themes}
+        previous_dict = {t['name']: t['count'] for t in previous_themes}
+        
+        continuing = []  # 持续主题
+        new_themes = []  # 新晋主题
+        fading = []  # 退潮主题
+        
+        for name, count in current_dict.items():
+            if name in previous_dict:
+                prev_count = previous_dict[name]
+                change_pct = (count - prev_count) / prev_count if prev_count > 0 else 0
+                continuing.append({
+                    'name': name,
+                    'count': count,
+                    'prev_count': prev_count,
+                    'change_pct': change_pct
+                })
+            else:
+                new_themes.append({'name': name, 'count': count})
+        
+        for name, count in previous_dict.items():
+            if name not in current_dict:
+                fading.append({'name': name, 'prev_count': count})
+        
+        return continuing, new_themes, fading
+    
+    def get_theme_sustained_days(self, data_list, theme_name, current_date):
+        """
+        获取主题的持续天数
+        从当前日期往前数，该主题连续出现的天数
+        """
+        days = 0
+        # 找到当前日期在 data_list 中的索引
+        current_idx = None
+        for i, item in enumerate(data_list):
+            if item.get('date') == current_date:
+                current_idx = i
+                break
+        
+        if current_idx is None:
+            return 1
+        
+        # 往前检查该主题是否连续出现
+        for i in range(current_idx, len(data_list)):
+            item = data_list[i]
+            themes = {t['name'] for t in item.get('themes', [])}
+            if theme_name in themes:
+                days += 1
+            else:
+                break
+        
+        return days
+    
+    def classify_themes_enhanced(self, current_themes, previous_themes, data_list, current_date):
+        """
+        细化的主题分类
+        返回: 主线列表, 支线列表, 新晋列表, 退潮列表
+        """
+        current_dict = {t['name']: t['count'] for t in current_themes}
+        previous_dict = {t['name']: t['count'] for t in previous_themes}
+        
+        main_themes = []  # 主线
+        branch_themes = []  # 支线
+        new_themes = []  # 新晋
+        fading = []  # 退潮
+        
+        # 计算每个当前主题的持续天数
+        for name, count in current_dict.items():
+            sustained_days = self.get_theme_sustained_days(data_list, name, current_date)
+            
+            if name in previous_dict:
+                # 持续主题，根据数量和天数判断是主线还是支线
+                prev_count = previous_dict[name]
+                if count >= 10 or sustained_days >= 3:
+                    main_themes.append({
+                        'name': name,
+                        'count': count,
+                        'days': sustained_days,
+                        'prev_count': prev_count
+                    })
+                else:
+                    branch_themes.append({
+                        'name': name,
+                        'count': count,
+                        'days': sustained_days,
+                        'prev_count': prev_count
+                    })
+            else:
+                # 新晋主题
+                new_themes.append({
+                    'name': name,
+                    'count': count,
+                    'days': 1
+                })
+        
+        # 退潮主题
+        for name, prev_count in previous_dict.items():
+            if name not in current_dict:
+                fading.append({
+                    'name': name,
+                    'prev_count': prev_count,
+                    'count': 0
+                })
+        
+        return main_themes, branch_themes, new_themes, fading
+    
+    def judge_cycle_phase(self, cur, prev, prev2=None):
+        """判断周期阶段"""
+        rise = cur['marketSentiment']['rise']
+        fall = cur['marketSentiment']['fall']
+        broken_ratio = cur['emotionMetrics']['brokenRatio']
+        limit_down = cur['emotionMetrics']['limitDownCount']
+        
+        # 获取连板高度
+        ladder = cur.get('ladder', {})
+        max_height = max([int(k) for k in ladder.keys()]) if ladder else 0
+        
+        # 判断逻辑
+        if fall > 3500 and broken_ratio > 0.40 and limit_down > 50:
+            return "冰点期", ["下跌家数超3500", "炸板率超40%", "跌停数超50只"]
+        elif rise > 4000 and broken_ratio < 0.20:
+            return "高潮期", ["上涨家数超4000", "炸板率低于20%", "情绪高涨"]
+        elif max_height >= 5 and self.is_theme_sustained(cur, prev, prev2):
+            return "发酵期", [f"连板高度突破{max_height}板", "主线题材持续", "赚钱效应扩散"]
+        elif broken_ratio > 0.30 and limit_down > 20:
+            return "退潮期", ["炸板率超30%", "跌停数增加", "接力情绪降温"]
+        elif rise > prev['marketSentiment']['rise'] and broken_ratio < prev['emotionMetrics']['brokenRatio']:
+            return "复苏期", ["上涨家数增加", "炸板率下降", "情绪开始回暖"]
+        else:
+            return "震荡期", ["多空分歧", "方向不明", "等待信号"]
+    
+    def is_theme_sustained(self, cur, prev, prev2=None):
+        """判断主题是否持续"""
+        cur_themes = {t['name'] for t in cur.get('themes', [])[:2]}
+        prev_themes = {t['name'] for t in prev.get('themes', [])[:2]}
+        
+        if cur_themes & prev_themes:  # 有交集
+            return True
+        if prev2:
+            prev2_themes = {t['name'] for t in prev2.get('themes', [])[:2]}
+            if cur_themes & prev2_themes:
+                return True
+        return False
+    
     def generate_market_dashboard(self):
         """生成大盘表 market_dashboard.csv"""
-        # 创建日期文件夹（如果不存在）- 使用数据所在的目录作为输出目录
-        output_dir = self.data_dir
-        
-        # 检查market_sentiment数据是否为空
         market_sentiment = self.data.get('market_sentiment', {})
         data_list = market_sentiment.get('data', [])
         
@@ -43,88 +238,70 @@ class StockDataCleaner:
             return
         
         sentiment_data = data_list[0]
-        
-        # 炸板率和跌停数
         broken_ratio = sentiment_data.get('emotionMetrics', {}).get('brokenRatio', 0)
         limit_down_count = sentiment_data.get('emotionMetrics', {}).get('limitDownCount', 0)
-        
-        # 主线题材（取前两个）
         themes = sentiment_data.get('themes', [])[:2]
         main_themes = ','.join([theme.get('name', '') for theme in themes])
-        
-        # 最高板高度
         ladder = sentiment_data.get('ladder', {})
         max_height = max(map(int, ladder.keys())) if ladder else 0
         
-        # 写入 CSV
-        file_path = os.path.join(output_dir, 'market_dashboard.csv')
+        file_path = os.path.join(self.output_dir, 'market_dashboard.csv')
         with open(file_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(['日期', '炸板率', '跌停数', '主线题材', '最高板高度'])
             writer.writerow([self.date, broken_ratio, limit_down_count, main_themes, max_height])
         
-        print(f"✓ market_dashboard.csv 生成完成 (保存在 {output_dir} 文件夹)")
+        print("✓ market_dashboard.csv 生成完成")
     
     def generate_stock_feature_matrix(self):
         """生成个股因子表 stock_feature_matrix.csv"""
-        # 使用数据所在的目录作为输出目录
-        output_dir = self.data_dir
-        
-        # 检查limit_up数据是否完整
         if 'limit_up' not in self.data or 'data' not in self.data['limit_up'] or 'stocks' not in self.data['limit_up']['data']:
             print(f"⚠️ limit_up数据不完整，跳过生成stock_feature_matrix.csv")
             return
         
-        # 获取龙虎榜数据，用于判断是否有机构买入
         dragon_tiger_data = self.data.get('dragon_tiger', {}).get('data', [])
-        # 获取风险监控数据，用于判断是否监管
         risk_monitor_data = self.data.get('risk_monitor', {}).get('data', [])
-        # 获取涨停过滤数据，用于主要因子
         limit_up_data = self.data['limit_up']['data']['stocks']
         
-        # 构建辅助数据结构
         stock_regulation = set()
         for stock in risk_monitor_data:
-            # 风险监控数据中的code字段是股票代码
             stock_code = stock.get('code', '')
             if stock_code:
                 stock_regulation.add(stock_code)
         
         stock_institution_buy = {}
         for record in dragon_tiger_data:
-            stock_code = record['stockCode']
-            has_institution = any(branch['branchName'] == '机构专用' for branch in record['lhbBranch']['buyBranches'])
-            if has_institution:
-                stock_institution_buy[stock_code] = True
+            try:
+                stock_code = record.get('stockCode', '')
+                lhb_branch = record.get('lhbBranch', {})
+                buy_branches = lhb_branch.get('buyBranches', [])
+                has_institution = any(branch.get('branchName') == '机构专用' for branch in buy_branches)
+                if has_institution and stock_code:
+                    stock_institution_buy[stock_code] = True
+            except:
+                continue
         
-        # 写入 CSV
-        file_path = os.path.join(output_dir, 'stock_feature_matrix.csv')
+        file_path = os.path.join(self.output_dir, 'stock_feature_matrix.csv')
         with open(file_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(['代码', '连板数', '封单额', '换手率', '是否监管', '是否机构买入', '龙头地位标签'])
             
             for stock in limit_up_data:
-                stock_code = stock['code']
-                continue_num = stock['continue_num']
-                order_amount = stock['order_amount']
-                turnover_rate = stock['turnover_rate']
+                stock_code = stock.get('code', '')
+                continue_num = stock.get('continue_num', 0)
+                order_amount = stock.get('order_amount', 0)
+                turnover_rate = stock.get('turnover_rate', 0)
                 is_regulation = '是' if stock_code in stock_regulation else '否'
                 is_institution_buy = '是' if stock_code in stock_institution_buy else '否'
-                
-                # 龙头地位标签
                 tags = stock.get('tags', [])
                 leader_tag = ','.join(tags) if tags else '无'
                 
                 writer.writerow([stock_code, continue_num, order_amount, turnover_rate, is_regulation, is_institution_buy, leader_tag])
         
-        print(f"✓ stock_feature_matrix.csv 生成完成 (保存在 {output_dir} 文件夹)")
+        print("✓ stock_feature_matrix.csv 生成完成")
     
     def generate_ai_daily_brief(self):
         """生成 AI 压缩提示词 ai_daily_brief.txt"""
-        # 使用数据所在的目录作为输出目录
-        output_dir = self.data_dir
-        
-        # 检查market_sentiment数据是否为空
         market_sentiment = self.data.get('market_sentiment', {})
         data_list = market_sentiment.get('data', [])
         
@@ -132,223 +309,441 @@ class StockDataCleaner:
             print(f"⚠️ market_sentiment数据为空，跳过生成ai_daily_brief.txt")
             return
         
-        sentiment_data = data_list[0]
+        # 找到当前日期和前一日期的数据
+        current_data = self.find_date_data(data_list, self.date)
+        prev_date = self.get_previous_trading_day(self.date)
+        previous_data = self.find_date_data(data_list, prev_date)
         
-        # 检查其他必要数据是否存在
+        if not current_data:
+            print(f"⚠️ 未找到当前日期 {self.date} 的数据")
+            return
+        
+        # 检查其他必要数据
         if 'limit_up' not in self.data or 'data' not in self.data['limit_up'] or 'stocks' not in self.data['limit_up']['data']:
             print(f"⚠️ limit_up数据不完整，跳过生成ai_daily_brief.txt")
             return
-            
         if 'sector_heat' not in self.data or 'data' not in self.data['sector_heat']:
             print(f"⚠️ sector_heat数据不完整，跳过生成ai_daily_brief.txt")
             return
-            
         if 'ladder_detail' not in self.data:
             print(f"⚠️ ladder_detail数据缺失，跳过生成ai_daily_brief.txt")
             return
-            
+        
         limit_up_data = self.data['limit_up']['data']['stocks']
         sector_heat = self.data['sector_heat']['data']
         ladder_detail = self.data['ladder_detail']
         
-        # 筛选高标股（连板数 >= 3）
-        high_stocks = [stock for stock in limit_up_data if stock.get('continue_num', 0) >= 3]
-        high_stocks.sort(key=lambda x: x.get('continue_num', 0), reverse=True)
-        
-        # 1. 首板与题材发散
-        first_board_stocks = [stock for stock in limit_up_data if stock.get('continue_num', 0) == 1]
-        # 构建辅助数据结构
-        first_board_by_theme = {} 
-        for stock in first_board_stocks:
-            theme = stock.get('jiuyangongshe_category_name', '其他')
-            if theme not in first_board_by_theme:
-                first_board_by_theme[theme] = []
-            first_board_by_theme[theme].append(stock.get('name', ''))
-        
-        # 获取监管股票列表
-        risk_monitor_data = self.data.get('risk_monitor', {}).get('data', [])
-        regulated_stocks = set()
-        for stock in risk_monitor_data:
-            stock_code = stock.get('code', '')
-            if stock_code:
-                regulated_stocks.add(stock_code)
-        
-        # 2. 涨停梯队完整性
-        # 从ladder_detail获取更完整的梯队信息
-        if not ladder_detail.get('dates'):
-            print(f"⚠️ ladder_detail数据不完整，跳过生成ai_daily_brief.txt")
-            return
-            
-        ladder_boards = ladder_detail['dates'][0].get('boards', [])
-        complete_ladder = {}  
-        for board in ladder_boards:
-            level = board.get('level', '')
-            for stock in board.get('stocks', []):
-                for tag in stock.get('tags', []):
-                    if tag not in complete_ladder:
-                        complete_ladder[tag] = {}
-                    if level not in complete_ladder[tag]:
-                        complete_ladder[tag][level] = []
-                    complete_ladder[tag][level].append(stock.get('name', ''))
-        
-        # 3. 炸板股与亏钱效应
-        broken_ratio = sentiment_data.get('emotionMetrics', {}).get('brokenRatio', 0)
-        broken_count = sentiment_data.get('emotionMetrics', {}).get('brokenCount', 0)
-        
-        # 4. 核心中军走势
-        # 按市值排序，找出每个题材的大市值股票
-        market_cap_by_theme = {} 
-        for stock in limit_up_data:
-            theme = stock.get('jiuyangongshe_category_name', '其他')
-            if theme not in market_cap_by_theme:
-                market_cap_by_theme[theme] = []
-            market_cap_by_theme[theme].append({
-                'name': stock.get('name', ''),
-                'code': stock.get('code', ''),
-                'market_cap': stock.get('total_market_cap', 0.0),
-                'industry': stock.get('industry', '')
-            })
-        # 对每个题材按市值排序，处理可能的None值
-        for theme in market_cap_by_theme:
-            market_cap_by_theme[theme].sort(key=lambda x: x['market_cap'] if x['market_cap'] is not None else 0.0, reverse=True)
-        
-        # 5. 量能与市场风格
-        turnover = sentiment_data.get('turnover', {}).get('value', '未知')
-        
-        # 6. 情绪量化指标
-        promotion_rates = sentiment_data.get('emotionMetrics', {}).get('promotionRates', {})
-        
-        # 7. 轮动信号
-        # 从sector_heat获取板块热度信息
-        main_themes = [theme.get('name', '') for theme in sentiment_data.get('themes', [])[:2]]
-        other_themes = [theme.get('name', '') for theme in sentiment_data.get('themes', [])[2:]]
-        
-        # 构建 brief 内容
         brief = []
         brief.append(f"日期：{self.date}")
-        brief.append(f"市场情绪：上涨家数 {sentiment_data['marketSentiment']['rise']}，下跌家数 {sentiment_data['marketSentiment']['fall']}")
-        brief.append(f"炸板率：{broken_ratio:.2%}，跌停数：{sentiment_data['emotionMetrics']['limitDownCount']}")
-        brief.append(f"主线题材：{','.join(main_themes)}")
-        brief.append(f"最高板高度：{max(map(int, sentiment_data['ladder'].keys()))} 板")
-        brief.append(f"两市成交总额：{turnover}")
         brief.append("")
         
-        # 1. 首板与题材发散
-        brief.append("1. 首板与题材发散：")
-        brief.append(f"   首板总数：{len(first_board_stocks)}")
-        for theme, stocks in first_board_by_theme.items():
-            brief.append(f"   {theme}：{len(stocks)}只")
-        # 检查是否有全新题材
-        all_themes = [theme['name'] for theme in sector_heat]
-        new_themes = [theme for theme in all_themes if theme not in ['商业航天', '脑机接口', '化工']]
-        if new_themes:
-            brief.append(f"   全新题材：{','.join(new_themes)}")
-        brief.append("")
-        
-        # 2. 涨停梯队完整性
-        brief.append("2. 涨停梯队完整性：")
-        for theme in main_themes:
-            if theme in complete_ladder:
-                heights = sorted(complete_ladder[theme].keys(), reverse=True)
-                brief.append(f"   {theme}梯队：")
-                for height in heights:
-                    stocks_str = ','.join(complete_ladder[theme][height][:5])  # 只显示前5只
-                    if len(complete_ladder[theme][height]) > 5:
-                        stocks_str += f"等{len(complete_ladder[theme][height])}只"
-                    brief.append(f"     {height}板：{stocks_str}")
-        brief.append("")
-        
-        # 3. 炸板股与亏钱效应
-        brief.append("3. 炸板股与亏钱效应：")
-        brief.append(f"   炸板总数：{broken_count}")
-        brief.append(f"   炸板率：{broken_ratio:.2%}")
-        # 计算炸板率高低
-        if broken_ratio > 0.2:
-            brief.append(f"   炸板率较高，市场分歧明显")
-        elif broken_ratio < 0.1:
-            brief.append(f"   炸板率较低，市场情绪稳定")
-        else:
-            brief.append(f"   炸板率适中，市场分歧可控")
-        brief.append("")
-        
-        # 4. 核心中军走势
-        brief.append("4. 核心中军走势：")
-        for theme in main_themes:
-            if theme in market_cap_by_theme and market_cap_by_theme[theme]:
-                中军 = market_cap_by_theme[theme][0]
-                brief.append(f"   {theme}中军：{中军['name']}（{中军['code']}），市值：{中军['market_cap']:,}元")
-        brief.append("")
-        
-        # 5. 量能与市场风格
-        brief.append("5. 量能与市场风格：")
-        brief.append(f"   两市成交总额：{turnover}")
-        # 判断量能高低
-        if sentiment_data['turnover']['isHigh']:
-            brief.append(f"   量能较高，市场活跃度提升")
-        else:
-            brief.append(f"   量能适中，市场稳定运行")
-        brief.append(f"   （注：缺少连板指数与同花顺全A指数对比数据）")
-        brief.append("")
-        
-        # 6. 情绪量化指标
-        brief.append("6. 情绪量化指标：")
-        brief.append(f"   1进2晋级率：{promotion_rates.get('1to2', 0)}%")
-        brief.append(f"   2进3晋级率：{promotion_rates.get('2to3', 0)}%")
-        brief.append(f"   3进4晋级率：{promotion_rates.get('3to4', 0)}%")
-        brief.append(f"   高标晋级率：{promotion_rates.get('high', 0)}%")
-        # 计算平均晋级率
-        avg_promotion = sum(promotion_rates.values()) / len(promotion_rates) if promotion_rates else 0
-        if avg_promotion > 80:
-            brief.append(f"   平均晋级率较高，情绪加速")
-        elif avg_promotion < 30:
-            brief.append(f"   平均晋级率较低，情绪降温")
-        else:
-            brief.append(f"   平均晋级率适中，情绪稳定")
-        brief.append("")
-        
-        # 7. 轮动信号
-        brief.append("7. 轮动信号：")
-        if other_themes:
-            brief.append(f"   其他活跃题材：{','.join(other_themes)}")
-        # 从sector_heat获取板块热度变化
-        sector_counts = {item['name']: item['count'] for item in sector_heat}
-        active_sectors = [name for name, count in sector_counts.items() if count >= 5]
-        if active_sectors:
-            brief.append(f"   活跃板块：{','.join(active_sectors)}")
-        brief.append("")
-        
-        # 高标股逻辑
-        brief.append("8. 高标股逻辑：")
-        for stock in high_stocks:
-            stock_brief = f"   {stock['name']}（{stock['code']}）：{stock['continue_num']}连板，"
-            stock_brief += f"涨停类型：{stock['limit_up_type']}，"
-            # 将封单额转换为亿元单位
-            order_amount_yuan = stock['order_amount']
-            order_amount_yiyuan = order_amount_yuan / 1e8
-            stock_brief += f"封单额：{order_amount_yiyuan:.2f}亿元，"
-            stock_brief += f"换手率：{stock['turnover_rate']:.2f}%，"
-            # 使用原始分析内容而非概括
-            analysis = stock.get('jiuyangongshe_analysis', stock['reason_type'])
-            # 简化分析内容，只保留第一行核心逻辑
-            core_analysis = analysis.split('\n')[0]
-            stock_brief += f"概念：{core_analysis}"
+        # ========== 模块1: 市场情绪对比 ==========
+        if previous_data:
+            brief.append("【情绪对比】较前日({})：".format(prev_date))
             
-            # 添加监管标记
+            cur_rise = current_data['marketSentiment']['rise']
+            prev_rise = previous_data['marketSentiment']['rise']
+            rise_change, rise_pct = self.format_change(cur_rise, prev_rise)
+            rise_trend = self.get_trend_description((cur_rise - prev_rise) / prev_rise if prev_rise else 0)
+            brief.append(f"  上涨家数{rise_change}（{rise_pct}）至{cur_rise:.0f}家，赚钱效应{rise_trend}")
+            
+            cur_fall = current_data['marketSentiment']['fall']
+            prev_fall = previous_data['marketSentiment']['fall']
+            fall_change, fall_pct = self.format_change(cur_fall, prev_fall)
+            fall_trend = "抛压减轻" if cur_fall < prev_fall else "抛压增加" if cur_fall > prev_fall else "抛压稳定"
+            brief.append(f"  下跌家数{fall_change}（{fall_pct}）至{cur_fall:.0f}家，{fall_trend}")
+            
+            # 涨跌比
+            cur_ratio = cur_rise / cur_fall if cur_fall > 0 else 999
+            prev_ratio = prev_rise / prev_fall if prev_fall > 0 else 999
+            brief.append(f"  涨跌比：{cur_ratio:.2f}:1（前日{prev_ratio:.2f}:1）")
+            brief.append("")
+        
+        # ========== 模块2: 亏钱效应对比 ==========
+        if previous_data:
+            brief.append("【亏钱效应对比】：")
+            
+            cur_broken = current_data['emotionMetrics']['brokenRatio']
+            prev_broken = previous_data['emotionMetrics']['brokenRatio']
+            broken_change = self.format_pct_change(cur_broken, prev_broken)
+            if cur_broken > prev_broken:
+                broken_judge = "市场分歧增加"
+            elif cur_broken < prev_broken:
+                broken_judge = "市场分歧减小"
+            else:
+                broken_judge = "分歧维持"
+            brief.append(f"  炸板率{cur_broken*100:.2f}%（{broken_change}）→ {broken_judge}")
+            
+            cur_down = current_data['emotionMetrics']['limitDownCount']
+            prev_down = previous_data['emotionMetrics']['limitDownCount']
+            down_change, down_pct = self.format_change(cur_down, prev_down)
+            if cur_down > 20:
+                risk_level = "高风险"
+            elif cur_down > 10:
+                risk_level = "中等风险"
+            elif cur_down > 5:
+                risk_level = "低风险"
+            else:
+                risk_level = "风险可控"
+            brief.append(f"  跌停数{cur_down:.0f}只（{down_change}，{down_pct}）→ {risk_level}")
+            
+            cur_broken_count = current_data['emotionMetrics']['brokenCount']
+            prev_broken_count = previous_data['emotionMetrics']['brokenCount']
+            broken_count_change, _ = self.format_change(cur_broken_count, prev_broken_count)
+            if cur_broken_count > prev_broken_count:
+                discord = "亏钱效应扩散"
+            elif cur_broken_count < prev_broken_count:
+                discord = "亏钱效应收敛"
+            else:
+                discord = "亏钱效应维持"
+            brief.append(f"  断板数{cur_broken_count:.0f}只（{broken_count_change}）→ {discord}")
+            brief.append("")
+        
+        # ========== 模块3: 接力情绪对比 ==========
+        if previous_data:
+            brief.append("【接力情绪对比】：")
+            cur_rates = current_data['emotionMetrics']['promotionRates']
+            prev_rates = previous_data['emotionMetrics']['promotionRates']
+            
+            for rate_key, rate_name in [('1to2', '1进2'), ('2to3', '2进3'), ('high', '高标')]:
+                cur_rate = cur_rates.get(rate_key, 0)
+                prev_rate = prev_rates.get(rate_key, 0)
+                rate_change = cur_rate - prev_rate
+                if rate_change > 0:
+                    rate_desc = "积极"
+                elif rate_change < 0:
+                    rate_desc = "谨慎"
+                else:
+                    rate_desc = "稳定"
+                brief.append(f"  {rate_name}：{cur_rate}%（{rate_change:+.0f}pct）→ {rate_desc}")
+            brief.append("")
+        
+        # ========== 模块4: 主题轮动（细化版） ==========
+        if previous_data:
+            brief.append("【主题轮动】：")
+            cur_themes = current_data.get('themes', [])
+            prev_themes = previous_data.get('themes', [])
+            
+            # 使用细化的主题分类
+            main_themes, branch_themes, new_themes, fading = self.classify_themes_enhanced(
+                cur_themes, prev_themes, data_list, self.date
+            )
+            
+            # 主线（可能有多个）
+            if main_themes:
+                main_str = ", ".join([f"{t['name']}（第{t['days']}日，{t['count']}只）" for t in main_themes])
+                brief.append(f"  主线：{main_str}")
+            
+            # 支线
+            if branch_themes:
+                branch_str = ", ".join([f"{t['name']}（第{t['days']}日，{t['count']}只）" for t in branch_themes])
+                brief.append(f"  支线：{branch_str}")
+            
+            # 新晋
+            if new_themes:
+                new_str = ", ".join([f"{t['name']}（首日，{t['count']}只）" for t in new_themes])
+                brief.append(f"  新晋：{new_str}")
+            
+            # 退潮（显示从多少只降至0只）
+            if fading:
+                fade_str = ", ".join([f"{t['name']}（从{t['prev_count']}只降至0只）" for t in fading])
+                brief.append(f"  退潮：{fade_str}")
+            
+            brief.append("")
+        
+        # ========== 模块5: 周期定位 ==========
+        if previous_data:
+            brief.append("【周期定位】：")
+            phase, reasons = self.judge_cycle_phase(current_data, previous_data)
+            brief.append(f"  当前阶段：{phase}")
+            brief.append(f"  判断理由：")
+            for i, reason in enumerate(reasons, 1):
+                brief.append(f"    {i}. {reason}")
+            brief.append("")
+        
+        # ========== 模块6: 梯队结构分析 ==========
+        brief.append("【梯队结构】：")
+        if ladder_detail.get('dates'):
+            boards = ladder_detail['dates'][0].get('boards', [])
+            ladder_dist = {}
+            for board in boards:
+                level = board.get('level', 0)
+                stocks = board.get('stocks', [])
+                ladder_dist[level] = len(stocks)
+            
+            # 找出最高板
+            max_level = max(ladder_dist.keys()) if ladder_dist else 0
+            levels_str = "-".join([str(l) for l in sorted(ladder_dist.keys(), reverse=True)])
+            brief.append(f"  梯队分布：{levels_str}（最高{max_level}板）")
+            
+            # 强点弱点分析
+            level_1_count = ladder_dist.get(1, 0)
+            level_2_count = ladder_dist.get(2, 0)
+            
+            if level_1_count >= 30:
+                brief.append(f"  强点：1板基数充足（{level_1_count}只），后备力量充足")
+            else:
+                brief.append(f"  弱点：1板基数不足（{level_1_count}只），后续乏力")
+            
+            if level_2_count >= 5:
+                brief.append(f"  强点：2板衔接良好（{level_2_count}只），晋级率健康")
+            elif level_2_count > 0:
+                brief.append(f"  弱点：2板断层（仅{level_2_count}只），晋级率偏低")
+            else:
+                brief.append(f"  风险：2板断层严重，接力情绪差")
+            brief.append("")
+        
+        # ========== 模块7: 梯队名单 ==========
+        brief.append("【梯队名单】：")
+        if ladder_detail.get('dates'):
+            boards = ladder_detail['dates'][0].get('boards', [])
+            # 按 level 降序排列
+            boards_sorted = sorted(boards, key=lambda x: x.get('level', 0), reverse=True)
+            
+            for board in boards_sorted:
+                level = board.get('level', 0)
+                stocks = board.get('stocks', [])
+                
+                if level == 1:
+                    # 1板只显示数量
+                    brief.append(f"  {level}板：共{len(stocks)}只（详见核心板块）")
+                else:
+                    # 2板及以上显示具体股票名称和题材
+                    stock_details = []
+                    for stock in stocks[:5]:  # 最多显示5只
+                        name = stock.get('name', '')
+                        # 使用 jiuyangongshe_category_name 或 tags 获取题材
+                        theme = stock.get('jiuyangongshe_category_name', '')
+                        if not theme:
+                            tags = stock.get('tags', [])
+                            # 过滤掉"总龙头"、"空间龙头"等标签，保留题材标签
+                            theme_tags = [t for t in tags if t not in ['总龙头', '空间龙头', '人气核心']]
+                            theme = theme_tags[0] if theme_tags else '其他'
+                        stock_details.append(f"{name}（{theme}）")
+                    
+                    if len(stocks) > 5:
+                        stock_details.append(f"等{len(stocks)}只")
+                    
+                    brief.append(f"  {level}板：" + "、".join(stock_details))
+            brief.append("")
+        
+        # ========== 模块8: 龙头族谱 ==========
+        brief.append("【龙头族谱】：")
+        
+        # 识别各类龙头
+        total_leader = None
+        space_leader = None
+        emotion_leader = None
+        
+        for stock in limit_up_data:
             tags = stock.get('tags', [])
-            if stock['code'] in regulated_stocks:
-                tags.append("[⚠️监管]")
+            if '总龙头' in tags or '空间龙头' in tags:
+                if not total_leader or stock.get('continue_num', 0) > total_leader.get('continue_num', 0):
+                    total_leader = stock
+            if '人气核心' in tags:
+                emotion_leader = stock
+        
+        # 从 ladder_detail 找 auto_position
+        if ladder_detail.get('dates'):
+            for board in ladder_detail['dates'][0].get('boards', []):
+                for stock in board.get('stocks', []):
+                    if stock.get('auto_position') == '总龙头':
+                        total_leader = stock
+                    if stock.get('auto_position') == '空间龙头':
+                        space_leader = stock
+        
+        if total_leader:
+            name = total_leader.get('name', '')
+            code = total_leader.get('code', '')
+            continue_num = total_leader.get('continue_num', 0)
+            theme = total_leader.get('jiuyangongshe_category_name', '未知')
+            brief.append(f"  总龙头：{name}（{code}）{continue_num}板，{theme}")
+        
+        if space_leader and space_leader != total_leader:
+            name = space_leader.get('name', '')
+            code = space_leader.get('code', '')
+            continue_num = space_leader.get('continue_num', 0)
+            brief.append(f"  空间龙：{name}（{code}）{continue_num}板")
+        
+        if emotion_leader:
+            name = emotion_leader.get('name', '')
+            code = emotion_leader.get('code', '')
+            turnover = emotion_leader.get('turnover_rate', 0)
+            brief.append(f"  情绪龙：{name}（{code}），换手{turnover:.2f}%，人气核心")
+        
+        # 主线龙
+        if current_data and current_data.get('themes'):
+            main_theme = current_data['themes'][0]['name']
+            main_stocks = [s for s in limit_up_data if s.get('jiuyangongshe_category_name') == main_theme]
+            if main_stocks:
+                main_stocks.sort(key=lambda x: x.get('continue_num', 0), reverse=True)
+                leader = main_stocks[0]
+                brief.append(f"  主线龙：{leader.get('name')}（{leader.get('code')}）{leader.get('continue_num')}板，{main_theme}")
+        brief.append("")
+        
+        # ========== 模块8: 情绪指标温度 ==========
+        brief.append("【情绪指标】：")
+        if current_data:
+            rise = current_data['marketSentiment']['rise']
+            fall = current_data['marketSentiment']['fall']
+            broken_ratio = current_data['emotionMetrics']['brokenRatio']
+            limit_down = current_data['emotionMetrics']['limitDownCount']
+            rates = current_data['emotionMetrics']['promotionRates']
             
-            if tags:
-                stock_brief += f"，标签：{','.join(tags)}"
+            # 计算情绪温度（0-100）
+            temp_score = 50
+            if rise > fall:
+                temp_score += 20
+            if broken_ratio < 0.25:
+                temp_score += 15
+            if limit_down < 10:
+                temp_score += 10
+            if rates.get('1to2', 0) > 30:
+                temp_score += 5
             
-            brief.append(stock_brief)
+            temp_score = min(100, max(0, temp_score))
+            
+            if temp_score >= 80:
+                temp_desc = "过热"
+            elif temp_score >= 60:
+                temp_desc = "偏暖"
+            elif temp_score >= 40:
+                temp_desc = "中性"
+            elif temp_score >= 20:
+                temp_desc = "偏冷"
+            else:
+                temp_desc = "冰点"
+            
+            brief.append(f"  情绪温度：{temp_score}/100（{temp_desc}）")
+            brief.append(f"  🔼 上涨：{rise}家  🔽 下跌：{fall}家")
+            brief.append(f"  💥 炸板率：{broken_ratio*100:.1f}%  📉 跌停：{limit_down}只")
+            brief.append(f"  📈 晋级率：1→2:{rates.get('1to2', 0)}% 2→3:{rates.get('2to3', 0)}% 高标:{rates.get('high', 0)}%")
+            brief.append("")
+        
+        # ========== 模块9: 核心板块与个股详情（原Section 8.2） ==========
+        brief.append("【核心板块与个股详情】：")
+        brief.append("")
+        
+        # 时间戳格式化函数
+        def format_limit_time(ts):
+            if not ts:
+                return "09:25:00"
+            try:
+                return datetime.fromtimestamp(int(ts)).strftime('%H:%M:%S')
+            except:
+                return "09:25:00"
+        
+        # 获取前3大主线题材
+        top_themes = sorted(sector_heat, key=lambda x: x.get('count', 0), reverse=True)[:3]
+        
+        for idx, theme_data in enumerate(top_themes, 1):
+            theme_name = theme_data.get('name', '')
+            theme_count = theme_data.get('count', 0)
+            
+            brief.append(f"主线{idx}：{theme_name}（{theme_count}只）")
+            
+            # 获取该题材下的所有涨停股
+            theme_stocks = [s for s in limit_up_data if s.get('jiuyangongshe_category_name') == theme_name]
+            # 按连板数降序排列
+            theme_stocks.sort(key=lambda x: x.get('continue_num', 0), reverse=True)
+            
+            for stock in theme_stocks[:8]:  # 每个题材最多显示8只
+                name = stock.get('name', '')
+                code = stock.get('code', '')
+                continue_num = stock.get('continue_num', 0)
+                
+                # 获取逻辑（reason_type 或 jiuyangongshe_analysis）
+                logic = stock.get('reason_type', '')
+                if not logic:
+                    analysis = stock.get('jiuyangongshe_analysis', '')
+                    if analysis:
+                        logic = analysis.split('\n')[0][:20]  # 取第一行前20字
+                
+                # 第1行：名称代码+连板+逻辑
+                brief.append(f"  {name}({code}) {continue_num}板：{logic}")
+                
+                # 第2行：封单数据
+                order_amount = stock.get('order_amount', 0)
+                trading_amount = stock.get('trading_amount', 0)
+                actual_currency = stock.get('actual_currency_value', 0) or 0
+                
+                order_amount_yi = order_amount / 1e8
+                seal_ratio = (order_amount / trading_amount * 100) if trading_amount > 0 else 0
+                seal_flow = (order_amount / actual_currency * 100) if actual_currency > 0 else 0
+                
+                brief.append(f"    封单{order_amount_yi:.2f}亿/封成{seal_ratio:.1f}%/封流{seal_flow:.1f}%")
+                
+                # 第3行：实流+题材
+                actual_yi = actual_currency / 1e8
+                brief.append(f"    实流{actual_yi:.2f}亿 题材:{stock.get('jiuyangongshe_category_name', '')}")
+            
+            if len(theme_stocks) > 8:
+                brief.append(f"  ...等共{len(theme_stocks)}只")
+            
+            brief.append("")
+        
+        # ========== 模块10: 龙虎榜机构与游资博弈 ==========
+        brief.append("【龙虎榜博弈】：")
+        dragon_tiger_data = self.data.get('dragon_tiger', {}).get('data', [])
+        
+        famous_yz_seats = [
+            '华鑫证券有限责任公司绍兴胜利东路证券营业部',
+            '华鑫证券有限责任公司上海分公司',
+            '国泰君安证券股份有限公司南京太平南路证券营业部',
+            '中国银河证券股份有限公司绍兴证券营业部',
+            '中信证券股份有限公司上海溧阳路证券营业部',
+            '东方财富证券股份有限公司拉萨团结路第一证券营业部',
+            '东方财富证券股份有限公司拉萨东环路第一证券营业部',
+            '国盛证券有限责任公司宁波桑田路证券营业部',
+            '财通证券股份有限公司杭州上塘路证券营业部',
+        ]
+        
+        institution_buys = []
+        yz_dominant = []
+        
+        for record in dragon_tiger_data:
+            stock_code = record.get('stockCode', '')
+            stock_name = record.get('stockName', '')
+            lhb_branch = record.get('lhbBranch', {})
+            buy_branches = lhb_branch.get('buyBranches', [])
+            sell_branches = lhb_branch.get('sellBranches', [])
+            
+            institution_buy = sum(b.get('netValue', 0) for b in buy_branches if b.get('branchName') == '机构专用')
+            institution_sell = sum(s.get('netValue', 0) for s in sell_branches if s.get('branchName') == '机构专用')
+            institution_net = institution_buy - institution_sell
+            
+            yz_buy = sum(b.get('netValue', 0) for b in buy_branches if b.get('branchName') in famous_yz_seats)
+            yz_sell = sum(s.get('netValue', 0) for s in sell_branches if s.get('branchName') in famous_yz_seats)
+            yz_net = yz_buy - yz_sell
+            
+            if institution_net > 1000:
+                institution_buys.append({'name': stock_name, 'code': stock_code, 'net': institution_net})
+            elif yz_net > 1000 and institution_net < 500:
+                yz_dominant.append({'name': stock_name, 'code': stock_code, 'yz_net': yz_net})
+        
+        institution_buys.sort(key=lambda x: x['net'], reverse=True)
+        yz_dominant.sort(key=lambda x: x['yz_net'], reverse=True)
+        
+        if institution_buys:
+            brief.append("  机构净买入Top：")
+            for item in institution_buys[:3]:
+                brief.append(f"    {item['name']}({item['code']}): {item['net']:.0f}万")
+        
+        if yz_dominant:
+            brief.append("  游资主导：")
+            for item in yz_dominant[:3]:
+                brief.append(f"    {item['name']}({item['code']}): {item['yz_net']:.0f}万")
+        
+        if not institution_buys and not yz_dominant:
+            brief.append("  当日龙虎榜无显著机构或游资动向")
+        brief.append("")
         
         # 写入文件
-        file_path = os.path.join(output_dir, 'ai_daily_brief.txt')
+        file_path = os.path.join(self.output_dir, 'ai_daily_brief.txt')
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(brief))
         
-        print(f"✓ ai_daily_brief.txt 生成完成 (保存在 {output_dir} 文件夹)")
+        print("✓ ai_daily_brief.txt 生成完成")
     
     def run(self):
         """执行完整的 ETL 流程"""
@@ -358,20 +753,12 @@ class StockDataCleaner:
         self.generate_ai_daily_brief()
         print("所有文件生成完成！")
 
+
 class FeishuPush:
     def __init__(self, webhook_url):
-        """
-        初始化飞书推送工具
-        :param webhook_url: 飞书机器人webhook URL
-        """
         self.webhook_url = webhook_url
     
     def read_file_content(self, file_path):
-        """
-        读取文件内容
-        :param file_path: 文件路径
-        :return: 文件内容字符串
-        """
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return f.read()
@@ -380,198 +767,132 @@ class FeishuPush:
             return None
     
     def txt_to_markdown(self, txt_content):
-        """
-        将txt内容转换为markdown格式
-        :param txt_content: txt内容字符串
-        :return: markdown格式字符串
-        """
         if not txt_content:
             return None
         
         lines = txt_content.split('\n')
         markdown = []
-        current_section = None
         
         for line in lines:
             line = line.strip()
             if not line:
                 continue
             
-            # 处理标题行
             if line.startswith('日期：'):
-                # 基本信息部分
-                basic_info = []
-                basic_info.append(line)
-                # 读取接下来的基本信息行
-                i = lines.index(line) + 1
-                while i < len(lines) and not lines[i].strip().startswith('1. '):
-                    next_line = lines[i].strip()
-                    if next_line:
-                        basic_info.append(next_line)
-                    i += 1
-                # 转换为markdown表格
-                markdown.append("## 市场概览")
-                for info in basic_info:
-                    if ':' in info:
-                        key, value = info.split(':', 1)
-                        markdown.append(f"**{key}**：{value.strip()}")
-                markdown.append("")
-                
-            # 处理各章节
-            elif line.startswith(('1. ', '2. ', '3. ', '4. ', '5. ', '6. ', '7. ', '8. ')):
-                # 章节标题
-                section_title = line.split('：')[0] if '：' in line else line
-                markdown.append(f"## {section_title}")
-                current_section = section_title
-            
-            # 处理列表项（缩进的行）
-            elif line.startswith('   '):
-                # 移除缩进
-                content = line[3:]
-                if content:
-                    # 处理子项
-                    if current_section and '：' in content:
-                        # 键值对格式，加粗显示
-                        key, value = content.split('：', 1)
-                        markdown.append(f"- **{key}**：{value.strip()}")
-                    else:
-                        # 普通列表项
-                        markdown.append(f"- {content}")
-            
-            # 处理其他内容
+                markdown.append(f"## 📅 {line}")
+            elif line.startswith('【'):
+                markdown.append(f"\n### {line}")
+            elif line.startswith('  '):
+                markdown.append(line)
             else:
                 markdown.append(line)
         
         return '\n'.join(markdown)
     
-    def push_text(self, content, title="每日复盘报告"):
-        """
-        推送文本消息
-        :param content: 消息内容
-        :param title: 消息标题
-        :return: 推送结果
-        """
-        if not content:
-            print("消息内容为空，推送失败")
+    def push_markdown(self, markdown_content):
+        if not markdown_content:
+            print("❌ Markdown内容为空，无法推送")
             return False
         
-        # 构建飞书消息格式
-        message = {
-            "msg_type": "text",
-            "content": {
-                "text": f"{title}\n\n{content}"
-            }
-        }
-        
-        try:
-            response = requests.post(
-                self.webhook_url,
-                headers={"Content-Type": "application/json"},
-                data=json.dumps(message)
-            )
-            
-            response_data = response.json()
-            if response.status_code == 200 and response_data.get("StatusCode") == 0:
-                print("飞书消息推送成功")
-                return True
-            else:
-                print(f"飞书消息推送失败: {response_data}")
-                return False
-        except Exception as e:
-            print(f"飞书消息推送异常: {e}")
-            return False
-    
-    def push_markdown(self, content, title="每日复盘报告"):
-        """
-        推送Markdown消息
-        :param content: Markdown内容
-        :param title: 消息标题
-        :return: 推送结果
-        """
-        if not content:
-            print("消息内容为空，推送失败")
-            return False
-        
-        # 构建飞书Markdown消息格式
-        message = {
+        payload = {
             "msg_type": "interactive",
             "card": {
-                "config": {
-                    "wide_screen_mode": True
-                },
+                "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {
-                        "tag": "plain_text",
-                        "content": title
-                    },
+                    "title": {"tag": "plain_text", "content": "📊 量化复盘日报"},
                     "template": "blue"
                 },
                 "elements": [
                     {
-                        "tag": "markdown",
-                        "content": content
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": markdown_content
+                        }
                     }
                 ]
             }
         }
         
         try:
-            response = requests.post(
-                self.webhook_url,
-                headers={"Content-Type": "application/json"},
-                data=json.dumps(message)
-            )
-            
-            response_data = response.json()
-            if response.status_code == 200 and response_data.get("StatusCode") == 0:
-                print("飞书Markdown消息推送成功")
+            response = requests.post(self.webhook_url, json=payload, headers={'Content-Type': 'application/json'})
+            if response.status_code == 200:
+                print("✅ 飞书Markdown消息推送成功")
                 return True
             else:
-                print(f"飞书Markdown消息推送失败: {response_data}")
+                print(f"❌ 飞书推送失败: {response.status_code} - {response.text}")
                 return False
         except Exception as e:
-            print(f"飞书Markdown消息推送异常: {e}")
+            print(f"❌ 飞书推送异常: {e}")
+            return False
+    
+    def push_text(self, content):
+        if not content:
+            print("❌ 内容为空，无法推送")
+            return False
+        
+        payload = {
+            "msg_type": "text",
+            "content": {"text": content}
+        }
+        
+        try:
+            response = requests.post(self.webhook_url, json=payload, headers={'Content-Type': 'application/json'})
+            if response.status_code == 200:
+                print("✅ 飞书文本消息推送成功")
+                return True
+            else:
+                print(f"❌ 飞书推送失败: {response.status_code}")
+                return False
+        except Exception as e:
+            print(f"❌ 飞书推送异常: {e}")
             return False
 
-def get_valid_date_dir(data_lake_dir, mode='clean'):
-    """
-    获取有效的日期目录
-    mode: 'clean' - 清洗模式，使用最新的目录
-          'push' - 推送模式，使用有完整数据的最新目录
-    """
-    # 获取所有日期目录并排序
-    dates = [d for d in os.listdir(data_lake_dir) if os.path.isdir(os.path.join(data_lake_dir, d))]
-    if not dates:
-        print("❌ 没有找到任何日期目录")
+
+def get_valid_date_dir(base_dir, mode='clean'):
+    """获取有效的日期目录"""
+    if not os.path.exists(base_dir):
+        print(f"❌ 基础目录不存在: {base_dir}")
         return None
     
-    # 按日期降序排序
+    dates = []
+    for d in os.listdir(base_dir):
+        dir_path = os.path.join(base_dir, d)
+        if os.path.isdir(dir_path):
+            try:
+                datetime.strptime(d, '%Y-%m-%d')
+                if mode == 'push':
+                    ai_brief_path = os.path.join(dir_path, 'ai_daily_brief.txt')
+                    if os.path.exists(ai_brief_path):
+                        dates.append(d)
+                else:
+                    dates.append(d)
+            except ValueError:
+                continue
+    
+    if not dates:
+        print(f"❌ 没有找到有效的日期目录")
+        return None
+    
     dates.sort(reverse=True)
     
-    if mode == 'clean':
-        # 清洗模式直接返回最新目录
-        return dates[0]
-    else:
-        # 推送模式，寻找有完整数据的最新目录
+    if mode == 'push':
         for date in dates:
-            date_dir = os.path.join(data_lake_dir, date)
-            # 检查是否有ai_daily_brief.txt文件
-            ai_brief_path = os.path.join(date_dir, "ai_daily_brief.txt")
+            dir_path = os.path.join(base_dir, date)
+            ai_brief_path = os.path.join(dir_path, 'ai_daily_brief.txt')
             if os.path.exists(ai_brief_path):
-                # 检查文件是否有内容
-                if os.path.getsize(ai_brief_path) > 0:
-                    print(f"✅ 找到有效数据目录: {date}")
-                    return date
-        
-        # 如果没有找到有ai_daily_brief.txt的目录，返回最新目录
-        print(f"⚠️ 没有找到包含完整数据的目录，使用最新目录: {dates[0]}")
+                print(f"✅ 找到包含完整数据的最新目录: {date}")
+                return date
+        print(f"⚠️ 没有找到包含ai_daily_brief.txt的目录")
         return dates[0]
+    
+    print(f"✅ 使用最新目录: {dates[0]}")
+    return dates[0]
 
-# 主函数1：用于运行数据清洗
+
 if __name__ == "__main__":
     import sys
     
-    # 解析命令行参数
     target_date = None
     run_mode = 'clean'
     
@@ -586,111 +907,110 @@ if __name__ == "__main__":
         else:
             i += 1
     
-    # 运行飞书推送模式
     if run_mode == 'push':
-        # 请替换为你的飞书机器人webhook URL
         webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/868d66cc-7980-4bc0-b2da-45c27aa21bb3"
         
-        # 获取最新的日期目录作为输出文件夹
-        data_lake_dir = r'c:\Users\Liu\Desktop\projects\quant\data_lake'
+        cleaned_data_dir = r'c:\Users\Liu\Desktop\projects\quant\data\cleaned_data'
         
-        # 如果指定了日期，直接使用该日期
         if target_date:
             latest_date = target_date
             print(f"✅ 使用指定日期: {latest_date}")
         else:
-            # 获取有完整数据的最新日期目录
-            latest_date = get_valid_date_dir(data_lake_dir, mode='push')
+            latest_date = get_valid_date_dir(cleaned_data_dir, mode='push')
             if not latest_date:
                 sys.exit(1)
         
-        # 从日期文件夹读取AI提示词文件
-        file_path = os.path.join(data_lake_dir, latest_date, "ai_daily_brief.txt")
+        file_path = os.path.join(cleaned_data_dir, latest_date, "ai_daily_brief.txt")
         feishu = FeishuPush(webhook_url)
         content = feishu.read_file_content(file_path)
         
         if content:
-            # 转换为markdown格式
             markdown_content = feishu.txt_to_markdown(content)
-            
             if markdown_content:
-                # 推送Markdown消息
                 feishu.push_markdown(markdown_content)
             else:
-                # 转换失败时推送文本消息
                 feishu.push_text(content)
         else:
             print(f"❌ 文件内容读取失败或文件为空，无法推送: {file_path}")
     else:
-        # 运行数据清洗模式
-        data_lake_dir = r'c:\Users\Liu\Desktop\projects\quant\data_lake'
+        data_lake_dir = r'c:\Users\Liu\Desktop\projects\quant\data\data_lake'
+        cleaned_data_dir = r'c:\Users\Liu\Desktop\projects\quant\data\cleaned_data'
         
-        # 如果指定了日期，直接使用该日期
         if target_date:
             data_dir = os.path.join(data_lake_dir, target_date)
+            output_dir = os.path.join(cleaned_data_dir, target_date)
             if not os.path.exists(data_dir):
                 print(f"❌ 指定的日期目录不存在: {data_dir}")
                 sys.exit(1)
-            cleaner = StockDataCleaner(data_dir)
+            os.makedirs(output_dir, exist_ok=True)
+            cleaner = StockDataCleaner(data_dir, output_dir)
             cleaner.run()
             
-            # 清洗完成后自动推送
             print("\n" + "="*50)
             print("📤 清洗完成，开始自动推送数据到飞书...")
             print("="*50 + "\n")
             
-            # 请替换为你的飞书机器人webhook URL
-            webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/868d66cc-7980-4bc0-b2da-45c27aa21bb3"
-            
-            # 从日期文件夹读取AI提示词文件
-            file_path = os.path.join(data_lake_dir, target_date, "ai_daily_brief.txt")
-            feishu = FeishuPush(webhook_url)
-            content = feishu.read_file_content(file_path)
-            
-            if content:
-                # 转换为markdown格式
-                markdown_content = feishu.txt_to_markdown(content)
+            # 飞书推送改为后台线程执行，避免阻塞主流程
+            def push_to_feishu_async(output_dir, webhook_url):
+                """后台线程执行飞书推送"""
+                file_path = os.path.join(output_dir, "ai_daily_brief.txt")
+                feishu = FeishuPush(webhook_url)
+                content = feishu.read_file_content(file_path)
                 
-                if markdown_content:
-                    # 推送Markdown消息
-                    feishu.push_markdown(markdown_content)
+                if content:
+                    markdown_content = feishu.txt_to_markdown(content)
+                    if markdown_content:
+                        feishu.push_markdown(markdown_content)
+                    else:
+                        feishu.push_text(content)
                 else:
-                    # 转换失败时推送文本消息
-                    feishu.push_text(content)
-            else:
-                print(f"❌ 文件内容读取失败或文件为空，无法推送: {file_path}")
+                    print(f"❌ 文件内容读取失败或文件为空，无法推送: {file_path}")
+            
+            webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/868d66cc-7980-4bc0-b2da-45c27aa21bb3"
+            push_thread = threading.Thread(
+                target=push_to_feishu_async,
+                args=(output_dir, webhook_url),
+                daemon=True
+            )
+            push_thread.start()
+            print("✅ 飞书推送已启动（后台异步执行）")
+            
         else:
-            # 默认运行数据清洗模式，获取最新的日期目录
             latest_date = get_valid_date_dir(data_lake_dir, mode='clean')
             if not latest_date:
                 sys.exit(1)
             
             data_dir = os.path.join(data_lake_dir, latest_date)
-            cleaner = StockDataCleaner(data_dir)
+            output_dir = os.path.join(cleaned_data_dir, latest_date)
+            os.makedirs(output_dir, exist_ok=True)
+            cleaner = StockDataCleaner(data_dir, output_dir)
             cleaner.run()
             
-            # 清洗完成后自动推送
             print("\n" + "="*50)
             print("📤 清洗完成，开始自动推送数据到飞书...")
             print("="*50 + "\n")
             
-            # 请替换为你的飞书机器人webhook URL
-            webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/868d66cc-7980-4bc0-b2da-45c27aa21bb3"
-            
-            # 从日期文件夹读取AI提示词文件
-            file_path = os.path.join(data_lake_dir, latest_date, "ai_daily_brief.txt")
-            feishu = FeishuPush(webhook_url)
-            content = feishu.read_file_content(file_path)
-            
-            if content:
-                # 转换为markdown格式
-                markdown_content = feishu.txt_to_markdown(content)
+            # 飞书推送改为后台线程执行
+            def push_to_feishu_async(output_dir, webhook_url):
+                """后台线程执行飞书推送"""
+                file_path = os.path.join(output_dir, "ai_daily_brief.txt")
+                feishu = FeishuPush(webhook_url)
+                content = feishu.read_file_content(file_path)
                 
-                if markdown_content:
-                    # 推送Markdown消息
-                    feishu.push_markdown(markdown_content)
+                if content:
+                    markdown_content = feishu.txt_to_markdown(content)
+                    if markdown_content:
+                        feishu.push_markdown(markdown_content)
+                    else:
+                        feishu.push_text(content)
                 else:
-                    # 转换失败时推送文本消息
-                    feishu.push_text(content)
-            else:
-                print(f"❌ 文件内容读取失败或文件为空，无法推送: {file_path}")
+                    print(f"❌ 文件内容读取失败或文件为空，无法推送: {file_path}")
+            
+            webhook_url = "https://open.feishu.cn/open-apis/bot/v2/hook/868d66cc-7980-4bc0-b2da-45c27aa21bb3"
+            push_thread = threading.Thread(
+                target=push_to_feishu_async,
+                args=(output_dir, webhook_url),
+                daemon=True
+            )
+            push_thread.start()
+            print("✅ 飞书推送已启动（后台异步执行）")

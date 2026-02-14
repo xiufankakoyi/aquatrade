@@ -28,8 +28,8 @@ const HISTORY_KEY = 'backtest_history';
 let historyDisabled = false;
 
 export const useBacktestStore = defineStore('backtest', () => {
-  const equitySeries = shallowRef<Array<{ date: string; equity: number }>>([]);
-  const benchmarkEquitySeries = shallowRef<Array<{ date: string; equity: number }>>([]);
+  const equitySeries = ref<Array<{ date: string; equity: number }>>([]);
+  const benchmarkEquitySeries = ref<Array<{ date: string; equity: number }>>([]);
   const metrics = ref<Metrics | null>(null);
   const monthlyReturns = shallowRef<MonthlyReturn[]>([]);
   const holdingPeriods = shallowRef<HoldingPeriod[]>([]);

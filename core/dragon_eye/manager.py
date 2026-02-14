@@ -5,11 +5,24 @@ import polars as pl
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from datetime import datetime
-from data_svc.lance_manager import LanceDBManager
 from config.config import Config
 from config.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class _FallbackLanceDBManager:
+    """LanceDBManager 备用实现"""
+    def __init__(self, lance_dir: Optional[str] = None, table_name: str = "default"):
+        self.table_name = table_name
+        logger.debug(f"FallbackLanceDBManager for {table_name}")
+    
+    def upsert_daily_data(self, df: pd.DataFrame):
+        logger.info(f"Fallback: would upsert {len(df)} rows to {self.table_name}")
+    
+    def load_to_polars(self, **kwargs) -> pl.DataFrame:
+        return pl.DataFrame()
+
 
 class DragonEyeManager:
     """DragonEye 模块数据管理器，专注于龙头股与市场情绪数据的持久化"""
@@ -19,9 +32,16 @@ class DragonEyeManager:
         self.parquet_dir = Path(Config.PARQUET_DIR)
         self.lance_dir = self.parquet_dir / "lance_db"
         
-        # 初始化两个核心表管理器
-        self.stock_mgr = LanceDBManager(table_name="dragon_stock")
-        self.sentiment_mgr = LanceDBManager(table_name="market_sentiment")
+        # 尝试使用真正的 LanceDBManager，失败则使用备用实现
+        try:
+            from data_svc.lance_manager import LanceDBManager
+            self.stock_mgr = LanceDBManager(lance_dir=str(self.lance_dir), table_name="dragon_stock")
+            self.sentiment_mgr = LanceDBManager(lance_dir=str(self.lance_dir), table_name="market_sentiment")
+            logger.info("DragonEyeManager initialized with LanceDB")
+        except ImportError as e:
+            logger.warning(f"LanceDB not available: {e}, using fallback mode")
+            self.stock_mgr = _FallbackLanceDBManager(lance_dir=str(self.lance_dir), table_name="dragon_stock")
+            self.sentiment_mgr = _FallbackLanceDBManager(lance_dir=str(self.lance_dir), table_name="market_sentiment")
 
     def upsert_stocks(self, df_stocks: pd.DataFrame):
         """更新龙头个股数据"""

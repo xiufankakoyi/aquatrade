@@ -1,13 +1,54 @@
+# -*- coding: utf-8 -*-
 import os
+import sys
+import io
+
+# 设置 UTF-8 编码
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import time
 import json
 import math
 import random
+import re
 import requests
 import argparse
-import sys
-import re
 from datetime import datetime, timedelta
+
+# ==========================================
+# 交易日计算工具
+# ==========================================
+# 中国A股交易日历（简化版，不包含节假日）
+# 如需精确节假日，建议使用 akshare 或 tushare 的交易日历接口
+
+def get_previous_trading_day(date, days_back=1):
+    """
+    获取指定日期前N个交易日
+    :param date: 基准日期 (datetime)
+    :param days_back: 向前回溯的交易日数量
+    :return: 目标交易日 (datetime)
+    """
+    current = date
+    trading_days_count = 0
+    
+    while trading_days_count < days_back:
+        current -= timedelta(days=1)
+        # 跳过周末 (周六=5, 周日=6)
+        if current.weekday() < 5:  # 0-4 是周一到周五
+            trading_days_count += 1
+    
+    return current
+
+def get_trading_date_range(end_date, trading_days=20):
+    """
+    获取以end_date为结束日期的交易日范围
+    :param end_date: 结束日期 (datetime)
+    :param trading_days: 交易日跨度（默认20个交易日）
+    :return: (start_date, end_date) 元组
+    """
+    start_date = get_previous_trading_day(end_date, trading_days)
+    return start_date, end_date
 
 # --- Selenium 相关库 (新增 Edge 支持) ---
 from selenium import webdriver
@@ -70,26 +111,39 @@ def save_token_to_config(new_token):
 # ==========================================
 # 2. Token 自动获取模块 (双浏览器保险版)
 # ==========================================
+
+# 缓存 driver 路径，避免每次都重新下载
+cached_chrome_driver_path = None
+
+def get_chrome_driver_path():
+    """获取 ChromeDriver 路径（带缓存）"""
+    global cached_chrome_driver_path
+    if cached_chrome_driver_path is None:
+        cached_chrome_driver_path = ChromeDriverManager().install()
+    return cached_chrome_driver_path
+
 def get_browser_driver():
     """
     尝试启动浏览器：优先 Edge，失败则转 Chrome
     """
-    # 方案 A: 尝试 Microsoft Edge (Windows 必有)
+    # 方案 A: 尝试 Microsoft Edge (Windows 必有，无需下载驱动)
     try:
         print("   [1/2] 尝试启动 Microsoft Edge...")
         options = EdgeOptions()
-        # 直接使用系统已安装的Edge，无需下载驱动
+        # Edge 使用系统自带的驱动，无需下载
         driver = webdriver.Edge(options=options)
         return driver
     except Exception as e:
         print(f"   ⚠️ Edge 启动失败 (未安装或路径错误)")
 
-    # 方案 B: 尝试 Chrome
+    # 方案 B: 尝试 Chrome（使用缓存的 driver 路径）
     try:
         print("   [2/2] 尝试启动 Google Chrome...")
         options = ChromeOptions()
         # options.add_argument("--headless") # 调试阶段注释掉
-        service = ChromeService(ChromeDriverManager().install())
+        # 使用缓存的 driver 路径，避免每次都重新检查/下载
+        driver_path = get_chrome_driver_path()
+        service = ChromeService(driver_path)
         driver = webdriver.Chrome(service=service, options=options)
         return driver
     except Exception as e:
@@ -124,23 +178,64 @@ def launch_browser_for_token():
             time.sleep(3)  # 等待页面加载
             
             try:
-                # 尝试查找登录相关元素（需要根据实际页面调整）
-                # 注意：这些选择器是示例，需要根据实际页面结构调整
-                # 切换到账号密码登录
-                # driver.find_element(By.XPATH, "//div[contains(text(), '账号密码登录')]").click()
-                # time.sleep(1)
+                # 查找账号输入框（多种选择器）
+                username_input = None
+                for selector in [
+                    "//input[@type='text']",
+                    "//input[@placeholder='手机号']",
+                    "//input[@placeholder='账号']",
+                    "//input[@name='phone' or @name='username']"
+                ]:
+                    try:
+                        elements = driver.find_elements(By.XPATH, selector)
+                        if elements and elements[0].is_displayed():
+                            username_input = elements[0]
+                            break
+                    except:
+                        continue
                 
-                # 查找账号输入框
-                username_input = driver.find_element(By.XPATH, "//input[@type='text' or @placeholder='手机号' or @placeholder='账号']")
-                password_input = driver.find_element(By.XPATH, "//input[@type='password' or @placeholder='密码']")
-                login_button = driver.find_element(By.XPATH, "//button[contains(text(), '登录') or contains(text(), 'Login')]")
+                # 查找密码输入框（多种选择器）
+                password_input = None
+                for selector in [
+                    "//input[@type='password']",
+                    "//input[@placeholder='密码']",
+                    "//input[@name='password']"
+                ]:
+                    try:
+                        elements = driver.find_elements(By.XPATH, selector)
+                        if elements and elements[0].is_displayed():
+                            password_input = elements[0]
+                            break
+                    except:
+                        continue
                 
-                # 填写账号密码
-                username_input.send_keys(username)
-                password_input.send_keys(password)
-                time.sleep(1)
-                login_button.click()
-                print("   ✅ 已提交账号密码登录请求")
+                # 查找登录按钮（多种选择器）
+                login_button = None
+                for selector in [
+                    "//button[contains(text(), '登录')]",
+                    "//button[contains(text(), 'Login')]",
+                    "//button[@type='submit']",
+                    "//span[contains(text(), '登录')]/parent::button",
+                    "//div[contains(@class, 'login') and contains(@class, 'btn')]"
+                ]:
+                    try:
+                        elements = driver.find_elements(By.XPATH, selector)
+                        if elements and elements[0].is_displayed():
+                            login_button = elements[0]
+                            break
+                    except:
+                        continue
+                
+                if username_input and password_input and login_button:
+                    username_input.clear()
+                    password_input.clear()
+                    username_input.send_keys(username)
+                    password_input.send_keys(password)
+                    time.sleep(0.5)
+                    login_button.click()
+                    print("   ✅ 已提交账号密码登录请求")
+                else:
+                    print("   ⚠️ 未找到完整的登录表单元素，请手动登录")
             except Exception as e:
                 print(f"   ⚠️ 自动登录失败（可能是登录页面结构变化）: {e}")
                 print("   👉 请手动扫码或填写账号密码登录")
@@ -194,7 +289,7 @@ API_MAP = {
     "ladder_hierarchy_detail": { "url": "https://stock.quicktiny.cn/api/ladder/day/{date_nodash}", "type": "simple" },
     "limit_up_filter": { "url": "https://stock.quicktiny.cn/api/limit-up/filter?date={date_nodash}&reasonTypeInput=&page={page}&limit=100", "type": "pagination", "data_key": "stocks" },
     "sector_heat_stats": { "url": "https://stock.quicktiny.cn/api/limit-up/filter/concept-tags-stats?date={date_nodash}", "type": "simple" },
-    "market_sentiment_cycle": { "url": "https://stock.quicktiny.cn/api/ladder/cycle-analysis?startDate={date_dash}&endDate={date_dash}", "type": "simple" },
+    "market_sentiment_cycle": { "url": "https://stock.quicktiny.cn/api/ladder/cycle-analysis?startDate={start_date_dash}&endDate={date_dash}", "type": "simple" },
     "dragon_tiger_list": { "url": "https://stock.quicktiny.cn/api/admin/dragon-tiger-board-user?startDate={date_dash}&endDate={date_dash}&pageSize=100&stockCode=&stockName=&infoClassCode=&branchSearch=", "type": "simple" },
     "risk_monitor_list": { "url": "https://stock.quicktiny.cn/api/ladder/exchange-monitor/list?type=all", "type": "simple" }
 }
@@ -306,6 +401,11 @@ class StealthCrawler:
             os.makedirs(day_dir)
 
         print(f"\n📅 处理日期: {date_dash}")
+        
+        # 计算20个交易日前的日期（用于市场情绪周期和龙虎榜）
+        start_date_trading, _ = get_trading_date_range(target_date, trading_days=20)
+        start_date_dash = start_date_trading.strftime("%Y-%m-%d")
+        print(f"   📊 交易日范围: {start_date_dash} 至 {date_dash} (20个交易日)")
 
         for api_key, api_conf in API_MAP.items():
             file_path = os.path.join(day_dir, f"{api_key}.json")
@@ -313,11 +413,21 @@ class StealthCrawler:
                 print(f"   [✅ 已存在] {api_key}")
                 continue
 
-            url_final = api_conf["url"].format(
-                date_nodash=date_nodash, 
-                date_dash=date_dash,
-                page="{page}"
-            )
+            # 对于需要交易日范围的API，使用计算出的start_date
+            if api_key in ["market_sentiment_cycle", "dragon_tiger_list"]:
+                url_final = api_conf["url"].format(
+                    date_nodash=date_nodash, 
+                    date_dash=date_dash,
+                    start_date_dash=start_date_dash,  # 20个交易日前的日期
+                    page="{page}"
+                )
+                print(f"   [📅 交易日] {api_key}: {start_date_dash} ~ {date_dash}")
+            else:
+                url_final = api_conf["url"].format(
+                    date_nodash=date_nodash, 
+                    date_dash=date_dash,
+                    page="{page}"
+                )
 
             try:
                 print(f"   [📡 请求] {api_key} ... ", end="")
@@ -342,26 +452,33 @@ class StealthCrawler:
 # 5. 主入口
 # ==========================================
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="QuantData 自动爬虫 (含自动登录)")
-    parser.add_argument("--date", type=str, help="指定爬取日期 (格式 YYYY-MM-DD)")
-    parser.add_argument("--backfill", type=int, help="向前回溯补录几天的数据", default=0)
-    args = parser.parse_args()
-    
-    crawler = StealthCrawler()
-    
-    if args.date:
-        target = datetime.strptime(args.date, "%Y-%m-%d")
-        crawler.run_task(target)
-    elif args.backfill > 0:
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=args.backfill)
-        curr = start_date
-        while curr <= end_date:
-            crawler.run_task(curr)
-            curr += timedelta(days=1)
-    else:
-        target = datetime.now()
-        print(f"🚀 默认抓取今天 ({target.strftime('%Y-%m-%d')})")
-        crawler.run_task(target)
+    try:
+        parser = argparse.ArgumentParser(description="QuantData 自动爬虫 (含自动登录)")
+        parser.add_argument("--date", type=str, help="指定爬取日期 (格式 YYYY-MM-DD)")
+        parser.add_argument("--backfill", type=int, help="向前回溯补录几天的数据", default=0)
+        args = parser.parse_args()
         
-    print("\n🎉 任务结束。")
+        crawler = StealthCrawler()
+        
+        if args.date:
+            target = datetime.strptime(args.date, "%Y-%m-%d")
+            crawler.run_task(target)
+        elif args.backfill > 0:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=args.backfill)
+            curr = start_date
+            while curr <= end_date:
+                crawler.run_task(curr)
+                curr += timedelta(days=1)
+        else:
+            target = datetime.now()
+            print(f"🚀 默认抓取今天 ({target.strftime('%Y-%m-%d')})")
+            crawler.run_task(target)
+            
+        print("\n🎉 任务结束。")
+        
+    except Exception as e:
+        print(f"\n❌ 任务执行失败: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

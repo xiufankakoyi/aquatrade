@@ -163,43 +163,28 @@ class JQVolumeStrategypro(VectorizedStrategyBase):
         # 1. 准备数据
         self.prepare_data(preloaded_data, trading_dates, stock_codes, price_matrix)
         
-        # 2. 使用因子库获取所有因子（一行一个）
+        # 2. 使用因子库获取所有因子（带缓存，只计算一次）
         import time
         import logging
         logger = logging.getLogger(__name__)
         
         start_time = time.time()
-        logger.debug(f"[Factor] Starting to load factors for {len(trading_dates)} days")
         
+        # 数据库因子（直接读取）
         ma5 = FL.get_factor(f'ma{self.config.ma_days}', self)
-        logger.debug(f"[Factor] Loaded ma5 in {time.time()-start_time:.2f}s")
-        
         close_prices = FL.get_factor('close', self)
-        logger.debug(f"[Factor] Loaded close in {time.time()-start_time:.2f}s")
-        
         volume_ratio = FL.get_factor('volume_ratio', self)
-        logger.debug(f"[Factor] Loaded volume_ratio in {time.time()-start_time:.2f}s")
-        
         total_mv = FL.get_factor('total_mv', self)
-        logger.debug(f"[Factor] Loaded total_mv in {time.time()-start_time:.2f}s")
-        
         is_st = FL.get_factor('is_st', self)
-        logger.debug(f"[Factor] Loaded is_st in {time.time()-start_time:.2f}s")
-        
         days_listed = FL.get_factor('days_listed', self)
-        logger.debug(f"[Factor] Loaded days_listed in {time.time()-start_time:.2f}s")
-        
         volume = FL.get_factor('volume', self)
-        logger.debug(f"[Factor] Loaded volume in {time.time()-start_time:.2f}s")
-        
         amount = FL.get_factor('amount', self)
-        logger.debug(f"[Factor] Loaded amount in {time.time()-start_time:.2f}s")
         
+        # 计算型因子（带缓存，首次计算，后续直接返回缓存结果）
         gain_3d = FL.get_factor('gain_3d', self)
-        logger.debug(f"[Factor] Loaded gain_3d in {time.time()-start_time:.2f}s")
-        
         turnover_ma5 = FL.get_factor('turnover_ma5', self)
-        logger.debug(f"[Factor] All factors loaded in {time.time()-start_time:.2f}s")
+        
+        logger.debug(f"[Factor] All factors loaded in {time.time()-start_time:.3f}s")
 
         
         # 3. 纯粹的交易逻辑

@@ -8,7 +8,7 @@ import base64
 from typing import Dict, Any, List, Callable, Optional
 from threading import Event
 from config.logger import get_logger
-from utils.binary_packer import pack_backtest_result, estimate_size
+from server.utils.binary_packer import pack_backtest_result, estimate_size
 
 logger = get_logger(__name__)
 
@@ -165,6 +165,7 @@ def run_backtest_background(
     benchmark_code: Optional[str],
     stop_event: Event,
     params: Optional[Dict[str, Any]] = None,
+    backtest_config: Optional[Dict[str, Any]] = None,
     get_api_func: Optional[Callable] = None,
     active_backtests_dict: Optional[Dict[str, Event]] = None
 ):
@@ -189,6 +190,10 @@ def run_backtest_background(
         get_api_func = get_api
     
     logger.info(f"开始流式回测: {strategy_name} | 基准: {benchmark_code or 'None'}")
+    
+    # 记录回测配置
+    if backtest_config:
+        logger.info(f"回测配置: {backtest_config}")
 
     try:
         # 调用 API 层的 stream_backtest（它会包含 daily_equity_engine -> daily_equity 等）
@@ -199,6 +204,7 @@ def run_backtest_background(
             benchmark_code,
             stop_event=stop_event,
             params=params,
+            backtest_config=backtest_config,
         ):
 
             # 使用 socketio.sleep 让出控制权，避免阻塞（0.001 秒即可）
@@ -249,10 +255,12 @@ def run_backtest_background(
                         try:
                             # 使用优化的打包函数
                             packed = pack_backtest_result(data)
-                            # 发送二进制数据（SocketIO 支持二进制）
+                            # 将 bytes 转换为 base64 字符串，确保 Socket.IO 能正确传输
+                            packed_b64 = base64.b64encode(packed).decode('utf-8')
+                            # 发送 base64 编码的数据
                             socketio_instance.emit('daily_update', {
                                 '_msgpack': True,
-                                '_data': packed
+                                '_data': packed_b64
                             }, to=sid)
                             # 【调试】只在每10天或第一天输出日志，避免日志过多
                             date_str = data.get('date', 'N/A')
@@ -261,17 +269,17 @@ def run_backtest_background(
                                 try:
                                     day_num = int(date_str.split('-')[-1])
                                     if day_num % 10 == 0 or day_num == 1:
-                                        logger.info(f"✓ 发送 daily_update (MsgPack: {len(packed)} bytes, date: {date_str})")
+                                        logger.info(f"[OK] 发送 daily_update (MsgPack: {len(packed)} bytes, date: {date_str})")
                                 except:
-                                    logger.info(f"✓ 发送 daily_update (MsgPack: {len(packed)} bytes, date: {date_str})")
+                                    logger.info(f"[OK] 发送 daily_update (MsgPack: {len(packed)} bytes, date: {date_str})")
                         except Exception as e:
                             logger.warning(f"MsgPack 打包失败，回退到 JSON: {e}")
                             socketio_instance.emit('daily_update', data, to=sid)
                             date_str = data.get('date', 'N/A')
-                            logger.info(f"✓ 发送 daily_update (JSON, date: {date_str})")
+                            logger.info(f"[OK] 发送 daily_update (JSON, date: {date_str})")
                     else:
                         socketio_instance.emit('daily_update', data, to=sid)
-                        logger.info(f"✓ 发送 daily_update (raw data)")
+                        logger.info(f"[OK] 发送 daily_update (raw data)")
 
                 elif t == 'new_trade':
                     # 交易数据通常较小，直接发送
@@ -282,27 +290,29 @@ def run_backtest_background(
                     if isinstance(data, dict):
                         try:
                             packed = pack_backtest_result(data)
+                            packed_b64 = base64.b64encode(packed).decode('utf-8')
                             size_info = estimate_size(data)
                             logger.info(f"发送 metrics_update (MsgPack: {len(packed)} bytes, "
                                       f"压缩比: {size_info['compression_ratio']:.2%})")
                             socketio_instance.emit('metrics_update', {
                                 '_msgpack': True,
-                                '_data': packed
+                                '_data': packed_b64
                             }, to=sid)
                         except Exception as e:
                             logger.warning(f"MsgPack 打包失败，回退到分块发送: {e}")
                             _emit_large_data(socketio_instance, sid, 'metrics_update', data, logger)
                     else:
                         _emit_large_data(socketio_instance, sid, 'metrics_update', data, logger)
-                
+
                 elif t == 'risk_data':
                     # 使用 MsgPack 二进制打包
                     if isinstance(data, dict):
                         try:
                             packed = pack_backtest_result(data)
+                            packed_b64 = base64.b64encode(packed).decode('utf-8')
                             socketio_instance.emit('risk_update', {
                                 '_msgpack': True,
-                                '_data': packed
+                                '_data': packed_b64
                             }, to=sid)
                         except Exception as e:
                             logger.warning(f"MsgPack 打包失败，回退到分块发送: {e}")

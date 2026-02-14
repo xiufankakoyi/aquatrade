@@ -30,6 +30,12 @@ export function useSocketIO() {
    * @param url 服务器地址 (e.g., 'http://localhost:5000')
    */
   const connect = (url: string) => {
+    // 如果 URL 改变，需要断开旧连接并重新连接
+    if (connectionUrl.value && connectionUrl.value !== url) {
+      console.log(`Socket.IO URL 改变: ${connectionUrl.value} -> ${url}，重新连接`)
+      disconnect()
+    }
+    
     if (socket && (socket.connected || status.value === 'CONNECTING')) {
       console.log('Socket.IO 已经连接或正在连接中')
       return // 已经连接或正在连接，无需重复操作
@@ -43,6 +49,7 @@ export function useSocketIO() {
     try {
       // 配置选项
       const options = {
+        path: '/socket.io',  // 明确指定 Socket.IO 路径
         reconnection: true,
         reconnectionAttempts: RECONNECT_ATTEMPTS,
         reconnectionDelay: RECONNECT_DELAY,

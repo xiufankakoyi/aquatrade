@@ -1,10 +1,28 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>my-app</title>
+    <!-- 优化的视口配置，支持响应式缩放 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="description" content="AquaTrade - 量化交易平台" />
+    <!-- 防止缩放导致的布局问题 -->
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <!-- 主题色，防止浏览器闪白 -->
+    <meta name="theme-color" content="#131722" />
+    <title>AquaTrade</title>
+    <!-- 内联关键样式：立即应用背景色，防止加载闪白 -->
+    <style>
+      html, body {
+        background-color: #131722;
+        margin: 0;
+        padding: 0;
+      }
+      #app {
+        background-color: #131722;
+        min-height: 100vh;
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>

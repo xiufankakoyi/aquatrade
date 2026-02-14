@@ -396,6 +396,10 @@ class FlexibleBacktestEngine:
             except Exception as e:
                 print(f"[Engine] 预加载失败，将回退到实时查询逻辑: {e}")
         
+        # 【性能优化】清除因子计算缓存，确保每次回测都是干净的
+        from core.strategies.utils.factor_loader import FactorLoader
+        FactorLoader.clear_cache()
+        
         # 流式循环
         perf_snapshots = []
         total_steps = len(time_series)
@@ -419,6 +423,7 @@ class FlexibleBacktestEngine:
                 
                 # 【优化】优先尝试 Polars 路径 (零拷贝)
                 use_pl = False
+                stock_pool = None
                 if hasattr(self.data_query, 'get_stock_pool_pl'):
                     stock_pool = self.data_query.get_stock_pool_pl(current_time.strftime("%Y-%m-%d"))
                     if stock_pool is not None and not stock_pool.is_empty():
@@ -622,10 +627,10 @@ class FlexibleBacktestEngine:
                 if trades:
                     for trade in trades:
                         action_cn = "买入" if trade.get('action') == 'buy' else "卖出"
-                        logger.info(f"✅ [交易记录] {current_time.strftime('%Y-%m-%d')} {action_cn} {trade.get('code')}: "
-                                   f"{trade.get('shares')}股 @ ¥{trade.get('price'):.2f}")
+                        logger.info(f"[TRADE] {current_time.strftime('%Y-%m-%d')} {action_cn} {trade.get('code')}: "
+                                   f"{trade.get('shares')}股 @ {trade.get('price'):.2f}")
                         if trade.get('action') == 'sell' and 'profit_loss' in trade:
-                            logger.info(f"   💰 盈亏: ¥{trade.get('profit_loss'):,.2f} (ROI: {trade.get('roi', 0):.2f}%)")
+                            logger.info(f"   PnL: {trade.get('profit_loss'):,.2f} (ROI: {trade.get('roi', 0):.2f}%)")
                 
                 # 【修复】立即产出交易事件，供前端实时显示
                 for trade in trades:
@@ -1119,7 +1124,7 @@ class FlexibleBacktestEngine:
             
             # 【新增】详细日志：确认数据库保存
             print("=" * 60)
-            print("✅ [数据库] 回测结果已保存")
+            print("[OK] 回测结果已保存")
             print(f"   回测ID: {backtest_id}")
             print(f"   策略: {strategy_name}")
             print(f"   日期: {start_date_str} ~ {end_date_str}")
@@ -1133,9 +1138,9 @@ class FlexibleBacktestEngine:
                 for i, trade in enumerate(all_trades_log[:3], 1):
                     action_cn = "买入" if trade.get('action') == 'buy' else "卖出"
                     print(f"     {i}. [{trade.get('date')}] {action_cn} {trade.get('code')}: "
-                               f"{trade.get('shares')}股 @ ¥{trade.get('price'):.2f}")
+                               f"{trade.get('shares')}股 @ {trade.get('price'):.2f}")
             else:
-                print(f"   ⚠️ 本次回测没有产生任何交易记录")
+                print(f"   [WARN] 本次回测没有产生任何交易记录")
                 print(f"   可能原因: 策略未生成信号 / 所有信号被过滤 / 资金不足")
             print("=" * 60)
             
@@ -1143,7 +1148,7 @@ class FlexibleBacktestEngine:
             cursor.close()
             conn.close()
         except Exception as e:
-            print(f"❌ [DB] 数据持久化失败: {e}")
+            print(f"[ERROR] 数据持久化失败: {e}")
             import traceback
             traceback.print_exc()
         

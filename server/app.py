@@ -11,6 +11,75 @@ import json
 import gzip
 import base64
 import logging
+
+# ========== 全局线程异常钩子配置 ==========
+from core.error_handler import ErrorHandler, ErrorLevel
+from config.logger import get_logger
+
+def global_thread_excepthook(args):
+    """
+    全局后台线程异常钩子
+    
+    捕获所有未处理的后台线程异常，确保错误被正确记录和处理
+    
+    Args:
+        args: (exc_type, exc_value, exc_traceback)
+    """
+    exc_type, exc_value, exc_traceback = args
+    
+    try:
+        logger = get_logger(__name__)
+        logger.error(
+            f"[Global Thread Exception] 未捕获的后台线程异常: {exc_type.__name__}: {exc_value}",
+            exc_info=(exc_type, exc_value, exc_traceback)
+        )
+        
+        ErrorHandler.capture(
+            exception=exc_value,
+            level=ErrorLevel.CRITICAL,
+            category="system",
+            context={"thread": "background_thread"}
+        )
+        
+    except Exception as hook_error:
+        print(f"[ERROR] 全局线程异常钩子本身出错: {hook_error}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+
+# 配置全局线程异常钩子（Python 3.8+）
+if hasattr(threading, 'excepthook'):
+    threading.excepthook = global_thread_excepthook
+else:
+    # 旧版本 Python 兼容性处理
+    original_thread_init = threading.Thread.__init__
+    
+    def patched_thread_init(self, *args, **kwargs):
+        original_thread_init(self, *args, **kwargs)
+        original_run = self.run
+        
+        def run_with_error_handling():
+            try:
+                original_run()
+            except Exception as e:
+                import sys
+                import traceback
+                logger = get_logger(__name__)
+                logger.error(
+                    f"[Thread Exception] 未捕获的后台线程异常: {e}",
+                    exc_info=True
+                )
+                ErrorHandler.capture(
+                    exception=e,
+                    level=ErrorLevel.CRITICAL,
+                    category="system",
+                    context={"thread": self.name}
+                )
+        
+        self.run = run_with_error_handling
+    
+    threading.Thread.__init__ = patched_thread_init
+
+# ========== 全局线程异常钩子配置结束 ==========
 # 高性能序列化
 try:
     import orjson
@@ -30,7 +99,7 @@ from server.performance_utils import json_response, pack_backtest_data
 from server.utils.system import _schedule_restart
 
 # 注意：路由和 Socket.IO 处理器注册函数的导入移到 socketio 创建之后，避免循环导入
-from utils.binary_packer import pack_backtest_result, estimate_size
+from server.utils.binary_packer import pack_backtest_result, estimate_size
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 load_dotenv()  # 保留：环境变量需要在启动时加载
@@ -692,21 +761,6 @@ def get_strategy_params(strategy_id: str):
 # - /api/ga_optimize/status/<task_id> -> server/routes/optimization_routes.py
 
 # 以下路由保留在 app.py 中（需要直接访问 app 实例或特殊处理）：
-    """
-    HTTP 接口：返回指定标的在时间区间内的 K 线数据
-    """
-    symbol_code = request.args.get('symbol')
-    start_date = request.args.get('start')
-    end_date = request.args.get('end')
-
-    if not symbol_code:
-        return jsonify({"success": False, "error": "缺少 symbol 参数"}), 400
-
-    try:
-        history = get_api().get_symbol_kline(symbol_code, start_date, end_date)
-        return jsonify(history)
-    except Exception as e:
-        return json_response({"success": False, "error": str(e)}, status_code=500)
 
 @app.route('/api/latest_price', methods=['GET'])
 def get_latest_price():

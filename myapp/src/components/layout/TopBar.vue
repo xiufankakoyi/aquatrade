@@ -1,129 +1,125 @@
 <template>
-  <header class="h-14 bg-[#151925] border-b border-slate-800 flex items-center justify-between px-6">
-    <div class="flex items-center space-x-4">
+  <header class="topbar">
+    <!-- 左侧：策略选择 -->
+    <div class="topbar-left">
       <select
         v-model="selectedStrategyId"
         @change="handleStrategyChange"
-        class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        class="strategy-select"
       >
         <option v-for="strategy in strategies" :key="strategy.id" :value="strategy.id">
           {{ strategy.name }}
         </option>
       </select>
-      
-      <select
-        v-model="selectedVersion"
-        @change="handleVersionChange"
-        class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-      >
-        <option value="">选择版本</option>
-        <option
-          v-for="version in availableVersions"
-          :key="version.id"
-          :value="version.id"
+
+      <!-- 时间周期选择 -->
+      <div class="period-selector">
+        <button
+          v-for="period in quickPeriods"
+          :key="period.value"
+          @click="setQuickRange(period.value)"
+          class="period-btn"
+          :class="{ 'active': isActivePeriod(period.value) }"
         >
-          {{ version.name }} - {{ version.dateRange }}
-        </option>
-      </select>
-      
-      <!-- CHANGED: 添加回测时间区间选择器 -->
-      <div class="flex items-center space-x-2">
+          {{ period.label }}
+        </button>
+      </div>
+
+      <!-- 日期范围 -->
+      <div class="date-range">
         <input
           v-model="backtestParams.startDate"
           type="date"
-          class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          class="date-input"
           @change="handleDateRangeChange"
         />
-        <span class="text-slate-400 text-sm">至</span>
+        <span class="date-separator">-</span>
         <input
           v-model="backtestParams.endDate"
           type="date"
-          class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          class="date-input"
           @change="handleDateRangeChange"
         />
       </div>
-      <div class="flex items-center space-x-2 text-xs text-slate-300">
-        <button
-          class="px-2 py-1 rounded bg-slate-800 border border-slate-700 hover:border-indigo-500 transition-colors"
-          @click="setQuickRange('1y')"
-        >
-          1年
-        </button>
-        <button
-          class="px-2 py-1 rounded bg-slate-800 border border-slate-700 hover:border-indigo-500 transition-colors"
-          @click="setQuickRange('3y')"
-        >
-          3年
-        </button>
-        <button
-          class="px-2 py-1 rounded bg-slate-800 border border-slate-700 hover:border-indigo-500 transition-colors"
-          @click="setQuickRange('ytd')"
-        >
-          年初至今
-        </button>
-      </div>
-      
-      <div v-if="running" class="flex items-center space-x-2">
-        <div class="flex items-center space-x-2 px-3 py-1 bg-green-500/20 border border-green-500/30 rounded-full">
-          <div class="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-          <span class="text-xs text-green-400 font-medium">运行中</span>
-        </div>
-        <button
-          @click="handleStopBacktest"
-          class="px-3 py-1 bg-red-500/20 border border-red-500/30 rounded-full hover:bg-red-500/30 transition-colors flex items-center space-x-2"
-        >
-          <i class="fas fa-stop text-xs text-red-400"></i>
-          <span class="text-xs text-red-400 font-medium">停止回测</span>
-        </button>
-      </div>
     </div>
-    
-    <div class="flex items-center space-x-6">
-      <div class="flex items-center space-x-2 text-sm text-slate-400">
-        <div :class="apiConnected ? 'bg-green-500' : 'bg-red-500'" class="w-2 h-2 rounded-full"></div>
-        <span>{{ apiConnected ? 'API 连接正常' : 'API 连接异常' }}</span>
+
+    <!-- 中间：运行状态 -->
+    <div v-if="running" class="topbar-center">
+      <div class="status-badge">
+        <div class="status-dot"></div>
+        <span>运行中</span>
       </div>
-      <div class="flex items-center space-x-3">
-        <div v-if="lastUpdateTime" class="flex items-center space-x-2 text-sm text-slate-400">
-          <i class="fas fa-database"></i>
-          <span>数据更新: {{ lastUpdateTime }}</span>
-        </div>
-        <div v-if="profiles.length" class="flex items-center space-x-2 text-xs text-slate-300">
-          <span class="text-slate-400">参数预设</span>
-          <select
-            v-model="selectedProfileId"
-            class="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none"
-          >
-            <option :value="null">不使用预设</option>
-            <option
-              v-for="p in profiles"
-              :key="p.id"
-              :value="String(p.id)"
-            >
-              {{ p.profile_name }}
-            </option>
-          </select>
-        </div>
-        <button
-          type="button"
-          @click.prevent="handleRunBacktest"
-          :disabled="isLoading || !apiConnected || !selectedStrategyId"
-          class="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 text-white rounded-lg text-sm font-medium hover:from-indigo-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center space-x-2"
-        >
-          <i v-if="!isLoading" class="fas fa-play"></i>
-          <i v-else class="fas fa-spinner fa-spin"></i>
-          <span>{{ isLoading ? '运行中...' : '运行回测' }}</span>
-        </button>
-        <button
-          type="button"
-          @click="showDataUpdateModal"
-          class="w-10 h-10 flex items-center justify-center rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:text-indigo-400 hover:border-indigo-500/50 transition-all"
-          title="同步市场数据"
-        >
-          <i class="fas fa-cloud-download-alt"></i>
-        </button>
-        <ThemeSwitcher />
+      <button
+        @click="handleStopBacktest"
+        class="stop-btn"
+      >
+        <i class="fas fa-stop"></i>
+        <span>停止</span>
+      </button>
+    </div>
+
+    <!-- 右侧：操作按钮 -->
+    <div class="topbar-right">
+      <!-- API 状态 -->
+      <div class="api-status">
+        <div :class="['status-indicator', apiConnected ? 'connected' : 'disconnected']"></div>
+        <span class="status-text">{{ apiConnected ? 'API' : '断开' }}</span>
       </div>
+
+      <!-- 数据更新时间 -->
+      <div v-if="lastUpdateTime" class="update-time">
+        <i class="fas fa-database"></i>
+        <span>{{ lastUpdateTime }}</span>
+      </div>
+
+      <!-- 预设选择 -->
+      <select
+        v-if="profiles.length"
+        v-model="selectedProfileId"
+        class="profile-select"
+      >
+        <option :value="null">预设</option>
+        <option v-for="p in profiles" :key="p.id" :value="String(p.id)">
+          {{ p.profile_name }}
+        </option>
+      </select>
+
+      <!-- 运行回测按钮 -->
+      <button
+        type="button"
+        @click.prevent="handleRunBacktest"
+        @mouseenter="handleButtonHover"
+        @mouseleave="cancelPreload"
+        :disabled="isLoading || !apiConnected || !selectedStrategyId"
+        class="run-btn"
+      >
+        <i v-if="!isLoading" class="fas fa-play"></i>
+        <i v-else class="fas fa-spinner fa-spin"></i>
+        <span>{{ isLoading ? '运行中' : '回测' }}</span>
+      </button>
+
+      <!-- 查询缺失日期按钮 -->
+      <button
+        type="button"
+        @click="showMissingDatesModal"
+        class="missing-dates-btn"
+        title="查询缺失日期"
+      >
+        <i class="fas fa-search-minus"></i>
+      </button>
+
+      <!-- 数据同步按钮 -->
+      <button
+        type="button"
+        @click="showDataUpdateModal"
+        class="sync-btn"
+        title="同步市场数据"
+      >
+        <i class="fas fa-cloud-download-alt"></i>
+      </button>
+
+      <!-- 主题切换 -->
+      <ThemeSwitcher />
     </div>
   </header>
 
@@ -131,20 +127,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { useSocketIO } from '../../composables/useSocketIO';
 import { useBacktestStore } from '../../store/backtestStore';
 import { useDashboardStore } from '../../store/dashboardStore';
 import { useHistoryStore } from '../../store/historyStore';
 import { useStreamingBacktest } from '../../composables/useStreamingBacktest';
-import { fetchStrategyProfiles } from '../../api/backtestApi';
+import { fetchStrategyProfiles, preloadBacktest } from '../../api/backtestApi';
 import DataUpdateModal from '../modals/DataUpdateModal.vue';
+import ThemeSwitcher from '../ThemeSwitcher.vue';
 
 const dataUpdateModalRef = ref<any>(null);
 
 const showDataUpdateModal = () => {
     dataUpdateModalRef.value?.show();
+};
+
+const showMissingDatesModal = () => {
+    dataUpdateModalRef.value?.queryMissingDates();
 };
 
 const { connect } = useSocketIO();
@@ -155,17 +156,22 @@ const dashboardStore = useDashboardStore();
 const historyStore = useHistoryStore();
 const { start: startBacktest, isRunning, cancel: cancelBacktest } = useStreamingBacktest();
 
-// CHANGED: 从历史记录中获取可用版本
-const availableVersions = computed(() => {
-  return historyStore.records.map(record => ({
-    id: record.id,
-    name: record.strategyName,
-    dateRange: record.dateRange,
-    createdAt: record.createdAt
-  }));
-});
+const hoverTimer = ref<number | null>(null);
+const isPreloading = ref(false);
+const preloadTaskId = ref<string | null>(null);
+const activePeriod = ref<string>('1y');
 
-const selectedVersion = ref('');
+const quickPeriods = [
+  { label: '1月', value: '1m' },
+  { label: '3月', value: '3m' },
+  { label: '6月', value: '6m' },
+  { label: '1年', value: '1y' },
+  { label: '3年', value: '3y' },
+  { label: 'YTD', value: 'ytd' },
+];
+
+const isActivePeriod = (value: string) => activePeriod.value === value;
+
 const isLoading = computed(() => backtestStore.running || isRunning.value);
 const running = computed(() => backtestStore.running || isRunning.value);
 const lastUpdateTime = computed(() => backtestStore.lastUpdated);
@@ -189,16 +195,32 @@ const backtestParams = ref({
 
 const formatDate = (d: Date) => d.toISOString().split('T')[0];
 
-function setQuickRange(type: '1y' | '3y' | 'ytd') {
+function setQuickRange(type: string) {
+  activePeriod.value = type;
   const end = new Date();
   let start = new Date(end);
-  if (type === '1y') {
-    start.setFullYear(end.getFullYear() - 1);
-  } else if (type === '3y') {
-    start.setFullYear(end.getFullYear() - 3);
-  } else if (type === 'ytd') {
-    start = new Date(end.getFullYear(), 0, 1);
+
+  switch (type) {
+    case '1m':
+      start.setMonth(end.getMonth() - 1);
+      break;
+    case '3m':
+      start.setMonth(end.getMonth() - 3);
+      break;
+    case '6m':
+      start.setMonth(end.getMonth() - 6);
+      break;
+    case '1y':
+      start.setFullYear(end.getFullYear() - 1);
+      break;
+    case '3y':
+      start.setFullYear(end.getFullYear() - 3);
+      break;
+    case 'ytd':
+      start = new Date(end.getFullYear(), 0, 1);
+      break;
   }
+
   backtestParams.value.startDate = formatDate(start);
   backtestParams.value.endDate = formatDate(end);
   handleDateRangeChange();
@@ -206,7 +228,7 @@ function setQuickRange(type: '1y' | '3y' | 'ytd') {
 
 function handleStrategyChange() {
   dashboardStore.setSelectedStrategy(selectedStrategyId.value || '');
-  
+
   // 如果当前在策略详情页，切换策略时需要更新路由
   if (route.name === 'StrategyDetail') {
     router.push({ name: 'StrategyDetail', params: { id: selectedStrategyId.value } });
@@ -227,51 +249,19 @@ function handleStrategyChange() {
   }
 }
 
-// CHANGED: 处理日期区间变化
 function handleDateRangeChange() {
   // 日期区间变化时，可以触发一些操作，比如更新回测参数
   // 这里暂时不做任何操作，只是保存到 backtestParams
-}
-
-// CHANGED: 处理版本切换，加载对应的回测结果
-function handleVersionChange() {
-  if (!selectedVersion.value) return;
-  
-  const record = historyStore.records.find(r => r.id === selectedVersion.value);
-  if (record && 'equitySeries' in record) {
-    // 加载历史回测结果
-    backtestStore.equitySeries = (record as any).equitySeries || [];
-    backtestStore.benchmarkEquitySeries = (record as any).benchmarkEquitySeries || [];
-    backtestStore.trades = (record as any).trades || [];
-    backtestStore.monthlyReturns = (record as any).monthlyReturns || [];
-    backtestStore.holdingPeriods = (record as any).holdingPeriods || [];
-    if (record.metrics) {
-      backtestStore.metrics = {
-        totalReturn: record.metrics.totalReturn,
-        annualizedReturn: record.metrics.annualizedReturn,
-        maxDrawdown: record.metrics.maxDrawdown,
-        sharpeRatio: record.metrics.sharpeRatio,
-        sortinoRatio: record.metrics.sortinoRatio || 0,
-        volatility: record.metrics.volatility || 0,
-        winRate: record.metrics.winRate || 0,
-        profitFactor: record.metrics.profitFactor || 0,
-        tradesCount: record.metrics.tradesCount || 0,
-        avgTradeReturn: record.metrics.avgTradeReturn || 0,
-        maxWinningStreak: record.metrics.maxWinningStreak || 0,
-        maxLosingStreak: record.metrics.maxLosingStreak || 0
-      };
-    }
-  }
 }
 
 async function handleRunBacktest() {
   if (!selectedStrategyId.value || isLoading.value || !apiConnected.value) {
     return;
   }
-  
+
   const strategy = dashboardStore.selectedStrategy;
   if (!strategy) return;
-  
+
   try {
     startBacktest(
       {
@@ -300,12 +290,434 @@ function handleStopBacktest() {
   cancelBacktest();
 }
 
+function handleButtonHover() {
+  if (isLoading.value || !apiConnected.value || !selectedStrategyId.value) {
+    return;
+  }
+
+  hoverTimer.value = window.setTimeout(() => {
+    triggerPreload();
+  }, 200);
+}
+
+function cancelPreload() {
+  if (hoverTimer.value) {
+    clearTimeout(hoverTimer.value);
+    hoverTimer.value = null;
+  }
+}
+
+async function triggerPreload() {
+  if (isPreloading.value || !selectedStrategyId.value) {
+    return;
+  }
+
+  const strategy = dashboardStore.selectedStrategy;
+  if (!strategy) return;
+
+  isPreloading.value = true;
+
+  try {
+    const response = await preloadBacktest(
+      strategy.name,
+      backtestParams.value.startDate,
+      backtestParams.value.endDate
+    );
+
+    if (response.success) {
+      preloadTaskId.value = response.task_id;
+      console.log('[Preload] 预加载任务已启动:', response.task_id);
+    }
+  } catch (error) {
+    console.warn('[Preload] 预加载失败:', error);
+  } finally {
+    isPreloading.value = false;
+  }
+}
+
 onMounted(async () => {
-  // 通过 Vite 代理连接，避免 CORS
-  connect(window.location.origin);
+  connect('http://localhost:5000');
   await dashboardStore.loadStrategies();
-  // CHANGED: 加载历史记录
   historyStore.loadFromStorage();
+});
+
+onUnmounted(() => {
+  cancelPreload();
 });
 </script>
 
+<style scoped>
+.topbar {
+  height: clamp(2.5rem, 8vh, 2.75rem);
+  background: var(--bg-primary, #0a0a0a);
+  border-bottom: 1px solid var(--border-color, #1a1a1a);
+  display: flex;
+  align-items: center;
+  padding: 0 clamp(0.5rem, 1vw, 0.75rem);
+  gap: clamp(0.5rem, 1vw, 1rem);
+  flex-wrap: nowrap;
+}
+
+/* 左侧区域 */
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.strategy-select {
+  height: clamp(1.625rem, 5vh, 1.75rem);
+  padding: 0 clamp(0.375rem, 0.75vw, 0.5rem);
+  background: var(--bg-tertiary, #141414);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #e5e7eb;
+  outline: none;
+  min-width: clamp(6rem, 10vw, 8rem);
+  max-width: 100%;
+}
+
+.strategy-select:focus {
+  border-color: var(--border-hover, #404040);
+}
+
+.period-selector {
+  display: flex;
+  align-items: center;
+  background: var(--bg-tertiary, #141414);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  height: clamp(1.625rem, 5vh, 1.75rem);
+  flex-shrink: 0;
+}
+
+.period-btn {
+  padding: 0 clamp(0.375rem, 0.75vw, 0.5rem);
+  height: 100%;
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+  color: #a3a3a3;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border-card, #2a2a2a);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.period-btn:last-child {
+  border-right: none;
+}
+
+.period-btn:hover {
+  color: #e5e7eb;
+}
+
+.period-btn.active {
+  color: #f5f5f5;
+  background: var(--bg-secondary, #1f1f1f);
+}
+
+.date-range {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.125rem, 0.25vw, 0.25rem);
+  flex-shrink: 0;
+}
+
+.date-input {
+  height: clamp(1.625rem, 5vh, 1.75rem);
+  width: clamp(5.5rem, 9vw, 6.25rem);
+  padding: 0 clamp(0.25rem, 0.5vw, 0.375rem);
+  background: var(--bg-tertiary, #141414);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+  color: #d4d4d4;
+  outline: none;
+}
+
+.date-input:focus {
+  border-color: var(--border-hover, #404040);
+}
+
+.date-separator {
+  color: #525252;
+  font-size: clamp(0.75rem, 0.9vw, 0.875rem);
+}
+
+/* 中间区域 */
+.topbar-center {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+  flex-shrink: 0;
+}
+
+.status-badge {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.25rem, 0.5vw, 0.375rem);
+  padding: clamp(0.125rem, 0.4vh, 0.25rem) clamp(0.375rem, 0.75vw, 0.5rem);
+  background: var(--success-bg, #0d2818);
+  border: 1px solid var(--success-border, #1a4d2e);
+  border-radius: 0.25rem;
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+  color: var(--success-color, #22c55e);
+}
+
+.status-dot {
+  width: clamp(0.375rem, 0.5vw, 0.5rem);
+  height: clamp(0.375rem, 0.5vw, 0.5rem);
+  background: var(--success-color, #22c55e);
+  border-radius: 50%;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.stop-btn {
+  height: clamp(1.5rem, 4.5vh, 1.625rem);
+  padding: 0 clamp(0.375rem, 0.75vw, 0.5rem);
+  background: var(--error-bg, #2a0a0a);
+  border: 1px solid var(--error-border, #4a1a1a);
+  border-radius: 0.25rem;
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+  color: var(--error-color, #ef4444);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: clamp(0.25rem, 0.4vw, 0.375rem);
+  flex-shrink: 0;
+}
+
+.stop-btn:hover {
+  background: #3a0f0f;
+}
+
+.stop-btn i {
+  font-size: clamp(0.5625rem, 0.65vw, 0.625rem);
+}
+
+/* 右侧区域 */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.api-status {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.25rem, 0.4vw, 0.375rem);
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+  color: #737373;
+}
+
+.status-indicator {
+  width: clamp(0.375rem, 0.5vw, 0.5rem);
+  height: clamp(0.375rem, 0.5vw, 0.5rem);
+  border-radius: 50%;
+}
+
+.status-indicator.connected {
+  background: var(--success-color, #22c55e);
+}
+
+.status-indicator.disconnected {
+  background: var(--error-color, #ef4444);
+}
+
+.status-text {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .status-text {
+    display: inline;
+  }
+}
+
+.update-time {
+  display: none;
+  align-items: center;
+  gap: clamp(0.25rem, 0.4vw, 0.375rem);
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+  color: #737373;
+}
+
+@media (min-width: 768px) {
+  .update-time {
+    display: flex;
+  }
+}
+
+.update-time i {
+  font-size: clamp(0.5625rem, 0.65vw, 0.625rem);
+}
+
+.profile-select {
+  display: none;
+  height: clamp(1.625rem, 5vh, 1.75rem);
+  padding: 0 clamp(0.375rem, 0.75vw, 0.5rem);
+  background: var(--bg-tertiary, #141414);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+  color: #a3a3a3;
+  outline: none;
+}
+
+@media (min-width: 1024px) {
+  .profile-select {
+    display: block;
+  }
+}
+
+.profile-select:focus {
+  border-color: var(--border-hover, #404040);
+}
+
+.run-btn {
+  height: clamp(1.625rem, 5vh, 1.75rem);
+  padding: 0 clamp(0.5rem, 1vw, 0.75rem);
+  background: var(--accent-primary, #2962FF);
+  border: none;
+  border-radius: 0.25rem;
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+  font-weight: 500;
+  color: white;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: clamp(0.25rem, 0.5vw, 0.375rem);
+  flex-shrink: 0;
+}
+
+.run-btn:hover:not(:disabled) {
+  background: var(--accent-secondary, #1e4fd8);
+}
+
+.run-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.run-btn i {
+  font-size: clamp(0.5625rem, 0.65vw, 0.625rem);
+}
+
+.sync-btn {
+  width: clamp(1.625rem, 5vh, 1.75rem);
+  height: clamp(1.625rem, 5vh, 1.75rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary, #141414);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  color: #737373;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.sync-btn:hover {
+  color: #d4d4d4;
+  border-color: var(--border-hover, #404040);
+}
+
+.sync-btn i {
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+}
+
+.missing-dates-btn {
+  width: clamp(1.625rem, 5vh, 1.75rem);
+  height: clamp(1.625rem, 5vh, 1.75rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-tertiary, #141414);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  color: #737373;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.missing-dates-btn:hover {
+  color: #d4d4d4;
+  border-color: var(--border-hover, #404040);
+}
+
+.missing-dates-btn i {
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+}
+
+/* 响应式适配 */
+@media (max-width: 1199px) {
+  .topbar {
+    padding: 0 clamp(0.375rem, 0.8vw, 0.5rem);
+    gap: clamp(0.375rem, 0.8vw, 0.5rem);
+  }
+
+  .topbar-left {
+    gap: clamp(0.25rem, 0.5vw, 0.375rem);
+  }
+}
+
+@media (max-width: 991px) {
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: clamp(2.25rem, 7vh, 2.5rem);
+    padding: clamp(0.25rem, 0.5vh, 0.375rem) clamp(0.375rem, 0.8vw, 0.5rem);
+  }
+
+  .topbar-left {
+    width: 100%;
+    order: 1;
+  }
+
+  .topbar-center,
+  .topbar-right {
+    order: 2;
+  }
+
+  .date-range {
+    margin-left: auto;
+  }
+}
+
+@media (max-width: 767px) {
+  .period-selector {
+    display: none;
+  }
+
+  .strategy-select {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 575px) {
+  .topbar-left {
+    flex-wrap: nowrap;
+  }
+
+  .date-input {
+    width: clamp(4.5rem, 20vw, 5.5rem);
+  }
+}
+</style>

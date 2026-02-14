@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>量化爬虫控制台</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>量化爬虫控制台</h1>
+            <p class="subtitle">选择日期并开始数据采集</p>
+        </header>
+
+        <div id="error-banner" class="error-banner hidden">
+            <div class="error-banner-content">
+                <span class="error-icon">⚠️</span>
+                <span class="error-message" id="error-message">发生错误</span>
+                <button class="error-close" onclick="hideErrorBanner()">×</button>
+            </div>
+        </div>
+
+        <main class="main-content">
+            <div class="mode-switch">
+                <button class="tab-btn active" data-mode="single">单日模式</button>
+                <button class="tab-btn" data-mode="range">日期范围</button>
+            </div>
+
+            <div id="single-mode" class="mode-content active">
+                <div class="form-group">
+                    <label for="single-date">选择日期</label>
+                    <input type="date" id="single-date" class="date-input">
+                </div>
+                <p class="hint">命令: main.bat &lt;选择的日期&gt;</p>
+            </div>
+
+            <div id="range-mode" class="mode-content">
+                <div class="date-range">
+                    <div class="form-group">
+                        <label for="start-date">开始日期</label>
+                        <input type="date" id="start-date" class="date-input">
+                    </div>
+                    <span class="separator">至</span>
+                    <div class="form-group">
+                        <label for="end-date">结束日期</label>
+                        <input type="date" id="end-date" class="date-input">
+                    </div>
+                </div>
+                <p class="hint">命令: main.bat &lt;开始日期&gt;-&lt;结束日期&gt;</p>
+            </div>
+
+            <button id="submit-btn" class="submit-btn">开始爬取</button>
+
+            <div class="divider"></div>
+
+            <div class="clean-push-section">
+                <h3 class="section-title">📊 数据处理与推送</h3>
+                <div class="form-group">
+                    <label for="clean-date">选择清洗推送日期</label>
+                    <input type="date" id="clean-date" class="date-input">
+                </div>
+                <p class="hint">清洗数据并发送到飞书</p>
+                <button id="clean-push-btn" class="clean-push-btn">🚀 清洗并推送到飞书</button>
+            </div>
+
+            <div id="status-area" class="status-area hidden">
+                <div id="status-content" class="status-content"></div>
+                <div id="recovery-actions" class="recovery-actions hidden">
+                    <button id="retry-btn" class="retry-btn">重试</button>
+                    <button id="refresh-btn" class="refresh-btn">刷新状态</button>
+                    <button id="cancel-btn" class="cancel-btn">取消</button>
+                </div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>由量化爬虫系统提供支持</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

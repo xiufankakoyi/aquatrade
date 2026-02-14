@@ -81,6 +81,123 @@ export const apiService = {
     });
   },
 
+  /**
+   * 流式回测 - 支持实时更新收益曲线
+   * @param params 回测参数
+   * @param callbacks 回调函数对象
+   * @returns Promise 在回测完成时 resolve
+   */
+  async runStreamingBacktest(
+    params: BacktestParams & { initial_capital?: number; commission?: number; slippage?: number },
+    callbacks: {
+      onStart?: (data: any) => void;
+      onProgress?: (data: any) => void;
+      onDailyUpdate?: (data: any) => void;
+      onNewTrade?: (data: any) => void;
+      onMetricsUpdate?: (data: any) => void;
+      onRiskUpdate?: (data: any) => void;
+      onComplete?: (data: any) => void;
+      onError?: (error: any) => void;
+    }
+  ): Promise<any> {
+    const { emitEvent, onEvent } = useSocketIO();
+
+    return new Promise((resolve, reject) => {
+      let result: any = null;
+      let hasError = false;
+
+      // 监听回测开始
+      const unsubscribeStart = onEvent('backtest_start', (data) => {
+        console.log('[流式回测] 开始:', data);
+        callbacks.onStart?.(data);
+      });
+
+      // 监听进度更新
+      const unsubscribeProgress = onEvent('progress', (data) => {
+        callbacks.onProgress?.(data);
+      });
+
+      // 监听每日权益曲线更新 - 这是流式更新的关键
+      const unsubscribeDailyUpdate = onEvent('daily_update', (data) => {
+        // 处理 MsgPack 编码的数据
+        if (data._msgpack && data._data) {
+          try {
+            // 解码 base64 数据
+            const binaryString = atob(data._data);
+            const bytes = new Uint8Array(binaryString.length);
+            for (let i = 0; i < binaryString.length; i++) {
+              bytes[i] = binaryString.charCodeAt(i);
+            }
+            // 这里需要 msgpack 解码，暂时直接传递原始数据
+            callbacks.onDailyUpdate?.({ date: data.date, equity: data.equity });
+          } catch (e) {
+            callbacks.onDailyUpdate?.(data);
+          }
+        } else {
+          callbacks.onDailyUpdate?.(data);
+        }
+      });
+
+      // 监听新交易
+      const unsubscribeNewTrade = onEvent('new_trade', (data) => {
+        callbacks.onNewTrade?.(data);
+      });
+
+      // 监听指标更新
+      const unsubscribeMetrics = onEvent('metrics_update', (data) => {
+        callbacks.onMetricsUpdate?.(data);
+      });
+
+      // 监听风险更新
+      const unsubscribeRisk = onEvent('risk_update', (data) => {
+        callbacks.onRiskUpdate?.(data);
+      });
+
+      // 监听完成
+      const unsubscribeComplete = onEvent('stream_complete', (data) => {
+        console.log('[流式回测] 完成:', data);
+        // 清理所有监听器
+        unsubscribeStart();
+        unsubscribeProgress();
+        unsubscribeDailyUpdate();
+        unsubscribeNewTrade();
+        unsubscribeMetrics();
+        unsubscribeRisk();
+        unsubscribeComplete();
+        unsubscribeError();
+        unsubscribeCancelled();
+
+        if (!hasError) {
+          resolve(result || data);
+        }
+      });
+
+      // 监听错误
+      const unsubscribeError = onEvent('backtest_error', (error) => {
+        console.error('[流式回测] 错误:', error);
+        hasError = true;
+        callbacks.onError?.(error);
+        reject(new ApiError(error.message || '回测失败'));
+      });
+
+      // 监听取消
+      const unsubscribeCancelled = onEvent('backtest_cancelled', (data) => {
+        console.log('[流式回测] 已取消:', data);
+        reject(new ApiError('回测已取消'));
+      });
+
+      // 发送流式回测请求
+      emitEvent('run_streaming_backtest', {
+        strategy_name: params.strategy_name,
+        start_date: params.start_date,
+        end_date: params.end_date,
+        initial_capital: params.initial_capital || 1000000,
+        commission: params.commission || 0.0003,
+        slippage: params.slippage || 0.001,
+      });
+    });
+  },
+
   async getKlineData(
     symbolCode: string,
     startDate: string,
@@ -132,6 +249,38 @@ export const apiService = {
         description,
         name: name || 'AI策略',
       }),
+    });
+  },
+
+  async reloadStrategies(options?: {
+    strategy_id?: string;
+    file_path?: string;
+    refresh_all?: boolean;
+  }): Promise<{ action: string; message: string; strategies?: string[]; count?: number }> {
+    return await request('/strategies/reload', {
+      method: 'POST',
+      body: JSON.stringify(options || {}),
+    });
+  },
+
+  async getDiscoveredStrategies(): Promise<{ strategies: Array<{ id: string; module_path: string }>; count: number }> {
+    return await request('/strategies/discovered');
+  },
+
+  /**
+   * 保存策略文件
+   * @param params 策略参数
+   * @returns 保存结果
+   */
+  async saveStrategy(params: {
+    name: string;
+    description?: string;
+    code: string;
+    temp?: boolean;
+  }): Promise<{ success: boolean; filename?: string; message?: string }> {
+    return await request('/strategies/save', {
+      method: 'POST',
+      body: JSON.stringify(params),
     });
   },
 };

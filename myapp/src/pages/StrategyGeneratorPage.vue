@@ -79,12 +79,20 @@
             <p><strong>消息：</strong>{{ result.message }}</p>
           </div>
           <div class="result-actions">
+            <button @click="reloadStrategies" class="btn-reload" :disabled="isReloading">
+              <span v-if="isReloading">加载中...</span>
+              <span v-else>🔄 立即加载</span>
+            </button>
             <button @click="viewStrategies" class="btn-primary">
               查看策略列表
             </button>
             <button @click="clearResult" class="btn-secondary">
               关闭
             </button>
+          </div>
+          <div v-if="reloadResult" class="reload-result">
+            <p>{{ reloadResult.message }}</p>
+            <p v-if="reloadResult.count">已发现 {{ reloadResult.count }} 个策略</p>
           </div>
         </div>
       </div>
@@ -112,7 +120,9 @@ const strategyDescription = ref('');
 
 // 状态
 const isGenerating = ref(false);
+const isReloading = ref(false);
 const result = ref<{ filename: string; message: string } | null>(null);
+const reloadResult = ref<{ message: string; count?: number } | null>(null);
 const error = ref<string>('');
 
 // 计算属性
@@ -173,6 +183,29 @@ const clearResult = () => {
 const viewStrategies = () => {
   // 跳转到策略选择页面或刷新策略列表
   router.push('/dashboard');
+};
+
+// 立即加载策略
+const reloadStrategies = async () => {
+  isReloading.value = true;
+  reloadResult.value = null;
+  
+  try {
+    const response = await apiService.reloadStrategies({ refresh_all: true });
+    reloadResult.value = {
+      message: response.message,
+      count: response.count,
+    };
+  } catch (err) {
+    if (err instanceof ApiError) {
+      error.value = err.message;
+    } else {
+      error.value = '加载策略时发生未知错误';
+    }
+    console.error('加载策略失败:', err);
+  } finally {
+    isReloading.value = false;
+  }
 };
 </script>
 
@@ -293,7 +326,8 @@ const viewStrategies = () => {
 }
 
 .btn-primary,
-.btn-secondary {
+.btn-secondary,
+.btn-reload {
   padding: 12px 24px;
   border: none;
   border-radius: 4px;
@@ -312,6 +346,16 @@ const viewStrategies = () => {
   background: #357abd;
 }
 
+.btn-reload {
+  background: #28a745;
+  color: #fff;
+}
+
+.btn-reload:hover:not(:disabled) {
+  background: #218838;
+}
+
+.btn-reload:disabled,
 .btn-primary:disabled {
   background: #ccc;
   cursor: not-allowed;
@@ -372,6 +416,19 @@ const viewStrategies = () => {
   display: flex;
   gap: 12px;
   margin-top: 16px;
+}
+
+.reload-result {
+  margin-top: 12px;
+  padding: 12px;
+  background: #e8f5e9;
+  border-radius: 4px;
+  font-size: 13px;
+  color: #2e7d32;
+}
+
+.reload-result p {
+  margin: 4px 0;
 }
 
 .loading-overlay {

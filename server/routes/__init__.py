@@ -3,25 +3,32 @@
 统一导出所有路由蓝图
 """
 from flask import Blueprint
+import logging
+
+logger = logging.getLogger(__name__)
 
 # 延迟导入，避免循环依赖
 def register_routes(app):
     """注册所有路由到 Flask 应用"""
-    from server.routes.strategy_routes import strategy_bp
-    from server.routes.backtest_routes import backtest_bp
-    from server.routes.data_routes import data_bp
-    from server.routes.scatter_routes import scatter_bp
-    from server.routes.sentiment_routes import sentiment_bp
-    from server.routes.optimization_routes import optimization_bp
-    from server.routes.system_routes import system_bp
-    from server.routes.dragon_eye_routes import dragon_bp
     
-    app.register_blueprint(strategy_bp)
-    app.register_blueprint(backtest_bp)
-    app.register_blueprint(data_bp)
-    app.register_blueprint(scatter_bp)
-    app.register_blueprint(sentiment_bp)
-    app.register_blueprint(optimization_bp)
-    app.register_blueprint(system_bp)
-    app.register_blueprint(dragon_bp)
+    # 定义所有路由模块，每个都包含错误处理
+    route_modules = [
+        ('server.routes.strategy_routes', 'strategy_bp'),
+        ('server.routes.backtest_routes', 'backtest_bp'),
+        ('server.routes.data_routes', 'data_bp'),
+        ('server.routes.scatter_routes', 'scatter_bp'),
+        ('server.routes.sentiment_routes', 'sentiment_bp'),
+        ('server.routes.optimization_routes', 'optimization_bp'),
+        ('server.routes.system_routes', 'system_bp'),
+        ('server.routes.dragon_eye_routes', 'dragon_bp'),
+    ]
+    
+    for module_name, bp_name in route_modules:
+        try:
+            module = __import__(module_name, fromlist=[bp_name])
+            blueprint = getattr(module, bp_name)
+            app.register_blueprint(blueprint)
+            logger.info(f"路由注册成功: {module_name}")
+        except Exception as e:
+            logger.warning(f"路由注册失败: {module_name} - {e}")
 

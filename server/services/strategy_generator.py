@@ -53,19 +53,21 @@ class StrategyGenerator:
         """
         timestamp = int(time.time())
         strategy_id = f"ai_gen_{timestamp}"
+        class_name = f"Strategy_ai_gen_{timestamp}"
         
-        logger.info(f"开始生成策略: {strategy_name} (ID: {strategy_id})")
+        logger.info(f"开始生成策略: {strategy_name} (ID: {strategy_id}, Class: {class_name})")
         
         # 1. 添加策略特定的信息（策略ID和名称）
         # 在用户描述前添加策略信息
         enhanced_user_description = f"""
 策略ID: {strategy_id}
 策略名称: {strategy_name}
+类名: {class_name}
 
 用户需求:
 {user_description}
 
-请生成完整的策略代码，类名使用 AIGeneratedStrategy，strategy_name 设置为 "{strategy_name}"。
+请生成完整的策略代码，类名必须使用 {class_name}（避免类名冲突），strategy_name 设置为 "{strategy_name}"。
 """
         
         # 2. 使用我们之前创建的 Prompt 模板构建完整的 Prompt
@@ -89,8 +91,8 @@ class StrategyGenerator:
         if not code:
             raise Exception("策略生成失败: LLM 返回为空")
         
-        # 4. 后处理：确保代码包含策略ID和名称
-        code = self._post_process_code(code, strategy_id, strategy_name)
+        # 4. 后处理：确保代码包含正确的类名和策略名称
+        code = self._post_process_code(code, strategy_id, strategy_name, class_name)
         
         # 5. 保存文件到 core/strategies/user/ 目录
         filename = f"ai_gen_{timestamp}.py"
@@ -116,22 +118,35 @@ class StrategyGenerator:
         self, 
         code: str, 
         strategy_id: str, 
-        strategy_name: str
+        strategy_name: str,
+        class_name: str
     ) -> str:
         """
-        后处理生成的代码，确保包含正确的策略ID和名称
+        后处理生成的代码，确保包含正确的类名和策略名称
         
         参数:
             code: 生成的代码
             strategy_id: 策略ID
             strategy_name: 策略名称
+            class_name: 策略类名（避免冲突）
         
         返回:
             str: 处理后的代码
         """
+        # 替换类名（确保唯一性）
+        code = re.sub(
+            r'class\s+AIGeneratedStrategy\s*\(',
+            f'class {class_name}(',
+            code
+        )
+        code = re.sub(
+            r'class\s+\w+Strategy\s*\([^)]*AIStrategyBase',
+            f'class {class_name}(AIStrategyBase',
+            code
+        )
+        
         # 如果代码中已经有 strategy_name，确保它是正确的
         if 'strategy_name' in code:
-            # 替换 strategy_name 的值
             code = re.sub(
                 r'strategy_name\s*=\s*["\'][^"\']*["\']',
                 f'strategy_name = "{strategy_name}"',
@@ -139,11 +154,9 @@ class StrategyGenerator:
             )
         else:
             # 如果类定义后没有 strategy_name，添加它
-            # 查找类定义行
             lines = code.split('\n')
             for i, line in enumerate(lines):
                 if line.strip().startswith('class ') and 'AIStrategyBase' in line:
-                    # 在类定义后添加 strategy_name
                     indent = len(line) - len(line.lstrip())
                     lines.insert(i + 1, ' ' * (indent + 4) + f'strategy_name = "{strategy_name}"')
                     break

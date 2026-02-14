@@ -3,19 +3,19 @@
   显示收益曲线、雷达图、热力图和版本切换下拉菜单
 -->
 <template>
-  <div class="dashboard-page p-4 md:p-6 bg-gray-50 dark:bg-slate-900 dark:text-slate-100 min-h-screen overflow-x-hidden">
+  <div class="dashboard-page">
     <!-- 页面标题和版本选择 -->
-    <div class="mb-4 md:mb-6 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-      <h1 class="text-2xl md:text-3xl font-bold text-gray-800 dark:text-slate-100">回测 Dashboard</h1>
-      
+    <div class="page-header">
+      <h1 class="page-title">回测 Dashboard</h1>
+
       <!-- 版本切换下拉菜单和 AI 分析按钮 -->
-      <div class="flex flex-col sm:flex-row items-start sm:items-center space-y-4 sm:space-y-0 sm:space-x-4 w-full sm:w-auto">
-        <div class="flex items-center space-x-2 w-full sm:w-auto">
-          <label class="text-sm font-medium text-gray-700 dark:text-slate-300">选择版本：</label>
+      <div class="header-actions">
+        <div class="version-selector">
+          <label class="selector-label">版本</label>
           <select
             v-model="selectedVersionId"
             @change="handleVersionChange"
-            class="px-3 py-2 md:px-4 md:py-2 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-gray-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-auto"
+            class="version-select"
           >
             <option value="">全部版本</option>
             <option
@@ -27,74 +27,74 @@
             </option>
           </select>
         </div>
-        
+
         <!-- AI 深度复盘按钮 -->
         <button
           v-if="currentBacktestResult && currentStrategyId"
           @click="analyzeStrategy"
           :disabled="isAnalyzing"
-          class="px-3 py-2 md:px-4 md:py-2 bg-gradient-to-r from-purple-500 to-indigo-600 text-white rounded-lg font-medium hover:from-purple-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center space-x-2 w-full sm:w-auto justify-center"
+          class="ai-btn"
         >
-          <span v-if="isAnalyzing" class="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-white"></span>
-          <span v-else>🤖</span>
-          <span>{{ isAnalyzing ? '分析中...' : 'AI 深度复盘' }}</span>
+          <span v-if="isAnalyzing" class="spinner-icon"></span>
+          <i v-else class="fas fa-robot"></i>
+          <span>{{ isAnalyzing ? '分析中' : 'AI 复盘' }}</span>
         </button>
       </div>
     </div>
 
     <!-- 加载状态 -->
-    <div v-if="isLoading" class="text-center py-8 md:py-12">
-      <div class="inline-block animate-spin rounded-full h-8 w-8 md:h-12 md:w-12 border-b-2 border-blue-500"></div>
-      <p class="mt-3 md:mt-4 text-gray-600 dark:text-slate-400">加载中...</p>
+    <div v-if="isLoading" class="loading-state">
+      <div class="loading-spinner"></div>
+      <p class="loading-text">加载中...</p>
     </div>
 
     <!-- 错误状态 -->
-    <div v-else-if="error" class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 md:p-4 mb-4 md:mb-6">
-      <p class="text-red-800 dark:text-red-200">{{ error }}</p>
+    <div v-else-if="error" class="error-state">
+      <p class="error-text">{{ error }}</p>
     </div>
 
     <!-- 主要内容 -->
-    <div v-else class="space-y-4 md:space-y-6">
+    <div v-else class="content-area">
       <!-- 收益曲线 -->
-      <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 md:p-6 overflow-hidden">
-        <h2 class="text-lg md:text-xl font-semibold text-gray-800 dark:text-slate-100 mb-3 md:mb-4">收益曲线</h2>
-        <div class="w-full min-h-[200px] md:min-h-[300px]">
+      <div class="chart-card">
+        <h2 class="card-title">收益曲线</h2>
+        <div class="chart-wrapper">
           <EquityCurve
             :versions="equityCurveData"
             :benchmark="benchmarkData"
             @hover="handleEquityHover"
-            class="w-full h-full"
+            class="equity-chart"
           />
         </div>
       </div>
 
       <!-- 雷达图和热力图 -->
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+      <div class="charts-grid">
         <!-- 雷达图 -->
-        <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 md:p-6 overflow-hidden">
-          <h2 class="text-lg md:text-xl font-semibold text-gray-800 dark:text-slate-100 mb-3 md:mb-4">策略雷达图</h2>
-          <div class="w-full min-h-[250px] md:min-h-[300px]">
+        <div class="chart-card">
+          <h2 class="card-title">策略雷达图</h2>
+          <div class="chart-wrapper">
             <RadarChart
               v-if="currentLiveBacktestResult?.radarScores || currentRadarScores"
               :scores="currentLiveBacktestResult?.radarScores || currentRadarScores"
-              class="w-full h-full"
+              class="radar-chart"
             />
-            <div v-else class="flex items-center justify-center w-full h-full text-center text-gray-500 dark:text-slate-400">
+            <div v-else class="empty-state">
               暂无雷达图数据
             </div>
           </div>
         </div>
 
         <!-- 热力图 -->
-        <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 md:p-6 overflow-hidden">
-          <h2 class="text-lg md:text-xl font-semibold text-gray-800 dark:text-slate-100 mb-3 md:mb-4">月度收益热力图</h2>
-          <div class="w-full min-h-[250px] md:min-h-[300px]">
+        <div class="chart-card">
+          <h2 class="card-title">月度收益热力图</h2>
+          <div class="chart-wrapper">
             <HeatmapChart
               v-if="monthlyReturnsData.length > 0"
               :data="monthlyReturnsData"
-              class="w-full h-full"
+              class="heatmap-chart"
             />
-            <div v-else class="flex items-center justify-center w-full h-full text-center text-gray-500 dark:text-slate-400">
+            <div v-else class="empty-state">
               暂无热力图数据
             </div>
           </div>
@@ -102,21 +102,21 @@
       </div>
 
       <!-- 防守仓模块（默认隐藏，可展开） -->
-      <div class="bg-white dark:bg-slate-800 rounded-lg shadow-lg p-4 md:p-6">
-        <div class="flex items-center justify-between mb-3 md:mb-4">
-          <h2 class="text-lg md:text-xl font-semibold text-gray-800 dark:text-slate-100">防守仓仓位分析</h2>
+      <div class="chart-card">
+        <div class="card-header">
+          <h2 class="card-title">防守仓仓位分析</h2>
           <button
             @click="showDefensePortfolio = !showDefensePortfolio"
-            class="px-3 py-1 md:px-4 md:py-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300"
+            class="toggle-btn"
           >
             {{ showDefensePortfolio ? '隐藏' : '显示' }}
           </button>
         </div>
         <!-- 使用实时回测数据或 strategyStore 中的数据 -->
-        <div v-if="showDefensePortfolio && (currentLiveBacktestResult || currentBacktestResult)" class="overflow-x-auto">
+        <div v-if="showDefensePortfolio && (currentLiveBacktestResult || currentBacktestResult)" class="defense-content">
           <PortfolioDefense
             :trades="(currentLiveBacktestResult || currentBacktestResult)?.trades || []"
-            class="w-full"
+            class="defense-component"
           />
         </div>
       </div>
@@ -125,49 +125,52 @@
     <!-- AI 分析报告弹窗 -->
     <div
       v-if="showAnalysisModal"
-      class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-3 md:p-4 overflow-y-auto"
+      class="modal-overlay"
       @click.self="closeAnalysisModal"
     >
-      <div class="bg-white dark:bg-slate-800 rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+      <div class="modal-container">
         <!-- 弹窗头部 -->
-        <div class="flex items-center justify-between p-4 md:p-6 border-b border-gray-200 dark:border-slate-700">
-          <h2 class="text-xl md:text-2xl font-bold text-gray-800 dark:text-slate-100">🤖 AI 深度复盘报告</h2>
+        <div class="modal-header">
+          <h2 class="modal-title">
+            <i class="fas fa-robot"></i>
+            AI 深度复盘报告
+          </h2>
           <button
             @click="closeAnalysisModal"
-            class="text-gray-500 dark:text-slate-400 hover:text-gray-700 dark:hover:text-slate-200 text-xl md:text-2xl leading-none"
+            class="modal-close"
           >
-            ×
+            <i class="fas fa-times"></i>
           </button>
         </div>
 
         <!-- 弹窗内容 -->
-        <div class="flex-1 overflow-y-auto p-4 md:p-6">
-          <div v-if="isAnalyzing" class="text-center py-8 md:py-12">
-            <div class="inline-block animate-spin rounded-full h-8 w-8 md:h-12 md:w-12 border-b-2 border-purple-500 mb-3 md:mb-4"></div>
-            <p class="text-gray-600 dark:text-slate-400">AI 正在分析策略表现，请稍候...</p>
-            <p class="text-sm text-gray-500 dark:text-slate-500 mt-1 md:mt-2">这可能需要几秒钟到几十秒钟</p>
+        <div class="modal-body">
+          <div v-if="isAnalyzing" class="analyzing-state">
+            <div class="loading-spinner"></div>
+            <p class="analyzing-text">AI 正在分析策略表现，请稍候...</p>
+            <p class="analyzing-hint">这可能需要几秒钟到几十秒钟</p>
           </div>
 
-          <div v-else-if="analysisError" class="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 md:p-4">
-            <p class="text-red-800 dark:text-red-200">{{ analysisError }}</p>
+          <div v-else-if="analysisError" class="error-state">
+            <p class="error-text">{{ analysisError }}</p>
           </div>
 
           <div
             v-else-if="aiReportMarkdown"
-            class="prose dark:prose-invert max-w-none text-sm md:text-base"
+            class="report-content"
             v-html="renderMarkdown(aiReportMarkdown)"
           ></div>
 
-          <div v-else class="text-center py-8 md:py-12 text-gray-500 dark:text-slate-400">
+          <div v-else class="empty-state">
             暂无分析报告
           </div>
         </div>
 
         <!-- 弹窗底部 -->
-        <div class="p-4 md:p-6 border-t border-gray-200 dark:border-slate-700 flex justify-end">
+        <div class="modal-footer">
           <button
             @click="closeAnalysisModal"
-            class="px-4 py-2 md:px-6 md:py-2 bg-gray-200 dark:bg-slate-700 text-gray-800 dark:text-slate-200 rounded-lg hover:bg-gray-300 dark:hover:bg-slate-600 transition-colors"
+            class="close-btn"
           >
             关闭
           </button>
@@ -446,7 +449,7 @@ function renderMarkdown(markdown: string): string {
   let html = markdown.replace(/```[\s\S]*?```/gim, (match) => {
     const code = match.replace(/```/g, '').trim();
     const id = `__CODE_BLOCK_${codeBlocks.length}__`;
-    codeBlocks.push(`<pre class="bg-gray-100 dark:bg-slate-700 p-4 rounded-lg overflow-x-auto my-4 text-sm font-mono"><code>${escapeHtml(code)}</code></pre>`);
+    codeBlocks.push(`<pre class="code-block"><code>${escapeHtml(code)}</code></pre>`);
     return id;
   });
 
@@ -454,26 +457,26 @@ function renderMarkdown(markdown: string): string {
   const inlineCodes: string[] = [];
   html = html.replace(/`([^`]+)`/gim, (match, code) => {
     const id = `__INLINE_CODE_${inlineCodes.length}__`;
-    inlineCodes.push(`<code class="bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded text-sm font-mono">${escapeHtml(code)}</code>`);
+    inlineCodes.push(`<code class="inline-code">${escapeHtml(code)}</code>`);
     return id;
   });
 
   // 处理标题
-  html = html.replace(/^### (.*$)/gim, '<h3 class="text-lg font-semibold mt-6 mb-3 text-gray-800 dark:text-slate-100">$1</h3>');
-  html = html.replace(/^## (.*$)/gim, '<h2 class="text-xl font-semibold mt-8 mb-4 text-gray-800 dark:text-slate-100">$1</h2>');
-  html = html.replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold mt-10 mb-5 text-gray-900 dark:text-slate-50">$1</h1>');
+  html = html.replace(/^### (.*$)/gim, '<h3 class="report-h3">$1</h3>');
+  html = html.replace(/^## (.*$)/gim, '<h2 class="report-h2">$1</h2>');
+  html = html.replace(/^# (.*$)/gim, '<h1 class="report-h1">$1</h1>');
 
   // 处理粗体
-  html = html.replace(/\*\*(.*?)\*\*/gim, '<strong class="font-semibold text-gray-900 dark:text-slate-50">$1</strong>');
+  html = html.replace(/\*\*(.*?)\*\*/gim, '<strong class="report-strong">$1</strong>');
 
   // 处理列表（无序列表）
-  html = html.replace(/^[\-\*] (.+)$/gim, '<li class="ml-6 mb-2">$1</li>');
+  html = html.replace(/^[\-\*] (.+)$/gim, '<li class="report-li">$1</li>');
   // 处理有序列表
-  html = html.replace(/^\d+\. (.+)$/gim, '<li class="ml-6 mb-2 list-decimal">$1</li>');
+  html = html.replace(/^\d+\. (.+)$/gim, '<li class="report-li report-ol">$1</li>');
 
   // 包装连续的列表项
-  html = html.replace(/(<li class="ml-6 mb-2[^>]*>.*?<\/li>\n?)+/gim, (match) => {
-    return '<ul class="list-disc ml-6 mb-4 space-y-1">' + match + '</ul>';
+  html = html.replace(/(<li class="report-li[^>]*>.*?<\/li>\n?)+/gim, (match) => {
+    return '<ul class="report-ul">' + match + '</ul>';
   });
 
   // 处理段落（双换行）
@@ -483,7 +486,7 @@ function renderMarkdown(markdown: string): string {
     if (!p) return '';
     // 如果已经是 HTML 标签，不包装
     if (p.startsWith('<')) return p;
-    return `<p class="mb-4 text-gray-700 dark:text-slate-300 leading-relaxed">${p}</p>`;
+    return `<p class="report-p">${p}</p>`;
   }).join('');
 
   // 处理单换行
@@ -512,7 +515,465 @@ onMounted(() => {
 
 <style scoped>
 .dashboard-page {
+  padding: clamp(0.75rem, 2vw, 1rem);
+  background: var(--bg-primary, #0a0a0a);
+  color: #f3f4f6;
+  min-height: 100%;
+  overflow-x: hidden;
   transition: background-color 0.3s ease;
 }
-</style>
 
+/* 页面头部 */
+.page-header {
+  margin-bottom: clamp(0.75rem, 2vw, 1rem);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.5rem, 1.5vw, 0.75rem);
+}
+
+@media (min-width: 768px) {
+  .page-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+.page-title {
+  font-size: clamp(1.125rem, 2vw, 1.5rem);
+  font-weight: 600;
+  color: #f3f4f6;
+  margin: 0;
+}
+
+.header-actions {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.5rem, 1vw, 0.75rem);
+  width: 100%;
+}
+
+@media (min-width: 640px) {
+  .header-actions {
+    flex-direction: row;
+    align-items: center;
+    width: auto;
+  }
+}
+
+.version-selector {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+  width: 100%;
+}
+
+@media (min-width: 640px) {
+  .version-selector {
+    width: auto;
+  }
+}
+
+.selector-label {
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #737373;
+  flex-shrink: 0;
+}
+
+.version-select {
+  height: clamp(1.75rem, 5vh, 2rem);
+  padding: 0 clamp(0.5rem, 1vw, 0.75rem);
+  background: var(--bg-tertiary, #141414);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #e5e7eb;
+  outline: none;
+  flex: 1;
+  min-width: 0;
+}
+
+@media (min-width: 640px) {
+  .version-select {
+    width: clamp(10rem, 20vw, 15rem);
+    flex: none;
+  }
+}
+
+.version-select:focus {
+  border-color: var(--border-hover, #404040);
+}
+
+.ai-btn {
+  height: clamp(1.75rem, 5vh, 2rem);
+  padding: 0 clamp(0.5rem, 1vw, 0.75rem);
+  background: var(--accent-ai, #7c3aed);
+  border: none;
+  border-radius: 0.25rem;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  font-weight: 500;
+  color: white;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: clamp(0.25rem, 0.5vw, 0.375rem);
+  width: 100%;
+  justify-content: center;
+}
+
+@media (min-width: 640px) {
+  .ai-btn {
+    width: auto;
+  }
+}
+
+.ai-btn:hover:not(:disabled) {
+  background: var(--accent-ai-hover, #6d28d9);
+}
+
+.ai-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ai-btn i,
+.spinner-icon {
+  font-size: clamp(0.625rem, 0.7vw, 0.6875rem);
+}
+
+.spinner-icon {
+  display: inline-block;
+  width: clamp(0.75rem, 1vw, 0.875rem);
+  height: clamp(0.75rem, 1vw, 0.875rem);
+  border: 2px solid transparent;
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 加载状态 */
+.loading-state {
+  text-align: center;
+  padding: clamp(1.5rem, 5vh, 2rem) clamp(1rem, 3vw, 1.5rem);
+}
+
+.loading-spinner {
+  display: inline-block;
+  width: clamp(1.5rem, 4vw, 2rem);
+  height: clamp(1.5rem, 4vw, 2rem);
+  border: 2px solid var(--border-card, #2a2a2a);
+  border-top-color: var(--accent-primary, #2962FF);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.loading-text {
+  margin-top: clamp(0.5rem, 1.5vh, 0.75rem);
+  color: #737373;
+  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+}
+
+/* 错误状态 */
+.error-state {
+  background: var(--error-bg, #2a0a0a);
+  border: 1px solid var(--error-border, #4a1a1a);
+  border-radius: 0.25rem;
+  padding: clamp(0.5rem, 1.5vw, 0.75rem);
+  margin-bottom: clamp(0.75rem, 2vw, 1rem);
+}
+
+.error-text {
+  color: var(--error-color, #ef4444);
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  margin: 0;
+}
+
+/* 内容区域 */
+.content-area {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.75rem, 2vw, 1rem);
+}
+
+/* 卡片样式 */
+.chart-card {
+  background: var(--bg-card, #111111);
+  border: 1px solid var(--border-card, #1a1a1a);
+  border-radius: 0.375rem;
+  padding: clamp(0.75rem, 2vw, 1rem);
+  overflow: hidden;
+}
+
+.card-title {
+  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+  font-weight: 500;
+  color: #a3a3a3;
+  margin: 0 0 clamp(0.5rem, 1.5vh, 0.75rem) 0;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: clamp(0.5rem, 1.5vh, 0.75rem);
+}
+
+.toggle-btn {
+  height: clamp(1.375rem, 4vh, 1.5rem);
+  padding: 0 clamp(0.375rem, 0.75vw, 0.5rem);
+  background: transparent;
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #a3a3a3;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.toggle-btn:hover {
+  color: #e5e7eb;
+  border-color: var(--border-hover, #404040);
+}
+
+/* 图表容器 */
+.chart-wrapper {
+  width: 100%;
+  min-height: clamp(150px, 25vh, 200px);
+}
+
+@media (min-width: 768px) {
+  .chart-wrapper {
+    min-height: clamp(200px, 30vh, 300px);
+  }
+}
+
+.equity-chart,
+.radar-chart,
+.heatmap-chart {
+  width: 100%;
+  height: 100%;
+}
+
+/* 图表网格 */
+.charts-grid {
+  display: grid;
+  gap: clamp(0.75rem, 2vw, 1rem);
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 992px) {
+  .charts-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* 空状态 */
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: clamp(150px, 25vh, 200px);
+  text-align: center;
+  color: #525252;
+  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+}
+
+/* 防守仓内容 */
+.defense-content {
+  overflow-x: auto;
+}
+
+.defense-component {
+  width: 100%;
+  min-width: 600px;
+}
+
+/* 模态框 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: clamp(0.5rem, 2vw, 1rem);
+}
+
+.modal-container {
+  background: var(--bg-card, #111111);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.375rem;
+  width: min(95%, 64rem);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: clamp(0.75rem, 2vw, 1rem);
+  border-bottom: 1px solid var(--border-color, #1a1a1a);
+  gap: clamp(0.5rem, 1vw, 0.75rem);
+}
+
+.modal-title {
+  font-size: clamp(0.9375rem, 1.2vw, 1rem);
+  font-weight: 500;
+  color: #e5e7eb;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+}
+
+.modal-title i {
+  color: var(--accent-ai, #7c3aed);
+}
+
+.modal-close {
+  width: clamp(1.5rem, 3vw, 1.75rem);
+  height: clamp(1.5rem, 3vw, 1.75rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: #737373;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  border-radius: 0.25rem;
+  flex-shrink: 0;
+}
+
+.modal-close:hover {
+  color: #d4d4d4;
+}
+
+.modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: clamp(0.75rem, 2vw, 1rem);
+}
+
+.modal-footer {
+  padding: clamp(0.75rem, 2vw, 1rem);
+  border-top: 1px solid var(--border-color, #1a1a1a);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.close-btn {
+  height: clamp(1.75rem, 5vh, 2rem);
+  padding: 0 clamp(0.75rem, 1.5vw, 1rem);
+  background: var(--bg-secondary, #1f1f1f);
+  border: 1px solid var(--border-card, #2a2a2a);
+  border-radius: 0.25rem;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #d4d4d4;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.close-btn:hover {
+  background: var(--border-card, #2a2a2a);
+}
+
+/* 分析中状态 */
+.analyzing-state {
+  text-align: center;
+  padding: clamp(1.5rem, 5vh, 2rem);
+}
+
+.analyzing-text {
+  color: #a3a3a3;
+  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+  margin: clamp(0.5rem, 1.5vh, 0.75rem) 0 0 0;
+}
+
+.analyzing-hint {
+  color: #525252;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  margin: clamp(0.25rem, 0.75vh, 0.375rem) 0 0 0;
+}
+
+/* 报告内容 */
+.report-content {
+  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+  line-height: 1.6;
+}
+
+.report-content :deep(.report-h1) {
+  font-size: clamp(1.25rem, 1.8vw, 1.5rem);
+  font-weight: 700;
+  margin: clamp(1.5rem, 3vh, 2rem) 0 clamp(0.75rem, 1.5vh, 1rem);
+  color: #f9fafb;
+}
+
+.report-content :deep(.report-h2) {
+  font-size: clamp(1.125rem, 1.5vw, 1.25rem);
+  font-weight: 600;
+  margin: clamp(1.25rem, 2.5vh, 1.5rem) 0 clamp(0.625rem, 1.25vh, 0.75rem);
+  color: #f3f4f6;
+}
+
+.report-content :deep(.report-h3) {
+  font-size: clamp(1rem, 1.2vw, 1.125rem);
+  font-weight: 600;
+  margin: clamp(1rem, 2vh, 1.25rem) 0 clamp(0.5rem, 1vh, 0.625rem);
+  color: #e5e7eb;
+}
+
+.report-content :deep(.report-p) {
+  margin-bottom: clamp(0.75rem, 1.5vh, 1rem);
+  color: #d1d5db;
+}
+
+.report-content :deep(.report-ul) {
+  margin-bottom: clamp(0.75rem, 1.5vh, 1rem);
+  padding-left: clamp(1.25rem, 2.5vw, 1.5rem);
+}
+
+.report-content :deep(.report-li) {
+  margin-bottom: clamp(0.375rem, 0.75vh, 0.5rem);
+  color: #d1d5db;
+}
+
+.report-content :deep(.report-strong) {
+  color: #f9fafb;
+  font-weight: 600;
+}
+
+.report-content :deep(.code-block) {
+  background: rgba(0, 0, 0, 0.3);
+  padding: clamp(0.75rem, 1.5vw, 1rem);
+  border-radius: 0.375rem;
+  overflow-x: auto;
+  margin: clamp(0.75rem, 1.5vh, 1rem) 0;
+}
+
+.report-content :deep(.code-block code) {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: clamp(0.75rem, 0.9vw, 0.8125rem);
+  color: #e5e7eb;
+}
+
+.report-content :deep(.inline-code) {
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: clamp(0.75rem, 0.9vw, 0.8125rem);
+  color: #e5e7eb;
+}
+</style>

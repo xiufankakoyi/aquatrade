@@ -46,16 +46,20 @@
             </div>
           </div>
           <div class="flex-1 min-h-0">
-            <EquityCurve
-              v-if="hasBacktestData"
-              :versions="equityCurveData"
-              :benchmark="benchmarkData"
-              :scale="chartScale"
-              :sync-x-axis="syncDate"
-              :x-axis-min="xAxisMin"
-              :x-axis-max="xAxisMax"
-              @hover="handleChartHover"
-            />
+            <template v-if="hasBacktestData">
+              <EquityCurve
+                :versions="equityCurveData"
+                :benchmark="benchmarkData"
+                :scale="chartScale"
+                :sync-x-axis="syncDate"
+                :x-axis-min="xAxisMin"
+                :x-axis-max="xAxisMax"
+                @hover="handleChartHover"
+              />
+            </template>
+            <template v-else>
+              <DefaultMarketChart />
+            </template>
           </div>
         </div>
 
@@ -63,11 +67,20 @@
         <div class="tv-pane h-full border-t border-[#2a2e39]">
           <div class="tv-pane-header-flat"><span class="tv-pane-label">回撤序列 (DDR)</span></div>
           <div class="flex-1 min-h-0">
-            <DrawdownChart 
-              v-if="hasBacktestData"
-              :equity-series="backtestStore.equitySeries"
-              :sync-x-axis="syncDate"
-            />
+            <template v-if="hasBacktestData">
+              <DrawdownChart 
+                :equity-series="backtestStore.equitySeries"
+                :sync-x-axis="syncDate"
+              />
+            </template>
+            <template v-else>
+              <div class="w-full h-full flex items-center justify-center text-[#787b86] text-xs">
+                <div class="text-center">
+                  <i class="fas fa-chart-line text-2xl mb-2 opacity-50"></i>
+                  <p>运行回测后显示回撤分析</p>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -75,11 +88,20 @@
         <div class="tv-pane h-full border-t border-[#2a2e39]">
           <div class="tv-pane-header-flat"><span class="tv-pane-label">交易频率 (FREQ)</span></div>
           <div class="flex-1 min-h-0 px-2 pb-2">
-            <TradeFrequencyChart 
-              v-if="hasBacktestData"
-              :trades="backtestStore.trades"
-              :sync-x-axis="syncDate"
-            />
+            <template v-if="hasBacktestData">
+              <TradeFrequencyChart 
+                :trades="backtestStore.trades"
+                :sync-x-axis="syncDate"
+              />
+            </template>
+            <template v-else>
+              <div class="w-full h-full flex items-center justify-center text-[#787b86] text-xs">
+                <div class="text-center">
+                  <i class="fas fa-chart-bar text-2xl mb-2 opacity-50"></i>
+                  <p>运行回测后显示交易频率</p>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -89,51 +111,70 @@
         v-if="isSidebarOpen"
         class="w-[300px] flex flex-col border-l border-[#2a2e39] bg-[#131722] tv-dot-grid transition-all duration-300 pointer-events-auto"
       >
-        <div class="p-3 border-b border-[#2a2e39] flex items-center justify-between relative">
-          <span class="text-[10px] font-bold text-[#787b86] uppercase tracking-widest">多维概览及导出</span>
-          <div class="relative">
-            <button @click="toggleExportMenu" class="text-[#787b86] hover:text-white transition-colors">
-              <i class="fas fa-file-export text-[10px]"></i>
-            </button>
-            <!-- 导出菜单 -->
-            <div v-if="showExportMenu" class="absolute right-0 mt-2 w-48 bg-[#1e222d] rounded shadow-xl border border-[#2a2e39] z-[100]">
-              <div class="py-1">
-                <button @click="exportToPDF" class="w-full text-left px-4 py-2 text-xs text-[#d1d4dc] hover:bg-[#2a2e39] transition-colors flex items-center space-x-2">
-                  <i class="fas fa-file-pdf text-[#f23645]"></i>
-                  <span>导出 PDF 报告</span>
+        <!-- 配置面板：无回测数据时显示 -->
+        <template v-if="!hasBacktestData">
+          <StrategyConfigPanel
+            :is-running="isBacktestRunning"
+            @run="handleRunBacktest"
+            @save="handleSaveConfig"
+          />
+        </template>
+
+        <!-- 结果面板：有回测数据时显示 -->
+        <template v-else>
+          <div class="p-3 border-b border-[#2a2e39] flex items-center justify-between relative">
+            <span class="text-[10px] font-bold text-[#787b86] uppercase tracking-widest">多维概览及导出</span>
+            <div class="flex items-center gap-2">
+              <button 
+                @click="showConfigPanel" 
+                class="text-[#787b86] hover:text-white transition-colors"
+                title="返回配置"
+              >
+                <i class="fas fa-cog text-[10px]"></i>
+              </button>
+              <div class="relative">
+                <button @click="toggleExportMenu" class="text-[#787b86] hover:text-white transition-colors">
+                  <i class="fas fa-file-export text-[10px]"></i>
                 </button>
-                <button @click="exportToExcel" class="w-full text-left px-4 py-2 text-xs text-[#d1d4dc] hover:bg-[#2a2e39] transition-colors flex items-center space-x-2">
-                  <i class="fas fa-file-excel text-[#089981]"></i>
-                  <span>导出 Excel 数据</span>
-                </button>
+                <!-- 导出菜单 -->
+                <div v-if="showExportMenu" class="absolute right-0 mt-2 w-48 bg-[#1e222d] rounded shadow-xl border border-[#2a2e39] z-[100]">
+                  <div class="py-1">
+                    <button @click="exportToPDF" class="w-full text-left px-4 py-2 text-xs text-[#d1d4dc] hover:bg-[#2a2e39] transition-colors flex items-center space-x-2">
+                      <i class="fas fa-file-pdf text-[#f23645]"></i>
+                      <span>导出 PDF 报告</span>
+                    </button>
+                    <button @click="exportToExcel" class="w-full text-left px-4 py-2 text-xs text-[#d1d4dc] hover:bg-[#2a2e39] transition-colors flex items-center space-x-2">
+                      <i class="fas fa-file-excel text-[#089981]"></i>
+                      <span>导出 Excel 数据</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-        
-        <div class="flex-1 overflow-y-auto no-scrollbar">
-          <!-- Calendar / Heatmap Screener -->
-          <div class="p-4 border-b border-[#2a2e39]">
-             <VerticalHeatmap 
-              v-if="monthlyReturnsData.length > 0"
-              :data="monthlyReturnsData"
-              @month-select="handleMonthSelect"
-            />
-          </div>
+          
+          <div class="flex-1 overflow-y-auto no-scrollbar">
+            <!-- Calendar / Heatmap Screener -->
+            <div class="p-4 border-b border-[#2a2e39]">
+               <VerticalHeatmap 
+                v-if="monthlyReturnsData.length > 0"
+                :data="monthlyReturnsData"
+                @month-select="handleMonthSelect"
+              />
+              <div v-else class="h-[120px] flex items-center justify-center text-[#787b86] text-xs">
+                <div class="text-center">
+                  <i class="fas fa-calendar text-xl mb-2 opacity-50"></i>
+                  <p>暂无月度收益数据</p>
+                </div>
+              </div>
+            </div>
 
-          <!-- Capability Radar -->
-          <div class="h-[250px] p-4 flex flex-col">
-            <span class="tv-pane-label mb-4">策略能力指标 (CAPABILITY)</span>
-            <div class="flex-1 min-h-0">
-               <RadarAbility
-                  v-if="radarScores"
-                  :scores="radarScores"
-                  :benchmark="benchmarkRadarScores"
-                  :feasibility-score="overallFeasibilityScore"
-                />
+            <!-- Metrics Panel (替代雷达图) -->
+            <div class="flex-1 p-4 overflow-y-auto">
+              <MetricsPanel :metrics="strategyMetrics" />
             </div>
           </div>
-        </div>
+        </template>
       </div>
     </div>
 
@@ -190,17 +231,21 @@ import { useRouter } from 'vue-router';
 import { useStrategyStore } from '../store/strategyStore';
 import { useBacktestStore } from '../store/backtestStore';
 import { useSocketIO } from '../composables/useSocketIO';
+import { useStreamingBacktest } from '../composables/useStreamingBacktest';
 import MetricsToolbar from '../components/metrics/MetricsToolbar.vue';
 import EquityCurve from '../components/EquityCurve.vue';
 import DrawdownChart from '../components/charts/DrawdownChart.vue';
 import TradeFrequencyChart from '../components/charts/TradeFrequencyChart.vue';
 import VerticalHeatmap from '../components/charts/VerticalHeatmap.vue';
-import RadarAbility from '../components/charts/RadarAbility.vue';
+import DefaultMarketChart from '../components/DefaultMarketChart.vue';
+import StrategyConfigPanel from '../components/StrategyConfigPanel.vue';
+import MetricsPanel from '../components/dashboard/MetricsPanel.vue';
 import type { Trade, Metrics } from '../types/backtest';
 
 const router = useRouter();
 const strategyStore = useStrategyStore();
 const backtestStore = useBacktestStore();
+const { start: startBacktest, isRunning: isBacktestRunning } = useStreamingBacktest();
 
 const chartScale = ref<'linear' | 'log'>('linear');
 const syncDate = ref('');
@@ -224,6 +269,65 @@ const hasBacktestData = computed(() => {
 });
 
 const metrics = computed(() => backtestStore.metrics);
+
+// 策略收益指标数据（用于 MetricsPanel）
+const strategyMetrics = computed(() => {
+  const m = backtestStore.metrics;
+  if (!m) {
+    return {
+      strategyReturn: 0,
+      annualReturn: 0,
+      excessReturn: 0,
+      benchmarkReturn: 0,
+      maxDrawdown: 0,
+      strategyVolatility: 0,
+      benchmarkVolatility: 0,
+      maxDrawdownPeriod: '--',
+      sharpeRatio: 0,
+      sortinoRatio: 0,
+      calmarRatio: 0,
+      informationRatio: 0,
+      alpha: 0,
+      beta: 0,
+      dailyExcessReturn: 0,
+      excessMaxDrawdown: 0,
+      excessSharpeRatio: 0,
+      winRate: 0,
+      profitLossRatio: 0,
+      winCount: 0,
+      lossCount: 0,
+      dailyWinRate: 0,
+      totalTrades: 0,
+      avgHoldingDays: 0,
+    };
+  }
+  return {
+    strategyReturn: m.totalReturn || 0,
+    annualReturn: m.annualReturn || 0,
+    excessReturn: (m.totalReturn || 0) - (m.benchmarkReturn || 0),
+    benchmarkReturn: m.benchmarkReturn || 0,
+    maxDrawdown: m.maxDrawdown || 0,
+    strategyVolatility: m.volatility || 0,
+    benchmarkVolatility: m.benchmarkVolatility || 0,
+    maxDrawdownPeriod: m.maxDrawdownPeriod || '--',
+    sharpeRatio: m.sharpeRatio || 0,
+    sortinoRatio: m.sortinoRatio || 0,
+    calmarRatio: m.calmarRatio || 0,
+    informationRatio: m.informationRatio || 0,
+    alpha: m.alpha || 0,
+    beta: m.beta || 0,
+    dailyExcessReturn: m.dailyExcessReturn || 0,
+    excessMaxDrawdown: m.excessMaxDrawdown || 0,
+    excessSharpeRatio: m.excessSharpeRatio || 0,
+    winRate: m.winRate || 0,
+    profitLossRatio: m.profitLossRatio || 0,
+    winCount: m.winCount || 0,
+    lossCount: m.lossCount || 0,
+    dailyWinRate: m.dailyWinRate || 0,
+    totalTrades: m.totalTrades || 0,
+    avgHoldingDays: m.avgHoldingDays || 0,
+  };
+});
 
 const equityCurveData = computed(() => {
   if (backtestStore.equitySeries.length > 0) {
@@ -450,6 +554,81 @@ function closeAnalysisModal() {
   if (controller) controller.abort();
   showAnalysisModal.value = false;
   aiReportMarkdown.value = '';
+}
+
+/**
+ * 运行回测
+ * 从配置面板接收配置并启动回测
+ */
+function handleRunBacktest(config: {
+  startDate: string;
+  endDate: string;
+  initialCapital: number;
+  commission: number;
+  slippage: number;
+  benchmark: string;
+}) {
+  if (!strategyStore.currentVersion) {
+    alert('请先选择策略');
+    return;
+  }
+
+  console.log('[Dashboard] 启动回测，配置:', {
+    strategy: strategyStore.currentVersion.name,
+    startDate: config.startDate,
+    endDate: config.endDate,
+    initialCapital: config.initialCapital,
+    commission: config.commission,
+    slippage: config.slippage,
+    benchmark: config.benchmark
+  });
+
+  startBacktest({
+    strategy_name: strategyStore.currentVersion.name,
+    start_date: config.startDate,
+    end_date: config.endDate,
+    benchmark_code: config.benchmark,
+    initial_capital: config.initialCapital,
+    commission: config.commission,
+    slippage: config.slippage
+  }, {
+    onStart: () => {
+      console.log('[Dashboard] 回测开始');
+    },
+    onProgress: (progress: number) => {
+      console.log('[Dashboard] 回测进度:', progress);
+    },
+    onComplete: () => {
+      console.log('[Dashboard] 回测完成');
+    },
+    onError: (error: Error) => {
+      console.error('[Dashboard] 回测错误:', error);
+    }
+  });
+}
+
+/**
+ * 保存配置
+ */
+function handleSaveConfig(config: {
+  startDate: string;
+  endDate: string;
+  initialCapital: number;
+  commission: number;
+  slippage: number;
+  benchmark: string;
+}) {
+  console.log('[Dashboard] 保存配置:', config);
+  // 可以添加保存到服务器或本地存储的逻辑
+}
+
+/**
+ * 显示配置面板（清除回测数据）
+ */
+function showConfigPanel() {
+  if (confirm('切换回配置面板将清除当前回测数据，是否继续？')) {
+    backtestStore.clearBacktestData();
+  }
 }
 
 function renderMarkdown(md: string) {

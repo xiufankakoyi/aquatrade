@@ -1,10 +1,11 @@
 """
-因子加载器 - 智能路由：数据库优先，按需计算
+因子加载器 - 智能路由：数据库优先，按需计算，结果缓存
 
 核心优势：
 1. 自动判断数据库是否已有因子
 2. 避免重复计算（如果数据库已有 ma5，直接用）
-3. 统一接口，策略代码简洁
+3. 计算型因子结果缓存，同一回测周期内只计算一次
+4. 统一接口，策略代码简洁
 """
 
 from typing import Optional, Any, Dict
@@ -16,14 +17,14 @@ from pathlib import Path
 
 class FactorLoader:
     """
-    因子加载器：优先从数据库，按需计算
+    因子加载器：优先从数据库，按需计算，结果缓存
     
     使用方式：
         from core.strategies.utils import FactorLoader as FL
         
         # 在策略的 generate_signals_vectorized 中
         ma5 = FL.get_factor('ma5', strategy_instance)  # 从数据库
-        gain_3d = FL.get_factor('gain_3d', strategy_instance, window=3)  # 动态计算
+        gain_3d = FL.get_factor('gain_3d', strategy_instance, window=3)  # 动态计算（带缓存）
     """
     
     # 数据库已有的因子映射（从 vectorized_base 实例属性获取）
@@ -58,6 +59,23 @@ class FactorLoader:
     # 因子注册表路径
     _registry_path = Path(__file__).parent / 'factor_registry.json'
     _registry_cache: Optional[Dict] = None
+    
+    # 计算型因子缓存：{(strategy_id, factor_name, param_hash): matrix}
+    _compute_cache: Dict[str, np.ndarray] = {}
+    
+    @classmethod
+    def clear_cache(cls):
+        """清除计算型因子缓存（在回测开始时调用）"""
+        cls._compute_cache.clear()
+    
+    @classmethod
+    def _get_cache_key(cls, strategy_instance, factor_name: str, params: Dict) -> str:
+        """生成缓存键"""
+        # 使用策略实例 id 和因子参数生成唯一键
+        strategy_id = id(strategy_instance)
+        # 将参数转换为可哈希的字符串
+        param_str = ','.join(f"{k}={v}" for k, v in sorted(params.items()))
+        return f"{strategy_id}:{factor_name}:{param_str}"
     
     @classmethod
     def load_registry(cls) -> Dict:
@@ -104,7 +122,7 @@ class FactorLoader:
                 return factor_value
             else:
                 # 数据库应该有但实例没有，说明 prepare_data 未执行或数据缺失
-                print(f"[FactorLoader] ⚠️ {factor_name} 应在数据库中，但实例属性为空")
+                print(f"[FactorLoader] [WARN] {factor_name} 应在数据库中，但实例属性为空")
                 return None
         
         # 2. 查询注册表，确定计算函数
@@ -122,11 +140,11 @@ class FactorLoader:
         
         if source == 'database':
             # 如果配置为 database 但走到这里，说明数据缺失
-            print(f"[FactorLoader] ⚠️ {factor_name} 配置为数据库因子，但未找到数据")
+            print(f"[FactorLoader] [WARN] {factor_name} 配置为数据库因子，但未找到数据")
             return None
         
         elif source == 'compute':
-            # 动态计算
+            # 动态计算（带缓存）
             from .factor_compute import FactorCompute
             
             function_name = factor_config.get('function')
@@ -141,9 +159,17 @@ class FactorLoader:
             default_params = factor_config.get('params', {})
             params = {**default_params, **kwargs}
             
+            # 检查缓存
+            cache_key = cls._get_cache_key(strategy_instance, factor_name, params)
+            if cache_key in cls._compute_cache:
+                return cls._compute_cache[cache_key]
+            
             # 调用计算函数
             try:
-                return compute_fn(strategy_instance, **params)
+                result = compute_fn(strategy_instance, **params)
+                # 存入缓存
+                cls._compute_cache[cache_key] = result
+                return result
             except Exception as e:
                 print(f"[FactorLoader] ❌ 计算 {factor_name} 失败: {e}")
                 raise

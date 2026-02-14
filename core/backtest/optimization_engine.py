@@ -68,7 +68,7 @@ def _warn_missing_field(field_name: str, context: str = "") -> None:
         _metric_warning_cache.add(cache_key)
         # 只在第一次警告时打印，后续直接返回（避免 I/O 开销）
         if len(_metric_warning_cache) <= 100:  # 只打印前100个警告，避免日志过多
-            print(f"⚠️ 警告: metrics 中缺失字段 '{field_name}'" + (f" ({context})" if context else "") + "，使用默认值")
+            print(f"[WARN] 警告: metrics 中缺失字段 '{field_name}'" + (f" ({context})" if context else "") + "，使用默认值")
 
 
 def _sanitize_score(value: Any) -> float:
@@ -468,7 +468,7 @@ class StrategyOptimizer:
                 self.socketio.emit("optimization_evaluation", payload)
         except Exception as e:
             # 不要因为调试事件失败影响主流程
-            print(f"⚠️ 发送 optimization_evaluation 事件失败: {e}")
+            print(f"[WARN] 发送 optimization_evaluation 事件失败: {e}")
 
     # ---------------------------------------------------------------------- #
     # Genetic Algorithm
@@ -516,7 +516,7 @@ class StrategyOptimizer:
             
             # 参数范围验证和修正
             if lower >= upper:
-                print(f"⚠️  参数范围验证失败: {name} 范围 [{lower}, {upper}] 无效，将使用安全范围")
+                print(f"[WARN]  参数范围验证失败: {name} 范围 [{lower}, {upper}] 无效，将使用安全范围")
                 # 使用安全范围：如果下限太大，使用0到下限+100的范围
                 if lower > 1000:
                     lower, upper = 0, lower + 100
@@ -641,7 +641,7 @@ class StrategyOptimizer:
                     # 确保 best_overall[1] 是字典类型
                     best_params_dict = best_overall["params"] if best_overall["params"] else {}
                     if not isinstance(best_params_dict, dict):
-                        print(f"⚠️  警告: best_overall[1] 不是字典类型: {type(best_params_dict)}, 值: {best_params_dict}")
+                        print(f"[WARN]  警告: best_overall[1] 不是字典类型: {type(best_params_dict)}, 值: {best_params_dict}")
                         best_params_dict = {}
                     
                     emit_data = {
@@ -763,7 +763,7 @@ class StrategyOptimizer:
             
             # 参数范围验证和修正
             if lower >= upper:
-                print(f"⚠️  贝叶斯优化参数范围验证失败: {name} 范围 [{lower}, {upper}] 无效，将使用安全范围")
+                print(f"[WARN]  贝叶斯优化参数范围验证失败: {name} 范围 [{lower}, {upper}] 无效，将使用安全范围")
                 # 使用安全范围：如果下限太大，使用0到下限+100的范围
                 if lower > 1000:
                     lower, upper = 0, lower + 100
@@ -815,7 +815,7 @@ class StrategyOptimizer:
                 storage_used = "Redis"
                 print(f"✅ 使用 Redis Storage: {redis_storage_url}")
             except Exception as e:
-                print(f"⚠️ 创建 Optuna Redis Storage 失败: {e}")
+                print(f"[WARN] 创建 Optuna Redis Storage 失败: {e}")
                 import traceback
                 traceback.print_exc()
         
@@ -839,7 +839,7 @@ class StrategyOptimizer:
                 storage_used = "JournalStorage"
                 print(f"✅ 使用 JournalStorage 文件存储: {journal_path}")
             except Exception as e:
-                print(f"⚠️ 创建 Optuna JournalStorage 失败，尝试使用内存存储: {e}")
+                print(f"[WARN] 创建 Optuna JournalStorage 失败，尝试使用内存存储: {e}")
                 import traceback
                 traceback.print_exc()
                 # 如果文件存储失败，回退到内存存储（不支持并行）
@@ -850,7 +850,7 @@ class StrategyOptimizer:
                 )
                 n_jobs = 1  # 内存存储不支持并行
                 storage_used = "InMemory"
-                print(f"⚠️ 回退到内存存储，并行已禁用 (n_jobs=1)")
+                print(f"[WARN] 回退到内存存储，并行已禁用 (n_jobs=1)")
         
         # 评估计数器（用于进度追踪）
         evaluation_count = [0]  # 使用列表以便在闭包中修改
@@ -935,7 +935,7 @@ class StrategyOptimizer:
                     },
                 )
             except Exception as e:
-                print(f"⚠️ Optuna evaluation 事件发送失败: {e}")
+                print(f"[WARN] Optuna evaluation 事件发送失败: {e}")
             
             # 向前端推送进度更新
             if self.socketio:
@@ -961,7 +961,7 @@ class StrategyOptimizer:
                     else:
                         self.socketio.emit("optimization_progress", emit_data)
                 except Exception as e:
-                    print(f"⚠️ 进度推送失败: {e}")
+                    print(f"[WARN] 进度推送失败: {e}")
             
             # 打印日志
             print(f"  Trial {current_count}/{total_trials}: score={score:.4f}, params={params}")
@@ -989,7 +989,7 @@ class StrategyOptimizer:
             if self.socketio and self.sid:
                 self.socketio.emit("optimization_cancelled", {"message": "优化已停止"}, to=self.sid)
         except Exception as e:
-            print(f"⚠️ Optuna 优化出错: {e}")
+            print(f"[WARN] Optuna 优化出错: {e}")
             import traceback
             traceback.print_exc()
             if self.socketio and self.sid:
@@ -1005,7 +1005,7 @@ class StrategyOptimizer:
         
         # 获取最佳结果
         if not study.trials:
-            print("⚠️ 没有完成任何 trial，返回默认结果")
+            print("[WARN] 没有完成任何 trial，返回默认结果")
             return {
                 "best_score": MIN_FITNESS_SCORE,
                 "best_params": {},
@@ -1296,7 +1296,7 @@ class StrategyOptimizer:
                 else:
                     self.socketio.emit("optimization_progress", progress_payload)
             except Exception as e:
-                print(f"⚠️ 发送最终 optimization_progress 事件失败: {e}")
+                print(f"[WARN] 发送最终 optimization_progress 事件失败: {e}")
 
             emit_data = {
                 "best_score": best_score,

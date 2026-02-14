@@ -267,6 +267,7 @@ class BacktestService:
         benchmark_code: Optional[str] = None,
         stop_event: Optional[Event] = None,
         params: Optional[Dict[str, Any]] = None,
+        backtest_config: Optional[Dict[str, Any]] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         CHANGED: 流式 API 层（支持懒加载初始化）
@@ -306,6 +307,26 @@ class BacktestService:
                     }
                 }
                 return
+        
+        # 应用回测配置（初始资金、佣金、滑点）
+        if backtest_config:
+            initial_capital = backtest_config.get('initial_capital')
+            commission = backtest_config.get('commission')
+            slippage = backtest_config.get('slippage')
+            
+            engine = self.init_service.backtest_engine
+            
+            if initial_capital is not None:
+                engine.initial_capital = initial_capital
+                print(f"[BacktestService] 设置初始资金: {initial_capital}")
+            if commission is not None:
+                engine.commission_rate = commission
+                print(f"[BacktestService] 设置佣金率: {commission}")
+            if slippage is not None and hasattr(engine, 'slippage'):
+                engine.slippage = slippage
+                print(f"[BacktestService] 设置滑点: {slippage}")
+            elif slippage is not None:
+                print(f"[BacktestService] 警告: 引擎不支持滑点设置")
         
         initial_capital = self.init_service.backtest_engine.initial_capital
         

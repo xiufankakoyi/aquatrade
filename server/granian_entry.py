@@ -41,7 +41,7 @@ except ImportError as e:
             f.write(json.dumps({'sessionId':'debug-session','runId':'run1','hypothesisId':'B','timestamp':int(datetime.datetime.now().timestamp()*1000),'location':'granian_entry.py:27','message':'ASGI import failed','data':{'error':str(e),'type':type(e).__name__}})+'\n')
     except: pass
     # #endregion
-    print(f"⚠️  ASGI 入口不可用: {e}")
+    print(f"[WARN] ASGI 入口不可用: {e}")
     print("   回退到 WSGI 模式（HTTP API 可用，WebSocket 不可用）")
     # 回退：使用原始 Flask 应用（WSGI）
     from server.app import app

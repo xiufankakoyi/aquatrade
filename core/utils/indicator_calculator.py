@@ -340,7 +340,7 @@ class IndicatorCalculator:
                 result_df[column_name] = values
             
             else:
-                print(f"⚠️ 未知的指标类型: {indicator_type}")
+                print(f"[WARN] 未知的指标类型: {indicator_type}")
         
         return result_df
     

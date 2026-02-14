@@ -112,10 +112,10 @@ def enable_gpu(force: bool = False) -> bool:
             if gpu_info['numba_cuda']:
                 print("  - Numba CUDA: 可用")
         else:
-            print("⚠️ GPU 加速已启用（强制模式，但未检测到 GPU）")
+            print("[WARN] GPU 加速已启用（强制模式，但未检测到 GPU）")
         return True
     else:
-        print("❌ 未检测到 GPU，使用 CPU 模式")
+        print("[INFO] 未检测到 GPU，使用 CPU 模式")
         USE_GPU = False
         return False
 

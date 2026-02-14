@@ -81,6 +81,14 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
+        path: 'strategy-editor',
+        name: 'StrategyEditor',
+        component: () => import('../pages/StrategyWorkbench.vue'),
+        meta: {
+          title: '策略开发工作台'
+        }
+      },
+      {
         path: 'dragon-eye',
         name: 'DragonEye',
         component: () => import('../pages/DragonEyePage.vue'),

@@ -6,7 +6,7 @@ from threading import Event
 from flask import request
 from flask_socketio import emit
 # 延迟导入避免循环依赖
-from utils.binary_packer import pack_backtest_result, estimate_size
+from server.utils.binary_packer import pack_backtest_result, estimate_size
 from config.logger import get_logger
 
 logger = get_logger(__name__)
@@ -58,6 +58,11 @@ def register_socketio_handlers(socketio_instance):
             benchmark_code = data.get('benchmark_code')
             profile_id = data.get('profile_id')
             override_params = data.get('override_params') or {}
+            
+            # 新增：回测配置参数
+            initial_capital = data.get('initial_capital')
+            commission = data.get('commission')
+            slippage = data.get('slippage')
 
             if not all([strategy_name, start_date, end_date]):
                 emit('backtest_error', {"message": "缺少必要参数"})
@@ -83,7 +88,15 @@ def register_socketio_handlers(socketio_instance):
                     emit('backtest_error', {"message": f"加载 Profile 失败: {e}"})
                     return
 
+            # 构建回测配置
+            backtest_config = {
+                'initial_capital': initial_capital,
+                'commission': commission,
+                'slippage': slippage
+            }
+            
             print(f"📨 收到流式回测请求: {strategy_name} | {start_date}~{end_date} | 基准: {benchmark_code or 'None'}")
+            print(f"   配置: 初始资金={initial_capital}, 佣金={commission}, 滑点={slippage}")
 
             # 当前这位前端用户的 sid
             sid = request.sid
@@ -100,6 +113,7 @@ def register_socketio_handlers(socketio_instance):
                 run_backtest_background,
                 socketio_instance,  # 传递 socketio 实例
                 sid, strategy_name, start_date, end_date, benchmark_code, stop_event, effective_params,
+                backtest_config,  # 新增：传递回测配置
                 get_api,  # 传递 get_api 函数
                 active_backtests  # 传递 active_backtests 字典
             )

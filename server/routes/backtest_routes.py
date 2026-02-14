@@ -10,6 +10,104 @@ import json
 backtest_bp = Blueprint('backtest', __name__, url_prefix='/api')
 
 
+@backtest_bp.route('/preload', methods=['POST'])
+def preload_backtest():
+    """
+    预加载回测数据
+    
+    当用户 hover "运行回测" 按钮时触发
+    静默预加载策略代码和数据缓存，加速实际回测
+    
+    请求体:
+        {
+            "strategy_name": "策略名称",
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31"
+        }
+    
+    返回:
+        {
+            "success": true,
+            "task_id": "abc123",
+            "status": "loading" | "completed" | "error"
+        }
+    """
+    from server.services.preload_service import get_preload_service
+    from config.logger import get_logger
+    
+    logger = get_logger(__name__)
+    
+    try:
+        data = request.get_json() or {}
+        strategy_name = data.get('strategy_name')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        
+        if not all([strategy_name, start_date, end_date]):
+            return json_response({
+                "success": False,
+                "error": "缺少必要参数: strategy_name, start_date, end_date"
+            }, status_code=400)
+        
+        preload_service = get_preload_service()
+        task = preload_service.preload_strategy(strategy_name, start_date, end_date)
+        
+        logger.debug(f"[Preload] 任务创建: {task.task_id} - {task.status}")
+        
+        return json_response({
+            "success": True,
+            "task_id": task.task_id,
+            "status": task.status,
+            "strategy_name": strategy_name,
+            "start_date": start_date,
+            "end_date": end_date
+        })
+        
+    except Exception as e:
+        logger = get_logger(__name__)
+        logger.error(f"预加载失败: {e}", exc_info=True)
+        return json_response({"success": False, "error": str(e)}, status_code=500)
+
+
+@backtest_bp.route('/preload/status/<task_id>', methods=['GET'])
+def get_preload_status(task_id: str):
+    """
+    获取预加载任务状态
+    
+    Args:
+        task_id: 预加载任务 ID
+        
+    Returns:
+        {
+            "success": true,
+            "task_id": "abc123",
+            "status": "completed",
+            "cache_key": "preload:..."
+        }
+    """
+    from server.services.preload_service import get_preload_service
+    
+    preload_service = get_preload_service()
+    task = preload_service.get_task_status(task_id)
+    
+    if task is None:
+        return json_response({
+            "success": False,
+            "error": "任务不存在"
+        }, status_code=404)
+    
+    return json_response({
+        "success": True,
+        "task_id": task.task_id,
+        "status": task.status,
+        "strategy_name": task.strategy_name,
+        "start_date": task.start_date,
+        "end_date": task.end_date,
+        "error": task.error,
+        "cache_key": task.cache_key
+    })
+
+
 @backtest_bp.route('/run_backtest', methods=['POST'])
 def run_backtest():
     """非流式备选接口"""

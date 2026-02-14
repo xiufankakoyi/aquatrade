@@ -2,7 +2,6 @@ import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
-// https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -12,8 +11,14 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    strictPort: true,  // 端口被占用时报错而不是自动切换
+    strictPort: true,
+    host: true,
     proxy: {
+      '/api/dragon': {
+        target: 'http://localhost:5001',
+        changeOrigin: true,
+        secure: false,
+      },
       '/api': {
         target: 'http://localhost:5000',
         changeOrigin: true,
@@ -22,8 +27,23 @@ export default defineConfig({
       '/socket.io': {
         target: 'http://localhost:5000',
         changeOrigin: true,
-        ws: true,  // 支持 WebSocket
+        ws: true,
       }
     }
+  },
+  optimizeDeps: {
+    include: [
+      'vue',
+      'vue-router',
+      'pinia',
+      'axios',
+      'ant-design-vue',
+      'monaco-editor'
+    ],
+    force: false
+  },
+  build: {
+    target: 'esnext',
+    minify: 'esbuild'
   }
 })

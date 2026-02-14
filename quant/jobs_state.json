@@ -1,0 +1,326 @@
+{
+  "1": {
+    "status": "completed",
+    "success": true,
+    "output": "Exception in thread Thread-1 (_readerthread):\nTraceback (most recent call last):\nFile \"C:\\Python314\\Lib\\threading.py\", line 1081, in _bootstrap_inner\nself._context.run(self.run)\n~~~~~~~~~~~~~~~~~^^^^^^^^^^\nFile \"C:\\Python314\\Lib\\threading.py\", line 1023, in run\nself._target(*self._args, **self._kwargs)\n~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Python314\\Lib\\subprocess.py\", line 1613, in _readerthread\nbuffer.append(fh.read())\n~~~~~~~^^\nUnicodeDecodeError: 'gbk' codec can't decode byte 0x85 in position 39: illegal multibyte sequence\nSTDOUT: None\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-01-28T20:57:00.244747"
+  },
+  "2": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-01-28\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] ��⵽��������ģʽ\n\n==================================================\n[����] ������ȡ 2026-01-28 ������\n==================================================\n\n==================================================\n�������!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-01-28T21:06:04.769027"
+  },
+  "3": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-01-27\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] ��⵽��������ģʽ\n\n==================================================\n[����] ������ȡ 2026-01-27 ������\n==================================================\n\n==================================================\n�������!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-01-28T21:06:14.705402"
+  },
+  "4": {
+    "status": "completed",
+    "success": true,
+    "output": "cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] ��⵽���ڷ�Χģʽ\n[INFO] ��ʼ����: 2026-01-20\n[INFO] ��������: 2026-01-28\n\n==================================================\n[����] ������ȡ 2026-01-20 ������\n==================================================\n[���] 2026-01-20 ������ȡ���\n[�ӳ�] �ȴ� 10 ��������һ������...\n==================================================\n[����] ������ȡ 2026-01-21 ������\n==================================================\n[���] 2026-01-21 ������ȡ���\n[�ӳ�] �ȴ� 10 ��������һ������...\n==================================================\n[����] ������ȡ 2026-01-22 ������\n==================================================\n[���] 2026-01-22 ������ȡ���\n[�ӳ�] �ȴ� 10 ��������һ������...\n==================================================\n[����] ������ȡ 2026-01-23 ������\n==================================================\n[���] 2026-01-23 ������ȡ���\n[�ӳ�] �ȴ� 10 ��������һ������...\n==================================================\n[����] ������ȡ 2026-01-24 ������\n==================================================\n[���] 2026-01-24 ������ȡ���\n[�ӳ�] �ȴ� 10 ��������һ������...\n==================================================\n[����] ������ȡ 2026-01-25 ������\n==================================================\n[���] 2026-01-25 ������ȡ���\n[�ӳ�] �ȴ� 10 ��������һ������...\n==================================================\n[����] ������ȡ 2026-01-26 ������\n==================================================\n[���] 2026-01-26 ������ȡ���\n[�ӳ�] �ȴ� 10 ��������һ������...\n==================================================\n[����] ������ȡ 2026-01-27 ������\n==================================================\n[���] 2026-01-27 ������ȡ���\n[�ӳ�] �ȴ� 10 ��������һ������...\n==================================================\n[����] ������ȡ 2026-01-28 ������\n==================================================\n[���] 2026-01-28 ������ȡ���\n\n==================================================\n�������!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 268,
+    "completed_at": "2026-01-28T21:11:11.172677"
+  },
+  "5": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-01-29\n[📡 请求] ladder_trend_summary ... 成功\n☕ 休息 4.6s...\n[📡 请求] ladder_hierarchy_detail ... 成功\n☕ 休息 3.6s...\n[📡 请求] limit_up_filter ...\n[📄 第1页] ... 获取 82 条 (累计 82)\n成功\n☕ 休息 3.0s...\n[📡 请求] sector_heat_stats ... 成功\n☕ 休息 2.8s...\n[📡 请求] market_sentiment_cycle ... 成功\n☕ 休息 4.5s...\n[📡 请求] dragon_tiger_list ... 成功\n☕ 休息 2.7s...\n[📡 请求] risk_monitor_list ... 成功\n☕ 休息 2.5s...\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-01-29 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 27,
+    "completed_at": "2026-01-30T01:23:39.940913"
+  },
+  "6": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-01-29\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-01-29 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-01-30T01:32:10.443464"
+  },
+  "7": {
+    "status": "completed",
+    "success": false,
+    "output": "❌ 指定的日期目录不存在: c:\\Users\\Liu\\Desktop\\projects\\quant\\data\\data_lake\\2026-02-06",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-06T22:39:11.845830",
+    "type": "clean_push"
+  },
+  "8": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-01-30 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n飞书Markdown消息推送成功",
+    "progress_percent": 100,
+    "elapsed_seconds": 4,
+    "completed_at": "2026-02-06T22:40:31.920582",
+    "type": "clean_push"
+  },
+  "9": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-06\n[📡 请求] ladder_trend_summary ... 成功\n☕ 休息 3.9s...\n[📡 请求] ladder_hierarchy_detail ... 成功\n☕ 休息 4.3s...\n[📡 请求] limit_up_filter ...\n[📄 第1页] ... 获取 55 条 (累计 55)\n成功\n☕ 休息 2.8s...\n[📡 请求] sector_heat_stats ... 成功\n☕ 休息 4.6s...\n[📡 请求] market_sentiment_cycle ... 成功\n☕ 休息 4.5s...\n[📡 请求] dragon_tiger_list ... 成功\n☕ 休息 2.6s...\n[📡 请求] risk_monitor_list ... 成功\n☕ 休息 4.8s...\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-06 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 33,
+    "completed_at": "2026-02-06T23:04:42.442402"
+  },
+  "10": {
+    "status": "completed",
+    "success": false,
+    "output": "❌ 指定的日期目录不存在: c:\\Users\\Liu\\Desktop\\projects\\quant\\data\\data_lake\\2026-02-06",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-06T23:04:58.625538",
+    "type": "clean_push"
+  },
+  "11": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-06\n📊 交易日范围: 2026-01-09 至 2026-02-06 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-06 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-07T00:38:48.845723"
+  },
+  "12": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-06\n📊 交易日范围: 2026-01-09 至 2026-02-06 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[📅 交易日] market_sentiment_cycle: 2026-01-09 ~ 2026-02-06\n[📡 请求] market_sentiment_cycle ... 成功\n☕ 休息 4.1s...\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-06 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 8,
+    "completed_at": "2026-02-07T00:39:30.975928"
+  },
+  "13": {
+    "status": "completed",
+    "success": true,
+    "output": "it: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#nosuchelementexception\nStacktrace:\nSymbols not available. Dumping unresolved backtrace:\n0x7ff7b14b5045\n0x7ff7b14b50a4\n0x7ff7b18028c4\n0x7ff7b1256a9a\n0x7ff7b1256d35\n0x7ff7b1294b07\n0x7ff7b124d6b7\n0x7ff7b12928f7\n0x7ff7b124cbcc\n0x7ff7b124be26\n0x7ff7b124c9f3\n0x7ff7b1310214\n0x7ff7b130c685\n0x7ff7b131ce73\n0x7ff7b14d0378\n0x7ff7b14d8c46\n0x7ff7b14bc724\n0x7ff7b14bc869\n0x7ff7b14aa702\n0x7ffa4794e8d7\n0x7ffa49a6c53c\n\n👉 请手动扫码或填写账号密码登录\n⏳ 等待登录... (0/180s)\n⏳ 等待登录... (1/180s)\n⏳ 等待登录... (2/180s)\n⏳ 等待登录... (3/180s)\n⏳ 等待登录... (4/180s)\n⏳ 等待登录... (5/180s)\n⏳ 等待登录... (6/180s)\n⏳ 等待登录... (7/180s)\n⏳ 等待登录... (8/180s)\n⏳ 等待登录... (9/180s)\n⏳ 等待登录... (10/180s)\n⏳ 等待登录... (11/180s)\n⏳ 等待登录... (12/180s)\n⏳ 等待登录... (13/180s)\n⏳ 等待登录... (14/180s)\n⏳ 等待登录... (15/180s)\n⏳ 等待登录... (16/180s)\n⏳ 等待登录... (17/180s)\n⏳ 等待登录... (18/180s)\n⏳ 等待登录... (19/180s)\n⏳ 等待登录... (20/180s)\n⏳ 等待登录... (21/180s)\n⏳ 等待登录... (22/180s)\n⏳ 等待登录... (23/180s)\n⏳ 等待登录... (24/180s)\n⏳ 等待登录... (25/180s)\n⏳ 等待登录... (26/180s)\n⏳ 等待登录... (27/180s)\n⏳ 等待登录... (28/180s)\n⏳ 等待登录... (29/180s)\n⏳ 等待登录... (30/180s)\n⏳ 等待登录... (31/180s)\n⏳ 等待登录... (32/180s)\n⏳ 等待登录... (33/180s)\n⏳ 等待登录... (34/180s)\n⏳ 等待登录... (35/180s)\n⏳ 等待登录... (36/180s)\n⏳ 等待登录... (37/180s)\n⏳ 等待登录... (38/180s)\n⏳ 等待登录... (39/180s)\n⏳ 等待登录... (40/180s)\n⏳ 等待登录... (41/180s)\n⏳ 等待登录... (42/180s)\n⏳ 等待登录... (43/180s)\n⏳ 等待登录... (44/180s)\n⏳ 等待登录... (45/180s)\n⏳ 等待登录... (46/180s)\n⏳ 等待登录... (47/180s)\n⏳ 等待登录... (48/180s)\n⏳ 等待登录... (49/180s)\n⏳ 等待登录... (50/180s)\n⏳ 等待登录... (51/180s)\n⏳ 等待登录... (52/180s)\n⏳ 等待登录... (53/180s)\n⏳ 等待登录... (54/180s)\n⏳ 等待登录... (55/180s)\n⏳ 等待登录... (56/180s)\n⏳ 等待登录... (57/180s)\n⏳ 等待登录... (58/180s)\n❌ 浏览器操作异常: name 're' is not defined\n\n❌ 获取 Token 失败（超时）。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-09 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 95,
+    "completed_at": "2026-02-09T22:04:00.001904"
+  },
+  "14": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-09\n📊 交易日范围: 2026-01-12 至 2026-02-09 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[📡 请求] limit_up_filter ...\n[📄 第1页] ...\n⚠️ 接口返回 401 (未授权) -> 触发自动登录流程\n\n==================================================\n🔓 Token 失效！正在启动浏览器...\n👉 请在弹出的窗口中【扫码登录】或【等待自动登录】\n==================================================\n\n[1/2] 尝试启动 Microsoft Edge...\n\n🔑 检测到账号密码，尝试自动登录...\n⚠️ 自动登录失败（可能是登录页面结构变化）: Message: no such element: Unable to locate element: {\"method\":\"xpath\",\"selector\":\"//button[contains(text(), '登录') or contains(text(), 'Login')]\"}\n(Session info: MicrosoftEdge=144.0.3719.115); For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#nosuchelementexception\nStacktrace:\nSymbols not available. Dumping unresolved backtrace:\n0x7ff7b14b5045\n0x7ff7b14b50a4\n0x7ff7b18028c4\n0x7ff7b1256a9a\n0x7ff7b1256d35\n0x7ff7b1294b07\n0x7ff7b124d6b7\n0x7ff7b12928f7\n0x7ff7b124cbcc\n0x7ff7b124be26\n0x7ff7b124c9f3\n0x7ff7b1310214\n0x7ff7b130c685\n0x7ff7b131ce73\n0x7ff7b14d0378\n0x7ff7b14d8c46\n0x7ff7b14bc724\n0x7ff7b14bc869\n0x7ff7b14aa702\n0x7ffa4794e8d7\n0x7ffa49a6c53c\n\n👉 请手动扫码或填写账号密码登录\n⏳ 等待登录... (0/180s)\n⏳ 等待登录... (1/180s)\n⏳ 等待登录... (2/180s)\n⏳ 等待登录... (3/180s)\n⏳ 等待登录... (4/180s)\n⏳ 等待登录... (5/180s)\n⏳ 等待登录... (6/180s)\n⏳ 等待登录... (7/180s)\n⏳ 等待登录... (8/180s)\n⏳ 等待登录... (9/180s)\n⏳ 等待登录... (10/180s)\n⏳ 等待登录... (11/180s)\n⏳ 等待登录... (12/180s)\n⏳ 等待登录... (13/180s)\n⏳ 等待登录... (14/180s)\n⏳ 等待登录... (15/180s)\n⏳ 等待登录... (16/180s)\n⏳ 等待登录... (17/180s)\n⏳ 等待登录... (18/180s)\n⏳ 等待登录... (19/180s)\n⏳ 等待登录... (20/180s)\n⏳ 等待登录... (21/180s)\n⏳ 等待登录... (22/180s)\n⏳ 等待登录... (23/180s)\n⏳ 等待登录... (24/180s)\n⏳ 等待登录... (25/180s)\n❌ 浏览器操作异常: name 're' is not defined\n\n❌ 获取 Token 失败（超时）。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-09 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 37,
+    "completed_at": "2026-02-09T22:04:44.458174"
+  },
+  "15": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-09 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书Markdown消息推送成功",
+    "progress_percent": 100,
+    "elapsed_seconds": 2,
+    "completed_at": "2026-02-09T22:09:57.038776",
+    "type": "clean_push"
+  },
+  "16": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-10\n📊 交易日范围: 2026-01-13 至 2026-02-10 (20个交易日)\n[📡 请求] ladder_trend_summary ... 成功\n☕ 休息 3.1s...\n[📡 请求] ladder_hierarchy_detail ... 成功\n☕ 休息 4.5s...\n[📡 请求] limit_up_filter ...\n[📄 第1页] ... 获取 60 条 (累计 60)\n成功\n☕ 休息 4.3s...\n[📡 请求] sector_heat_stats ... 成功\n☕ 休息 3.2s...\n[📅 交易日] market_sentiment_cycle: 2026-01-13 ~ 2026-02-10\n[📡 请求] market_sentiment_cycle ... 成功\n☕ 休息 4.9s...\n[📅 交易日] dragon_tiger_list: 2026-01-13 ~ 2026-02-10\n[📡 请求] dragon_tiger_list ... 成功\n☕ 休息 4.4s...\n[📡 请求] risk_monitor_list ... 成功\n☕ 休息 4.8s...\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-10 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 32,
+    "completed_at": "2026-02-10T15:36:57.505140"
+  },
+  "17": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-10\n📊 交易日范围: 2026-01-13 至 2026-02-10 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-10 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-10T15:40:46.236324"
+  },
+  "18": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-10\n📊 交易日范围: 2026-01-13 至 2026-02-10 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-10 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-10T15:41:44.890538"
+  },
+  "19": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-10\n📊 交易日范围: 2026-01-13 至 2026-02-10 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-10 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-10T15:43:10.165636"
+  },
+  "20": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-10 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书Markdown消息推送成功",
+    "progress_percent": 100,
+    "elapsed_seconds": 3,
+    "completed_at": "2026-02-10T15:45:16.202355",
+    "type": "clean_push"
+  },
+  "21": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-10 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书Markdown消息推送成功",
+    "progress_percent": 100,
+    "elapsed_seconds": 3,
+    "completed_at": "2026-02-10T15:45:26.721171",
+    "type": "clean_push"
+  },
+  "22": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-10 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书Markdown消息推送成功",
+    "progress_percent": 100,
+    "elapsed_seconds": 2,
+    "completed_at": "2026-02-10T15:46:08.551132",
+    "type": "clean_push"
+  },
+  "23": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-10\n📊 交易日范围: 2026-01-13 至 2026-02-10 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-10 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-10T15:57:17.802692"
+  },
+  "24": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-10 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书Markdown消息推送成功",
+    "progress_percent": 100,
+    "elapsed_seconds": 7,
+    "completed_at": "2026-02-10T16:41:42.580468",
+    "type": "clean_push"
+  },
+  "25": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-10\n📊 交易日范围: 2026-01-13 至 2026-02-10 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-10 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-10T16:43:03.148432"
+  },
+  "26": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-10 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书推送已启动（后台异步执行）",
+    "progress_percent": 100,
+    "elapsed_seconds": 0,
+    "completed_at": "2026-02-10T16:59:28.238330",
+    "type": "clean_push"
+  },
+  "27": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-12\n📊 交易日范围: 2026-01-15 至 2026-02-12 (20个交易日)\n[📡 请求] ladder_trend_summary ... 成功\n☕ 休息 3.2s...\n[📡 请求] ladder_hierarchy_detail ... 成功\n☕ 休息 2.7s...\n[📡 请求] limit_up_filter ...\n[📄 第1页] ... 获取 60 条 (累计 60)\n成功\n☕ 休息 2.7s...\n[📡 请求] sector_heat_stats ... 成功\n☕ 休息 3.2s...\n[📅 交易日] market_sentiment_cycle: 2026-01-15 ~ 2026-02-12\n[📡 请求] market_sentiment_cycle ... 成功\n☕ 休息 5.1s...\n[📅 交易日] dragon_tiger_list: 2026-01-15 ~ 2026-02-12\n[📡 请求] dragon_tiger_list ... 成功\n☕ 休息 5.1s...\n[📡 请求] risk_monitor_list ... 成功\n☕ 休息 3.3s...\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-12 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 29,
+    "completed_at": "2026-02-12T22:38:01.889395"
+  },
+  "28": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-12\n📊 交易日范围: 2026-01-15 至 2026-02-12 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-12 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-12T22:44:01.960267"
+  },
+  "29": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-12 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书推送已启动（后台异步执行）",
+    "progress_percent": 100,
+    "elapsed_seconds": 0,
+    "completed_at": "2026-02-12T22:44:03.873916",
+    "type": "clean_push"
+  },
+  "30": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-12 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书推送已启动（后台异步执行）",
+    "progress_percent": 100,
+    "elapsed_seconds": 0,
+    "completed_at": "2026-02-12T22:44:35.860007",
+    "type": "clean_push"
+  },
+  "31": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-12 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书推送已启动（后台异步执行）",
+    "progress_percent": 100,
+    "elapsed_seconds": 0,
+    "completed_at": "2026-02-12T22:44:38.092620",
+    "type": "clean_push"
+  },
+  "32": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-12 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书推送已启动（后台异步执行）",
+    "progress_percent": 100,
+    "elapsed_seconds": 0,
+    "completed_at": "2026-02-12T22:45:27.941460",
+    "type": "clean_push"
+  },
+  "33": {
+    "status": "completed",
+    "success": true,
+    "output": "STDOUT:\n📅 处理日期: 2026-02-12\n📊 交易日范围: 2026-01-15 至 2026-02-12 (20个交易日)\n[✅ 已存在] ladder_trend_summary\n[✅ 已存在] ladder_hierarchy_detail\n[✅ 已存在] limit_up_filter\n[✅ 已存在] sector_heat_stats\n[✅ 已存在] market_sentiment_cycle\n[✅ 已存在] dragon_tiger_list\n[✅ 已存在] risk_monitor_list\n\n🎉 任务结束。\n[INFO] 检测到单个日期模式\n\n==================================================\n[爬虫] 正在爬取 2026-02-12 的数据\n==================================================\n\n==================================================\n任务完成!\n==================================================\n\nSTDERR:\nReturn code: 0",
+    "current_api": "",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-12T22:45:34.851995"
+  },
+  "34": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-12 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书推送已启动（后台异步执行）",
+    "progress_percent": 100,
+    "elapsed_seconds": 0,
+    "completed_at": "2026-02-12T22:46:18.191238",
+    "type": "clean_push"
+  },
+  "35": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-12 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书推送已启动（后台异步执行）",
+    "progress_percent": 100,
+    "elapsed_seconds": 0,
+    "completed_at": "2026-02-12T22:49:44.551503",
+    "type": "clean_push"
+  },
+  "36": {
+    "status": "completed",
+    "success": true,
+    "output": "开始处理 2026-02-12 的数据...\n✓ market_dashboard.csv 生成完成\n✓ stock_feature_matrix.csv 生成完成\n✓ ai_daily_brief.txt 生成完成\n所有文件生成完成！\n\n==================================================\n📤 清洗完成，开始自动推送数据到飞书...\n==================================================\n\n✅ 飞书推送已启动（后台异步执行）",
+    "progress_percent": 100,
+    "elapsed_seconds": 1,
+    "completed_at": "2026-02-12T23:34:57.959003",
+    "type": "clean_push"
+  }
+}

@@ -8,17 +8,16 @@ import os
 import sys
 from pathlib import Path
 
-# 添加项目根目录到路径
 _project_root = Path(__file__).parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from typing import Dict, Any
 import asyncio
+import base64
 
-# 导入必要的模块
 from server.performance_utils import pack_backtest_data
-from utils.binary_packer import pack_backtest_result, estimate_size
+from server.utils.binary_packer import pack_backtest_result, estimate_size
 
 try:
     import msgpack
@@ -40,7 +39,6 @@ def register_handlers(sio):
     from config.logger import get_logger
     logger = get_logger(__name__)
     
-    # 存储活跃的回测任务
     active_backtests: Dict[str, Any] = {}
     
     @sio.event
@@ -57,7 +55,6 @@ def register_handlers(sio):
         """客户端断开事件"""
         try:
             logger.debug(f"Socket.IO 客户端已断开: {sid}")
-            # 清理活跃的回测任务
             if sid in active_backtests:
                 stop_event = active_backtests[sid]
                 stop_event.set()
@@ -70,11 +67,14 @@ def register_handlers(sio):
         """
         运行流式回测（异步版本）
         
-        注意：回测逻辑本身可能还是同步的，需要在后台线程中运行
+        【核心修复】实现真正的流式传输：
+        - 使用生产者-消费者同步机制
+        - 回测线程每次放入事件后等待主事件循环确认发送
+        - 确保前端实时看到进度更新
         """
         print(f"\n\n{'='*80}\n[BACKTEST] Event handler called! sid={sid}\n{'='*80}\n\n")
         
-        from threading import Event
+        from threading import Event, Semaphore
         from server.visualization_api import BacktestVisualizationAPI
         from config.logger import get_logger
         
@@ -95,7 +95,6 @@ def register_handlers(sio):
                 }, room=sid)
                 return
             
-            # 处理 profile_id（如果提供）
             effective_params = None
             if profile_id is not None:
                 try:
@@ -120,18 +119,22 @@ def register_handlers(sio):
             else:
                 effective_params = override_params if override_params else None
             
-            # 创建停止事件
             stop_event = Event()
             active_backtests[sid] = stop_event
             
-            # 发送确认消息
             await sio.emit('request_received', {"message": "回测请求已收到"}, room=sid)
             
-            # 在后台线程中运行回测（因为回测逻辑可能是同步的）
-            # 使用 asyncio.to_thread 或 run_in_executor
-            loop = asyncio.get_event_loop()
+            main_loop = asyncio.get_event_loop()
             
-            # 运行回测（在后台线程中）
+            from queue import Queue, Empty
+            event_queue = Queue()
+            
+            emit_semaphore = Semaphore(0)
+            
+            batch_buffer = []
+            BATCH_SIZE = 5
+            FLUSH_INTERVAL = 0.02
+            
             def run_backtest():
                 import time
                 try:
@@ -140,9 +143,8 @@ def register_handlers(sio):
                     api = BacktestVisualizationAPI()
                     api._ensure_initialized()
                     
-                    # 运行流式回测
                     update_count = 0
-                    last_update_time = time.time()
+                    last_flush_time = time.time()
                     generator = api.stream_backtest(
                         strategy_name=strategy_name,
                         start_date=start_date,
@@ -152,325 +154,149 @@ def register_handlers(sio):
                         params=effective_params
                     )
                     
-                    # ==============================================================================
-                    # 【消息批处理/限流优化】实现缓冲发送机制，避免消息推送过载
-                    # 原问题：逐条发送导致网络拥塞和事件循环压力
-                    # 解决方案：使用缓冲池，每 100ms 或满 50条 发送一次
-                    # ==============================================================================
-                    BATCH_INTERVAL = 0.05  # 50ms 批处理间隔（加快感知流式）
-                    BATCH_SIZE = 20  # 每批最多 20 条消息（使图表更新更平滑）
-                    
-                    # 缓冲池：按事件类型分类缓冲
-                    buffers = {
-                        'daily_equity': [],  # 每日权益数据
-                        'new_trade': [],     # 交易数据
-                        'signal': [],        # 信号数据
-                    }
-                    last_batch_send_time = time.time()
-                    
-                    # 立即发送的事件类型（不缓冲）
                     immediate_events = {
                         'error', 'cancelled', 'backtest_start', 'initializing', 
                         'initialized', 'final_metrics', 'risk_data', 'stream_complete',
                         'progress', 'backtest_end'
                     }
                     
-                    def flush_buffers():
-                        """刷新所有缓冲池，发送积攒的消息"""
-                        nonlocal last_batch_send_time
-                        # 事件类型到前端事件名称的映射
-                        event_name_map = {
-                            'daily_equity': 'daily_update',  # 前端期望的事件名称
-                            'new_trade': 'new_trade',
-                            'signal': 'signal'
-                        }
+                    def emit_and_wait(event_name, payload, wait=True):
+                        """
+                        放入事件并等待主事件循环发送完成
                         
-                        for event_type, buffer in buffers.items():
-                            if buffer:
-                                try:
-                                    # 【数据序列化优化】确保核心数据路径使用严格定义的结构
-                                    # 对于高频事件（daily_equity, new_trade），优先使用 MsgPack
-                                    if MSGPACK_AVAILABLE and event_type in ['daily_equity', 'new_trade']:
-                                        try:
-                                            # 确保 buffer 是列表且每个元素都是字典
-                                            if isinstance(buffer, list) and all(isinstance(item, dict) for item in buffer):
-                                                packed = pack_backtest_result(buffer)
-                                                frontend_event = event_name_map.get(event_type, event_type)
-                                                asyncio.run_coroutine_threadsafe(
-                                                    sio.emit(frontend_event, {
-                                                        '_msgpack': True,
-                                                        '_data': packed,
-                                                        '_count': len(buffer),
-                                                        '_batch': True  # 标记为批量消息
-                                                    }, room=sid),
-                                                    loop
-                                                )
-                                            else:
-                                                # 数据结构不符合预期，回退到 JSON
-                                                logger.warning(f"批量数据格式不符合预期 ({event_type}): 期望 list[dict], 实际: {type(buffer)}")
-                                                frontend_event = event_name_map.get(event_type, event_type)
-                                                asyncio.run_coroutine_threadsafe(
-                                                    sio.emit(frontend_event, buffer, room=sid),
-                                                    loop
-                                                )
-                                        except Exception as e:
-                                            logger.warning(f"MsgPack 批量打包失败 ({event_type}): {e}")
-                                            # 回退到 JSON
-                                            frontend_event = event_name_map.get(event_type, event_type)
-                                            asyncio.run_coroutine_threadsafe(
-                                                sio.emit(frontend_event, buffer, room=sid),
-                                                loop
-                                            )
-                                    else:
-                                        # 直接发送 JSON（信号等低频事件）
-                                        frontend_event = event_name_map.get(event_type, event_type)
-                                        asyncio.run_coroutine_threadsafe(
-                                            sio.emit(frontend_event, buffer, room=sid),
-                                            loop
-                                        )
-                                    buffer.clear()
-                                except Exception as e:
-                                    logger.error(f"发送批量消息失败 ({event_type}): {e}", exc_info=True)
-                        last_batch_send_time = time.time()
+                        【关键】wait=True 时会阻塞直到事件被发送
+                        这确保了真正的流式传输
+                        """
+                        nonlocal batch_buffer, last_flush_time
+                        batch_buffer.append((event_name, payload))
+                        
+                        current_time = time.time()
+                        should_flush = (
+                            len(batch_buffer) >= BATCH_SIZE or
+                            current_time - last_flush_time >= FLUSH_INTERVAL or
+                            event_name in ['backtest_start', 'stream_complete', 'backtest_error', 'progress']
+                        )
+                        
+                        if should_flush:
+                            event_queue.put(batch_buffer.copy())
+                            batch_buffer.clear()
+                            last_flush_time = current_time
+                            
+                            if wait:
+                                emit_semaphore.acquire()
                     
                     for update in generator:
-                        # 检查超时（如果超过30秒没有更新，记录警告）
-                        current_time = time.time()
-                        if current_time - last_update_time > 30:
-                            logger.warning(f"回测更新超时警告: 最后更新={update_count}, 耗时={current_time - last_update_time:.1f}s")
-                        last_update_time = current_time
-                        update_count += 1
-                        
                         if stop_event.is_set():
-                            # 停止前刷新所有缓冲
-                            flush_buffers()
+                            if batch_buffer:
+                                event_queue.put(batch_buffer.copy())
+                                batch_buffer.clear()
+                                emit_semaphore.acquire()
                             break
                         
-                        # 发送更新（需要在异步上下文中发送）
+                        update_count += 1
                         t = update.get('type')
                         update_data = update.get('data', {})
                         
-                        # 创建发送任务的辅助函数（优化：移除所有 debug.log 写入）
-                        async def send_update(event_name, payload):
-                            try:
-                                await sio.emit(event_name, payload, room=sid)
-                            except Exception as e:
-                                logger.error(f"发送事件 {event_name} 失败: {e}", exc_info=True)
-                                raise
-                        
-                        # ==============================================================================
-                        # 【消息批处理/限流优化】根据事件类型决定是否缓冲
-                        # ==============================================================================
-                        # 立即发送的事件（关键事件，不缓冲）
-                        # 立即发送的事件（关键事件，不缓冲）
                         if t == 'error':
-                            asyncio.run_coroutine_threadsafe(
-                                send_update('backtest_error', update_data),
-                                loop
-                            )
-                            flush_buffers()  # 停止前刷新缓冲
+                            emit_and_wait('backtest_error', update_data)
                             return
                         elif t == 'cancelled':
-                            asyncio.run_coroutine_threadsafe(
-                                send_update('backtest_cancelled', update_data or {"message": "回测已取消"}),
-                                loop
-                            )
-                            flush_buffers()  # 停止前刷新缓冲
+                            emit_and_wait('backtest_cancelled', update_data or {"message": "回测已取消"})
                             return
-                        elif t in immediate_events:
-                            # 立即发送关键事件
-                            if t == 'backtest_start':
-                                asyncio.run_coroutine_threadsafe(
-                                    send_update('backtest_start', update_data),
-                                    loop
-                                )
-                            elif t == 'progress':
-                                asyncio.run_coroutine_threadsafe(
-                                    send_update('progress', update_data),
-                                    loop
-                                )
-                            elif t == 'initializing':
-                                future = asyncio.run_coroutine_threadsafe(
-                                    send_update('initializing', update_data),
-                                    loop
-                                )
-                                try:
-                                    future.result(timeout=0.1)  # 100ms 超时
-                                except Exception as e:
-                                    logger.error(f"发送 initializing 事件失败: {e}")
-                            elif t == 'initialized':
-                                asyncio.run_coroutine_threadsafe(
-                                    send_update('initialized', update_data),
-                                    loop
-                                )
-                            elif t == 'final_metrics':
-                                # 【数据序列化优化】确保使用严格定义的结构
-                                if isinstance(update_data, dict):
-                                    try:
-                                        packed = pack_backtest_result(update_data)
-                                        asyncio.run_coroutine_threadsafe(
-                                            send_update('metrics_update', {
-                                                '_msgpack': True,
-                                                '_data': packed
-                                            }),
-                                            loop
-                                        )
-                                    except Exception as e:
-                                        logger.warning(f"MsgPack 打包失败，回退到 JSON: {e}")
-                                        asyncio.run_coroutine_threadsafe(
-                                            send_update('metrics_update', update_data),
-                                            loop
-                                        )
-                                else:
-                                    asyncio.run_coroutine_threadsafe(
-                                        send_update('metrics_update', update_data),
-                                        loop
-                                    )
-                            elif t == 'risk_data':
-                                # 【数据序列化优化】确保使用严格定义的结构
-                                if isinstance(update_data, dict):
-                                    try:
-                                        packed = pack_backtest_result(update_data)
-                                        asyncio.run_coroutine_threadsafe(
-                                            send_update('risk_update', {
-                                                '_msgpack': True,
-                                                '_data': packed
-                                            }),
-                                            loop
-                                        )
-                                    except Exception as e:
-                                        logger.warning(f"MsgPack 打包失败，回退到 JSON: {e}")
-                                        asyncio.run_coroutine_threadsafe(
-                                            send_update('risk_update', update_data),
-                                            loop
-                                        )
-                                else:
-                                    asyncio.run_coroutine_threadsafe(
-                                        send_update('risk_update', update_data),
-                                        loop
-                                    )
-                            elif t == 'stream_complete':
-                                flush_buffers()  # 完成前刷新所有缓冲
-                                asyncio.run_coroutine_threadsafe(
-                                    send_update('stream_complete', update_data or {"message": "回测完成"}),
-                                    loop
-                                )
-                                return
-                        
-                        # ==============================================================================
-                        # 【消息批处理/限流优化】高频事件使用缓冲池
-                        # ==============================================================================
-                        elif t == 'daily_equity_engine':
-                            # 映射为 daily_equity，加入缓冲池
-                            buffers['daily_equity'].append(update_data)
-                            
-                            # 检查是否需要刷新缓冲（时间间隔或数量阈值）
-                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
-                                len(buffers['daily_equity']) >= BATCH_SIZE):
-                                flush_buffers()
-                        
+                        elif t == 'backtest_start':
+                            logger.info(f"[BACKTEST] 发送 backtest_start 事件")
+                            emit_and_wait('backtest_start', update_data)
+                        elif t == 'progress':
+                            emit_and_wait('progress', update_data, wait=False)
+                        elif t == 'initializing':
+                            emit_and_wait('initializing', update_data)
+                        elif t == 'initialized':
+                            emit_and_wait('initialized', update_data)
+                        elif t == 'final_metrics':
+                            emit_and_wait('metrics_update', update_data)
+                        elif t == 'risk_data':
+                            emit_and_wait('risk_update', update_data)
+                        elif t == 'stream_complete':
+                            logger.info("[STREAM] 发送 stream_complete 事件")
+                            simple_data = {
+                                "message": "回测完成",
+                                "finalEquity": update_data.get("finalEquity") if update_data else 1000000.0,
+                                "totalReturn": update_data.get("totalReturn") if update_data else 0.0,
+                                "totalTrades": update_data.get("totalTrades") if update_data else 0
+                            }
+                            emit_and_wait('stream_complete', simple_data)
                         elif t == 'daily_equity':
-                            # 【修复】处理从 visualization_api.py 转换后的 daily_equity 事件
-                            # visualization_api.py 已经将 daily_equity_engine 转换为 daily_equity
-                            buffers['daily_equity'].append(update_data)
-                            
-                            # 调试：记录收到的 daily_equity 事件
-                            if update_count <= 3 or update_count % 50 == 0:
-                                logger.debug(f"[STREAM] 收到 daily_equity 事件 #{update_count}: date={update_data.get('date')}, equity={update_data.get('strategyReturn')}")
-                            
-                            # 检查是否需要刷新缓冲（时间间隔或数量阈值）
-                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
-                                len(buffers['daily_equity']) >= BATCH_SIZE):
-                                flush_buffers()
-                        
-                        elif t == 'new_trade' or t == 'new_trade_engine':
-                            # 【修复】处理从 visualization_api.py 转换后的 new_trade 事件
-                            # visualization_api.py 已经将 new_trade_engine 转换为 new_trade
-                            # 加入交易缓冲池
-                            buffers['new_trade'].append(update_data)
-                            
-                            # 调试：记录收到的 new_trade 事件
-                            logger.debug(f"[STREAM] 收到 new_trade 事件 #{update_count}: symbol={update_data.get('symbolCode')}")
-                            
-                            # 检查是否需要刷新缓冲
-                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
-                                len(buffers['new_trade']) >= BATCH_SIZE):
-                                flush_buffers()
-                        
-                        elif 'new_trade_engine' == 'disabled_legacy_check': # placeholder to keep structure aligned if needed
-                            pass
-                        
-                        elif t == 'signal':
-                            # 加入信号缓冲池
-                            buffers['signal'].append(update_data)
-                            
-                            # 检查是否需要刷新缓冲
-                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
-                                len(buffers['signal']) >= BATCH_SIZE):
-                                flush_buffers()
-                        
-                        elif t == 'signal_batch':
-                            # 【优化】处理批量信号事件，拆分为单个signal事件加入缓冲池
-                            # 这样可以保持与现有批处理逻辑的兼容性
-                            # update_data 应该是信号数组（batch_signals）
-                            if isinstance(update_data, list):
-                                for signal_item in update_data:
-                                    buffers['signal'].append(signal_item)
-                            else:
-                                logger.warning(f"signal_batch 数据格式不正确: {type(update_data)}")
-                            
-                            # 检查是否需要刷新缓冲
-                            if (current_time - last_batch_send_time >= BATCH_INTERVAL or 
-                                len(buffers['signal']) >= BATCH_SIZE):
-                                flush_buffers()
-                        
+                            emit_and_wait('daily_equity', update_data, wait=True)
+                        elif t == 'daily_equity_engine':
+                            emit_and_wait('daily_equity', update_data, wait=True)
+                        elif t == 'new_trade':
+                            emit_and_wait('new_trade', update_data, wait=True)
+                        elif t == 'new_trade_engine':
+                            emit_and_wait('new_trade', update_data, wait=True)
                         else:
-                            # 未知事件类型，记录警告但不阻塞
-                            logger.debug(f"未知事件类型: {t}, 数据: {update_data}")
+                            pass
+                    
+                    if batch_buffer:
+                        event_queue.put(batch_buffer.copy())
+                        batch_buffer.clear()
+                        emit_semaphore.acquire()
                         
-                        # 定期刷新缓冲（即使未达到阈值）
-                        if current_time - last_batch_send_time >= BATCH_INTERVAL:
-                            flush_buffers()
                 except Exception as e:
                     import traceback
-                    logger.error(f"回测失败: {e}", exc_info=True)
-                    # 停止前刷新所有缓冲
+                    error_msg = f"{e}"
+                    error_trace = traceback.format_exc()
+                    logger.error(f"回测失败: {error_msg}")
+                    logger.error(f"错误堆栈: {error_trace}")
                     try:
-                        flush_buffers()
-                    except Exception:
-                        pass
-                    asyncio.run_coroutine_threadsafe(
-                        sio.emit('backtest_error', {"message": str(e)}, room=sid),
-                        loop
-                    )
+                        if batch_buffer:
+                            event_queue.put(batch_buffer.copy())
+                            batch_buffer.clear()
+                        event_queue.put([('backtest_error', {"message": error_msg, "trace": error_trace[:500]})])
+                        emit_semaphore.acquire()
+                    except Exception as emit_e:
+                        logger.error(f"发送错误事件失败: {emit_e}")
                 finally:
-                    # 【关键修复】确保所有资源被立即释放
-                    try:
-                        flush_buffers()
-                    except Exception:
-                        pass
-                    
-                    # 显式清理 API 实例和数据查询对象
                     try:
                         if 'api' in locals():
-                            # 清理预加载数据
                             if hasattr(api, 'data_query') and hasattr(api.data_query, '_preloaded_data_pl'):
                                 api.data_query._preloaded_data_pl = None
                             if hasattr(api, 'data_query') and hasattr(api.data_query, '_cache'):
                                 api.data_query._cache.clear()
-                            # 清除 API 引用
                             del api
                     except Exception as e:
                         logger.warning(f"清理 API 资源时出错: {e}")
                     
-                    # 立即从活跃回测中移除
                     if sid in active_backtests:
                         del active_backtests[sid]
                     
-                    logger.info(f"回测资源已清理，可以立即开始新的回测")
+                    logger.info(f"回测资源已清理")
             
-            # 在后台线程中运行
-            await loop.run_in_executor(None, run_backtest)
+            import concurrent.futures
+            import threading
+            
+            backtest_done = threading.Event()
+            
+            def run_backtest_in_thread():
+                try:
+                    run_backtest()
+                finally:
+                    backtest_done.set()
+            
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_backtest_in_thread)
+                
+                while not backtest_done.is_set() or not event_queue.empty():
+                    try:
+                        batch = event_queue.get(timeout=0.01)
+                        for event_name, payload in batch:
+                            await sio.emit(event_name, payload, room=sid)
+                            logger.debug(f"[STREAM] 已发送 {event_name}")
+                        emit_semaphore.release()
+                    except Empty:
+                        await asyncio.sleep(0.001)
+                    
+                    if future.done():
+                        backtest_done.set()
             
         except Exception as e:
             logger.error(f"启动回测失败: {e}", exc_info=True)
@@ -493,7 +319,6 @@ def register_handlers(sio):
     async def request_kline(sid, data):
         """
         请求 K 线数据（异步版本）
-        解决由于切换到 ASGI 后 request_kline 事件未处理导致的 K 线空白问题
         """
         symbol_code = data.get('symbol_code')
         start_date = data.get('start_date')
@@ -504,14 +329,13 @@ def register_handlers(sio):
             await sio.emit('kline_data', {"error": "缺少 symbol_code", "request_id": request_id}, room=sid)
             return
 
-        logger.debug(f"📈 [SOCKET] 请求 K 线 {symbol_code} | {start_date} ~ {end_date}")
+        logger.debug(f"[SOCKET] 请求 K 线 {symbol_code} | {start_date} ~ {end_date}")
         
         try:
             from server.visualization_api import BacktestVisualizationAPI
-            # 在后台线程中运行数据库查询，避免阻塞事件循环
+            
             def fetch_kline():
                 api_instance = BacktestVisualizationAPI()
-                # 注意：visualization_api.py 内部会调用 _normalize_symbol_code
                 history = api_instance.get_symbol_kline(symbol_code, start_date, end_date)
                 symbol_name = api_instance.stock_info_map.get(api_instance._normalize_symbol_code(symbol_code), symbol_code)
                 return history, symbol_name
@@ -534,4 +358,3 @@ def register_handlers(sio):
             }, room=sid)
 
     logger.info("ASGI SocketIO 事件处理器已注册 (包含 request_kline)")
-

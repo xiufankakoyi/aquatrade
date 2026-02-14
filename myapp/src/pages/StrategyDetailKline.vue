@@ -1,37 +1,35 @@
 <template>
-  <div class="h-[calc(100vh-64px)] bg-[#131722] flex flex-col overflow-hidden">
+  <div class="kline-page">
     <!-- 顶部工具栏 -->
-    <div class="h-14 px-4 bg-[#1E222D] border-b border-[#2A2E39] flex items-center justify-between shrink-0">
-      <div class="flex items-center space-x-4">
-        <div>
-          <h2 class="text-base font-semibold text-[#D1D4DC] flex items-center">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="symbol-info">
+          <h2 class="symbol-name">
             {{ selectedSymbolName || selectedSymbol || '--' }}
-            <span class="ml-2 px-1.5 py-0.5 text-xs font-normal bg-[#2A2E39] text-[#787B86] rounded">DAY</span>
+            <span class="symbol-badge">DAY</span>
           </h2>
         </div>
         
-        <!-- 交易标记示例（改为更紧凑的样式） -->
-        <div class="h-6 w-px bg-[#2A2E39]"></div>
-        <div class="flex items-center space-x-3">
-          <div class="flex items-center space-x-1.5">
-            <div class="w-2 h-2 bg-red-500 rounded-full"></div>
-            <span class="text-xs text-[#787B86]">买入</span>
+        <div class="divider"></div>
+        <div class="legend">
+          <div class="legend-item">
+            <div class="legend-dot buy"></div>
+            <span class="legend-text">买入</span>
           </div>
-          <div class="flex items-center space-x-1.5">
-            <div class="w-2 h-2 bg-green-500 rounded-full"></div>
-            <span class="text-xs text-[#787B86]">卖出</span>
+          <div class="legend-item">
+            <div class="legend-dot sell"></div>
+            <span class="legend-text">卖出</span>
           </div>
         </div>
       </div>
 
-      <div class="flex items-center space-x-3">
-        <!-- Instruction A: Shadow Curve Toggle -->
-        <div class="flex items-center bg-[#2A2E39] rounded px-2 py-1 gap-2 border border-[#363A45]">
-          <span class="text-[11px] text-[#787B86] uppercase font-bold">影子曲线:</span>
+      <div class="toolbar-right">
+        <!-- Shadow Curve Toggle -->
+        <div class="shadow-toggle">
+          <span class="toggle-label">影子曲线:</span>
           <button 
             @click="backtestStore.toggleAutoExcludeAlphaLoss()"
-            :class="['text-[10px] px-2 py-0.5 rounded transition-all font-bold', 
-              backtestStore.autoExcludeAlphaLoss ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'text-[#D1D4DC] hover:bg-white/5']"
+            :class="['toggle-btn', { 'active': backtestStore.autoExcludeAlphaLoss }]"
           >
             剔除 Alpha 亏损单
           </button>
@@ -39,44 +37,44 @@
 
         <button
           @click="$emit('run-backtest')"
-          class="px-3 py-1.5 text-sm font-medium text-white bg-[#2962FF] hover:bg-[#1E53E5] rounded transition-colors flex items-center shadow-lg shadow-blue-500/10"
+          class="run-btn"
         >
-          <i class="fas fa-play mr-1.5 text-xs"></i>运行回测
+          <i class="fas fa-play"></i>运行回测
         </button>
       </div>
     </div>
 
     <!--主要内容区域：图表 + 侧边/底部面板-->
-    <div class="flex-1 flex overflow-hidden">
+    <div class="main-area">
       <!-- 图表区域 -->
-          <div class="flex-1 w-full h-full relative">
-            <EquityCurve
-              :kline-data="klineData"
-              :highlight-ranges="highlightRanges"
-              :trade-markers="tradeMarkersForKline"
-              :versions="equityCurveVersions"
-              :shadow-series="backtestStore.shadowEquitySeries"
-              :benchmark="benchmarkSeries"
-              :x-axis-min="fullRange.min"
-              :x-axis-max="fullRange.max"
-              mode="kline"
-              class="w-full h-full"
-            />
-            
-            <!-- Playback Controller Overlay -->
-            <div class="absolute bottom-4 left-1/2 -translate-x-1/2 w-[90%] z-20">
-              <PlaybackController v-if="backtestStore.hasData" />
-            </div>
-          </div>
+      <div class="chart-area">
+        <EquityCurve
+          :kline-data="klineData"
+          :highlight-ranges="highlightRanges"
+          :trade-markers="tradeMarkersForKline"
+          :versions="equityCurveVersions"
+          :shadow-series="backtestStore.shadowEquitySeries"
+          :benchmark="benchmarkSeries"
+          :x-axis-min="fullRange.min"
+          :x-axis-max="fullRange.max"
+          mode="kline"
+          class="kline-chart"
+        />
+        
+        <!-- Playback Controller Overlay -->
+        <div class="playback-overlay">
+          <PlaybackController v-if="backtestStore.hasData" />
+        </div>
+      </div>
       
       <!-- 右侧持仓面板/雷达 -->
-      <div class="w-[340px] bg-[#1c202b] border-l border-[#2a2e39] flex flex-col shrink-0 z-10">
-        <!-- New: Risk Radar -->
-        <div class="h-[280px] p-4 border-b border-[#2a2e39]">
+      <div class="side-panel">
+        <!-- Risk Radar -->
+        <div class="radar-section">
           <LiveRiskRadar />
         </div>
         
-        <div class="flex-1 overflow-y-auto p-0">
+        <div class="position-section">
           <PositionCard
             :holding-periods="currentHoldingPeriods"
             :current-date="currentDate"
@@ -90,34 +88,33 @@
 
     <!-- 底部交易记录面板 (可调整高度) -->
     <div 
-      class="bg-[#1E222D] border-t border-[#2A2E39] flex flex-col shrink-0 overflow-hidden relative"
+      class="trade-panel"
       :style="{ height: isTradePanelExpanded ? `${tradePanelHeight}px` : '40px' }"
     >
       <!-- Resize Handle -->
       <div 
-        class="absolute top-0 left-0 w-full h-2 cursor-ns-resize hover:bg-[#2962FF]/30 z-20 transition-all group"
+        class="resize-handle"
         @mousedown="startResizing"
       >
-        <div class="w-12 h-1 bg-[#2A2E39] group-hover:bg-[#2962FF] rounded-full mx-auto mt-0.5 transition-colors"></div>
+        <div class="resize-indicator"></div>
       </div>
 
-      <div class="h-10 px-4 border-b border-[#2A2E39] flex items-center justify-between shrink-0 cursor-pointer hover:bg-[#2A2E39]" 
-           @click="toggleTradePanel">
-        <div class="flex items-center space-x-2">
-           <i :class="['fas', isTradePanelExpanded ? 'fa-chevron-down' : 'fa-chevron-up', 'text-[#787B86] text-xs']"></i>
-           <h3 class="text-sm font-medium text-[#D1D4DC]">交易明细</h3>
+      <div class="panel-header" @click="toggleTradePanel">
+        <div class="header-left">
+           <i :class="['fas', isTradePanelExpanded ? 'fa-chevron-down' : 'fa-chevron-up', 'toggle-icon']"></i>
+           <h3 class="panel-title">交易明细</h3>
         </div>
         
-        <div v-if="strategyStore.isLoading" class="flex items-center space-x-2 text-xs text-[#787B86]">
+        <div v-if="strategyStore.isLoading" class="loading-indicator">
           <i class="fas fa-spinner fa-spin"></i>
           <span>加载中...</span>
         </div>
       </div>
       
-      <div v-show="isTradePanelExpanded" class="flex-1 overflow-hidden p-4 bg-[#1E222D]">
+      <div v-show="isTradePanelExpanded" class="panel-content">
          <!-- 错误信息 -->
-        <div v-if="strategyStore.error" class="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-400">
-          <i class="fas fa-exclamation-circle mr-2"></i>{{ strategyStore.error }}
+        <div v-if="strategyStore.error" class="error-message">
+          <i class="fas fa-exclamation-circle"></i>{{ strategyStore.error }}
         </div>
         
         <!-- 交易记录表格 -->
@@ -129,12 +126,12 @@
         />
         
         <!-- 无交易记录提示 -->
-        <div v-else-if="!strategyStore.isLoading" class="py-8 text-center">
-          <div class="inline-flex items-center justify-center w-12 h-12 mb-3 rounded-full bg-[#2A2E39] text-[#787B86]">
-            <i class="fas fa-exchange-alt text-lg"></i>
+        <div v-else-if="!strategyStore.isLoading" class="empty-state">
+          <div class="empty-icon">
+            <i class="fas fa-exchange-alt"></i>
           </div>
-          <h4 class="mb-1 text-sm font-medium text-[#D1D4DC]">暂无交易记录</h4>
-          <p class="text-xs text-[#787B86]">
+          <h4 class="empty-title">暂无交易记录</h4>
+          <p class="empty-hint">
             {{ getNoTradesMessage() }}
           </p>
         </div>
@@ -183,27 +180,23 @@ const backtestStore = useBacktestStore();
 const dashboardStore = useDashboardStore();
 const { connect } = useSocketIO();
 const isTradePanelExpanded = ref(true);
-const tradePanelHeight = ref(256); // 默认高度
+const tradePanelHeight = ref(256);
 const isResizing = ref(false);
 
 function startResizing(e: MouseEvent) {
   isResizing.value = true;
   document.addEventListener('mousemove', doResize);
   document.addEventListener('mouseup', stopResizing);
-  // 防止在拖动时选中文本
   e.preventDefault();
 }
 
 function doResize(e: MouseEvent) {
   if (!isResizing.value) return;
   
-  // 计算新的高度：视口高度 - 鼠标 y 坐标
   const newHeight = window.innerHeight - e.clientY;
   
-  // 限制高度范围
   if (newHeight > 100 && newHeight < window.innerHeight * 0.8) {
     tradePanelHeight.value = newHeight;
-    // 如果拖动了，确保面板是展开的
     isTradePanelExpanded.value = true;
   }
 }
@@ -218,7 +211,7 @@ const selectedDeepDiveTrade = ref<Trade | null>(null);
 const isDeepDiveOpen = ref(false);
 const deepDiveStartDate = ref('');
 const deepDiveEndDate = ref('');
-const stockNames = ref<Record<string, string>>({}); // NEW: 缓存股票代码到中文名称的映射
+const stockNames = ref<Record<string, string>>({});
 
 const { 
   holdingPeriods: holdingPeriodsRef, 
@@ -228,16 +221,13 @@ const {
   playbackCursor 
 } = storeToRefs(backtestStore);
 
-// Consolidated trades: filtered by playback cursor and including complex fallbacks
 const trades = computed<Trade[]>(() => {
   let baseTrades: Trade[] = backtestStore.trades;
   
-  // Fallback to strategyStore if store is empty
   if (baseTrades.length === 0 && strategyStore.currentBacktestResult?.trades) {
     baseTrades = strategyStore.currentBacktestResult.trades;
   }
   
-  // Fallback to derived trades from holdings if still empty
   if (baseTrades.length === 0 && mappedHoldingPeriods.value.length > 0) {
     baseTrades = mappedHoldingPeriods.value.flatMap(hp => {
       const arr = [];
@@ -247,7 +237,6 @@ const trades = computed<Trade[]>(() => {
     });
   }
 
-  // Apply playback filter with robust date normalization
   if (playbackMode.value && playbackCursor.value) {
     const cursor = normalizeDate(playbackCursor.value);
     baseTrades = baseTrades.filter(t => normalizeDate(t.date || t.entryDate) <= cursor);
@@ -256,19 +245,12 @@ const trades = computed<Trade[]>(() => {
   return baseTrades.map(trade => {
     const normalizedCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
     
-    // Attempt to lookup Chinese name from various sources
     let displayName = trade.symbol || normalizedCode;
     
-    // Optimization: Only lookup if display name looks like a code
     if (/^\d{6}$/.test(displayName)) {
-      // 1. 优先从 stockNames 缓存中获取（由 getLatestPrices API 提供）
       if (stockNames.value[normalizedCode]) {
         displayName = stockNames.value[normalizedCode];
-      } 
-      // 2. 其次从持仓记录中查找
-      else {
-        // Use a more direct lookup if possible, but for now we keep the find for simplicity 
-        // unless trades array is massive
+      } else {
         const holding = mappedHoldingPeriods.value.find(hp => normalizeSymbolCode(hp.symbolCode) === normalizedCode);
         if (holding && holding.symbolName && !/^\d{6}$/.test(holding.symbolName)) {
           displayName = holding.symbolName;
@@ -294,11 +276,9 @@ const currentDate = computed(() => {
   return new Date().toISOString().split('T')[0];
 });
 
-// NEW: 当前日期（或回放游标所在日期）的账户净值，用于同步持仓市值显示
 const currentDateEquity = computed(() => {
   const date = currentDate.value;
   if (!date || backtestStore.equitySeries.length === 0) return 0;
-  // 精确匹配日期点
   const point = backtestStore.equitySeries.find(p => normalizeDate(p.date) === date);
   return point ? point.equity : 0;
 });
@@ -306,7 +286,6 @@ const currentDateEquity = computed(() => {
 const equityCurveVersions = computed(() => {
   let series = backtestStore.equitySeries;
   
-  // Fallback to strategyStore if backtestStore is empty
   if (series.length === 0 && strategyStore.currentBacktestResult?.equityCurve) {
     series = strategyStore.currentBacktestResult.equityCurve.map(p => ({
       date: p.date,
@@ -331,7 +310,6 @@ const equityCurveVersions = computed(() => {
 const benchmarkSeries = computed(() => {
   let series = backtestStore.benchmarkEquitySeries;
   
-  // Fallback to strategyStore if backtestStore is empty
   if (series.length === 0 && strategyStore.currentBacktestResult?.equityCurve) {
     series = strategyStore.currentBacktestResult.equityCurve
       .filter(p => p.benchmarkEquity !== undefined && p.benchmarkEquity !== null)
@@ -363,20 +341,14 @@ function normalizeSymbolCode(value?: string | null): string {
   const trimmed = value.trim().toUpperCase();
   const match = trimmed.match(/(\d+)/);
   if (match) {
-    // CHANGED: Keep leading zeros for A-shares by padding to 6 digits
-    // This fixed the issue where 001222 became 1222, breaking name lookups.
     const digits = match[1];
     return digits.length < 6 ? digits.padStart(6, '0') : digits;
   }
   return trimmed;
 }
 
-/**
- * Normalize date strings to YYYY-MM-DD for consistent comparison
- */
 function normalizeDate(dateStr?: string | null): string {
   if (!dateStr) return '';
-  // Convert YYYY/MM/DD to YYYY-MM-DD
   return dateStr.replace(/\//g, '-').split(' ')[0];
 }
 
@@ -398,12 +370,10 @@ const klineData = computed(() => {
   return data;
 });
 
-// CHANGED: 计算当前选中标的的名称（用于显示）
 const selectedSymbolName = computed(() => {
   const targetSymbol = normalizeSymbolCode(selectedSymbol.value);
   if (!targetSymbol) return '';
   
-  // 优先从持仓记录中查找
   const holding = mappedHoldingPeriods.value.find(hp => 
     normalizeSymbolCode(hp.symbolCode || hp.symbol) === targetSymbol
   );
@@ -411,23 +381,18 @@ const selectedSymbolName = computed(() => {
     return holding.symbolName;
   }
   
-  // 从交易记录中查找
   const trade = trades.value.find(t => 
     normalizeSymbolCode(t.symbolCode || t.symbol) === targetSymbol
   );
   if (trade && trade.symbol) {
-    // 如果 trade.symbol 是名称（包含中文），直接返回
-    // 如果是代码，尝试从持仓记录中查找名称
     if (trade.symbol && !/^\d{6}$/.test(trade.symbol)) {
       return trade.symbol;
     }
   }
   
-  // 如果都没找到，返回代码本身
   return targetSymbol;
 });
 
-// CHANGED: 计算当前选中标的的交易标记（用于 K 线图显示）
 const tradeMarkersForKline = computed(() => {
   const targetSymbol = normalizeSymbolCode(selectedSymbol.value);
   if (!targetSymbol) return [];
@@ -436,7 +401,6 @@ const tradeMarkersForKline = computed(() => {
     currentHoldingPeriods.value.map(hp => normalizeSymbolCode(hp.symbolCode || hp.symbol))
   );
 
-  // 建立日期->前复权收盘价映射，确保买卖点价格与 K 线复权后价格一致
   const closeMap: Record<string, number> = {};
   klineData.value.forEach(item => {
     if (item?.date && typeof item.close === 'number') {
@@ -444,12 +408,10 @@ const tradeMarkersForKline = computed(() => {
     }
   });
   
-  // 获取当前标的的所有交易记录
   const symbolTrades = trades.value.filter(t => 
     normalizeSymbolCode(t.symbolCode || t.symbol) === targetSymbol
   );
 
-  // 转换为交易标记格式；如果存在未卖出的持仓，则隐藏该标的没有 exitDate 的卖出点，避免虚假卖点
   return symbolTrades
     .filter(trade => {
       if (trade.action === 'sell' && openHoldingCodes.has(targetSymbol) && !trade.exitDate) {
@@ -460,7 +422,6 @@ const tradeMarkersForKline = computed(() => {
     .map(trade => ({
       date: trade.date,
       action: trade.action,
-      // 优先使用当前 K 线数据里的前复权价，避免显示未复权的成交价
       price: closeMap[trade.date] ?? trade.price,
       quantity: trade.quantity,
       symbol: trade.symbol,
@@ -580,7 +541,6 @@ const derivedHoldingsFromTrades = computed<HoldingPeriodType[]>(() => {
 const openHoldingPeriods = computed(() => mappedHoldingPeriods.value.filter(isOpenHolding));
 
 const currentHoldingPeriods = computed<HoldingPeriodType[]>(() => {
-  // If in playback mode, ALWAYS use derived holdings to show the time-travel state
   if (playbackMode.value) {
     return derivedHoldingsFromTrades.value;
   }
@@ -591,11 +551,6 @@ const currentHoldingPeriods = computed<HoldingPeriodType[]>(() => {
   return derivedHoldingsFromTrades.value;
 });
 
-// Removed duplicate trades and currentDate definitions for playback consolidation.
-
-/**
- * 根据当前情况生成合适的无交易记录提示信息
- */
 function getNoTradesMessage(): string {
   const versionId = route.params.id as string || route.params.versionId as string;
   
@@ -610,18 +565,14 @@ function getNoTradesMessage(): string {
   return '该策略版本还没有交易记录，请运行回测生成交易数据。';
 }
 
-// 定义事件
 const emit = defineEmits(['run-backtest']);
 
 const fetchedLatestPrices = ref<Record<string, number>>({});
 const requestedLatestPriceSymbols = new Set<string>();
 
-// CHANGED: 优先使用从 API 获取的最新价格（前复权价格，回测结束日期的价格）
 const latestPrices = computed<Record<string, number>>(() => {
   const normalized: Record<string, number> = {};
 
-  // 只使用从 API 获取的价格（这是回测结束日期的前复权价格，最准确）
-  // 不再使用 K 线数据或交易记录中的价格，因为这些不是回测结束日期的价格
   Object.entries(fetchedLatestPrices.value).forEach(([symbol, price]) => {
     const normalizedCode = normalizeSymbolCode(symbol);
     if (normalizedCode && typeof price === 'number' && !Number.isNaN(price) && price > 0) {
@@ -632,7 +583,6 @@ const latestPrices = computed<Record<string, number>>(() => {
   return normalized;
 });
 
-// CHANGED: 增加防抖处理，避免在回测或播放过程中高频触发价格获取
 let fetchTimeout: any = null;
 watch([currentHoldingPeriods, trades, playbackCursor], ([holdings, allTrades, cursor]) => {
   if (fetchTimeout) clearTimeout(fetchTimeout);
@@ -640,23 +590,19 @@ watch([currentHoldingPeriods, trades, playbackCursor], ([holdings, allTrades, cu
   fetchTimeout = setTimeout(() => {
     const symbolsToFetch: string[] = [];
     
-    // 收集持仓中的标的
     holdings.forEach(hp => {
       const symbolCode = normalizeSymbolCode(hp.symbolCode || hp.symbol);
       if (symbolCode) symbolsToFetch.push(symbolCode);
     });
     
-    // 收集交易记录中的标的
     allTrades.forEach(t => {
       const symbolCode = normalizeSymbolCode(t.symbolCode || t.symbol);
       if (symbolCode) symbolsToFetch.push(symbolCode);
     });
     
-    // CHANGED: 如果在回放模式下日期变了，即使持仓没变也要重新获取该日期的价格
     const uniqueSymbols = [...new Set(symbolsToFetch)];
 
     if (uniqueSymbols.length > 0) {
-      // 在回放模式下，我们允许重复请求，因为日期变了价格就变了
       if (!playbackMode.value) {
         const filteredSymbols = uniqueSymbols.filter(symbolCode => {
           if (fetchedLatestPrices.value[symbolCode] && stockNames.value[symbolCode]) return false;
@@ -671,26 +617,21 @@ watch([currentHoldingPeriods, trades, playbackCursor], ([holdings, allTrades, cu
         fetchLatestPrices(uniqueSymbols);
       }
     }
-  }, 1000); // 1秒防抖
+  }, 1000);
 }, { immediate: true, deep: true });
 
 async function fetchLatestPrices(symbols: string[]) {
   if (!symbols.length) return;
   try {
-    // CHANGED: 使用回测结束日期获取价格，确保获取的是回测结束时的价格（前复权）
-    // 优先使用回测结束日期，确保是日期格式（YYYY-MM-DD）而不是时间格式
-    // CHANGED: 在回放模式下，优先使用回放游标所在日期
     let targetDate: string | undefined = playbackMode.value && playbackCursor.value 
       ? normalizeDate(playbackCursor.value)
       : backtestStore.lastRunParams?.endDate;
     
-    // 如果回测结束日期不存在，尝试从策略详情中获取
     if (!targetDate && strategyStore.currentBacktestResult) {
       const result = strategyStore.currentBacktestResult as any;
       if (result.endDate) {
         targetDate = result.endDate;
       } else if (result.dateRange) {
-        // 从 dateRange 中提取结束日期（格式：YYYY-MM-DD ~ YYYY-MM-DD）
         const match = String(result.dateRange).match(/~\s*(\d{4}-\d{2}-\d{2})/);
         if (match) {
           targetDate = match[1];
@@ -698,22 +639,12 @@ async function fetchLatestPrices(symbols: string[]) {
       }
     }
     
-    // CHANGED: 如果还是没有，尝试从路由参数或页面顶部的时间选择器中获取
-    if (!targetDate) {
-      // 检查是否有其他来源的回测参数
-      const routeParams = route.params;
-      // 这里可以添加从路由参数中提取日期的逻辑
-    }
-    
-    // 验证日期格式：必须是 YYYY-MM-DD 格式
     if (targetDate && !/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
       console.warn(`[价格获取] 日期格式无效: ${targetDate}，跳过价格获取`);
       return;
     }
     
-    // CHANGED: 在流式回测过程中，如果没有结束日期，暂时跳过价格获取（会在回测完成后自动获取）
     if (!targetDate) {
-      // 如果正在运行回测，不打印警告（这是正常的，因为参数可能还没设置）
       if (!backtestStore.running) {
         console.warn('[价格获取] 没有回测结束日期，无法获取价格');
       }
@@ -743,7 +674,6 @@ async function fetchLatestPrices(symbols: string[]) {
     });
 
     if (Object.keys(priceMap).length > 0 || Object.keys(nameMap).length > 0) {
-      // 更新价格和名称，同时清除请求标记
       symbols.forEach(symbol => {
         const normalizedCode = normalizeSymbolCode(symbol);
         if (normalizedCode) {
@@ -763,7 +693,6 @@ async function fetchLatestPrices(symbols: string[]) {
       
       console.log(`[价格信息] 更新了 ${Object.keys(priceMap).length} 个价格和 ${Object.keys(nameMap).length} 个名称`);
     } else {
-      // 如果获取失败，清除请求标记以便重试
       symbols.forEach(symbol => {
         const normalizedCode = normalizeSymbolCode(symbol);
         if (normalizedCode) {
@@ -774,7 +703,6 @@ async function fetchLatestPrices(symbols: string[]) {
     }
   } catch (error) {
     console.error('获取价格失败:', error);
-    // 清除请求标记以便重试
     symbols.forEach(symbol => {
       const normalizedCode = normalizeSymbolCode(symbol);
       if (normalizedCode) {
@@ -786,7 +714,6 @@ async function fetchLatestPrices(symbols: string[]) {
 
 async function handleTradeSelect(trade: Trade, openModal = false) {
   selectedTrade.value = trade;
-  // 更新 K 线 Store 中的选中标的，让主图表切换
   klineStore.setSelectedSymbol(trade.symbolCode || trade.symbol);
   
   if (!openModal) return;
@@ -797,10 +724,9 @@ async function handleTradeSelect(trade: Trade, openModal = false) {
   const symbolCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
   if (!symbolCode) return;
 
-  // Calculate -20/+10 window (Instruction B)
   const entry = new Date(trade.entryDate || trade.date);
   const exit = trade.exitDate ? new Date(trade.exitDate) : new Date(entry);
-  if (!trade.exitDate) exit.setDate(entry.getDate() + 5); // Default buffer for open trades
+  if (!trade.exitDate) exit.setDate(entry.getDate() + 5);
 
   const start = new Date(entry);
   start.setDate(start.getDate() - 20);
@@ -811,54 +737,40 @@ async function handleTradeSelect(trade: Trade, openModal = false) {
   deepDiveStartDate.value = formatDate(start);
   deepDiveEndDate.value = formatDate(end);
 
-  // Still load into primary K-line store for full context if needed
-  // ... but for the modal, we use the specific deepDiveDates
-  
-  // Ensure we scroll the trade panel or make it visible if needed
   if (!isTradePanelExpanded.value) {
     isTradePanelExpanded.value = true;
   }
 }
 
 async function handlePositionAnalyze(pos: any) {
-  // 为当前持仓构建一个“虚构”的成交记录，以便复用分析逻辑
-  // 入场日期使用持仓的 entryDate，现价作为“模拟”平仓价
   const syntheticTrade: Trade = {
     id: `current-pos-${pos.symbolCode}`,
-    date: pos.entryDate, // 入场日期
+    date: pos.entryDate,
     symbol: pos.symbolName,
     symbolCode: pos.symbolCode,
-    action: 'buy', // 标记为 buy 进入点，分析窗口会自动包含后续走势
+    action: 'buy',
     price: pos.cost,
     quantity: pos.quantity,
     entryPrice: pos.cost,
     entryDate: pos.entryDate
   };
   
-  // 直接以“分析模式”打开
   await handleTradeSelect(syntheticTrade, true);
 }
-
-
-
-
 
 async function loadStrategyDetail() {
   let versionId = route.params.id as string || route.params.versionId as string;
   
-  // 如果没有 ID，尝试获取可用列表并默认选中第一个
   if (!versionId || versionId === 'default') {
     try {
       strategyStore.setLoading(true);
       const versions = await getAvailableVersions();
       if (versions && versions.length > 0) {
-        // 使用第一个有效的策略 ID
         const firstId = versions[0].id || versions[0].version || (versions[0] as any).name;
         if (firstId) {
           console.log(`[自动重定向] 无效 ID，自动跳转到策略: ${firstId}`);
           router.replace({ name: 'StrategyDetail', params: { id: firstId } });
           versionId = firstId;
-          // IMPORTANT: replace 后组件可能会重载，但为了保险起见，继续执行加载逻辑
         } else {
             throw new Error('无法获取有效的策略ID');
         }
@@ -884,7 +796,6 @@ async function loadStrategyDetail() {
       if (result) {
         strategyStore.setCurrentBacktestResult(result);
         strategyStore.setCurrentVersion(versionId);
-        // 同步全局选中的策略 ID
         dashboardStore.setSelectedStrategy(versionId);
       } else {
         strategyStore.setError('未找到该策略版本的回测结果');
@@ -909,18 +820,443 @@ watch(() => route.params, () => {
 
 watch(trades, (newTrades) => {
   if (newTrades.length > 0 && !selectedTrade.value && newTrades[0]) {
-    // 策略切换后的首次加载，只选中不开启弹窗
     handleTradeSelect(newTrades[0], false);
   }
 }, { immediate: true });
 
 onMounted(() => {
-  // CHANGED: 从 localStorage 恢复回测数据，而不是清空
-  // 这样用户在回测完成后返回页面时，数据仍然存在
   backtestStore.hydrateFromStorage();
-  
-  // 通过 Vite 代理连接，避免 CORS
   connect(window.location.origin);
   loadStrategyDetail();
 });
 </script>
+
+<style scoped>
+.kline-page {
+  height: calc(100vh - clamp(2.5rem, 8vh, 2.75rem));
+  background: #131722;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* 顶部工具栏 */
+.toolbar {
+  height: clamp(3rem, 9vh, 3.5rem);
+  padding: 0 clamp(0.75rem, 2vw, 1rem);
+  background: #1E222D;
+  border-bottom: 1px solid #2A2E39;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: clamp(0.5rem, 1vw, 1rem);
+  flex-shrink: 0;
+}
+
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.75rem, 1.5vw, 1rem);
+  flex: 1;
+  min-width: 0;
+}
+
+.symbol-info {
+  flex-shrink: 0;
+}
+
+.symbol-name {
+  font-size: clamp(0.9375rem, 1.2vw, 1rem);
+  font-weight: 600;
+  color: #D1D4DC;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+}
+
+.symbol-badge {
+  padding: clamp(0.125rem, 0.3vh, 0.25rem) clamp(0.25rem, 0.5vw, 0.375rem);
+  font-size: clamp(0.625rem, 0.7vw, 0.75rem);
+  font-weight: normal;
+  background: #2A2E39;
+  color: #787B86;
+  border-radius: 0.25rem;
+}
+
+.divider {
+  width: 1px;
+  height: clamp(1.25rem, 3vh, 1.5rem);
+  background: #2A2E39;
+  flex-shrink: 0;
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.5rem, 1vw, 0.75rem);
+  flex-shrink: 0;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.25rem, 0.5vw, 0.375rem);
+}
+
+.legend-dot {
+  width: clamp(0.5rem, 1vw, 0.625rem);
+  height: clamp(0.5rem, 1vw, 0.625rem);
+  border-radius: 50%;
+}
+
+.legend-dot.buy {
+  background: #ef4444;
+}
+
+.legend-dot.sell {
+  background: #22c55e;
+}
+
+.legend-text {
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #787B86;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.5rem, 1vw, 0.75rem);
+  flex-shrink: 0;
+}
+
+.shadow-toggle {
+  display: none;
+  align-items: center;
+  background: #2A2E39;
+  border-radius: 0.25rem;
+  padding: clamp(0.25rem, 0.5vw, 0.375rem) clamp(0.375rem, 0.75vw, 0.5rem);
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+  border: 1px solid #363A45;
+}
+
+@media (min-width: 768px) {
+  .shadow-toggle {
+    display: flex;
+  }
+}
+
+.toggle-label {
+  font-size: clamp(0.625rem, 0.7vw, 0.75rem);
+  color: #787B86;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.toggle-btn {
+  font-size: clamp(0.625rem, 0.7vw, 0.75rem);
+  padding: clamp(0.125rem, 0.3vh, 0.25rem) clamp(0.25rem, 0.5vw, 0.375rem);
+  border-radius: 0.25rem;
+  transition: all 0.15s ease;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  color: #D1D4DC;
+  cursor: pointer;
+}
+
+.toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.toggle-btn.active {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.run-btn {
+  padding: clamp(0.375rem, 1vh, 0.5rem) clamp(0.5rem, 1vw, 0.75rem);
+  font-size: clamp(0.75rem, 0.9vw, 0.875rem);
+  font-weight: 500;
+  color: white;
+  background: #2962FF;
+  border: none;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: clamp(0.25rem, 0.5vw, 0.375rem);
+  box-shadow: 0 4px 12px rgba(41, 98, 255, 0.15);
+  flex-shrink: 0;
+}
+
+.run-btn:hover {
+  background: #1E53E5;
+}
+
+.run-btn i {
+  font-size: clamp(0.625rem, 0.7vw, 0.75rem);
+}
+
+/* 主要内容区域 */
+.main-area {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.chart-area {
+  flex: 1;
+  position: relative;
+  min-width: 0;
+}
+
+.kline-chart {
+  width: 100%;
+  height: 100%;
+}
+
+.playback-overlay {
+  position: absolute;
+  bottom: clamp(0.75rem, 2vh, 1rem);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(90%, 600px);
+  z-index: 20;
+}
+
+/* 侧边面板 */
+.side-panel {
+  width: clamp(17.5rem, 25vw, 21.25rem);
+  min-width: 280px;
+  max-width: 400px;
+  background: #1c202b;
+  border-left: 1px solid #2a2e39;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+@media (max-width: 991px) {
+  .side-panel {
+    width: clamp(16rem, 22vw, 18rem);
+    min-width: 260px;
+  }
+}
+
+@media (max-width: 767px) {
+  .side-panel {
+    display: none;
+  }
+}
+
+.radar-section {
+  height: clamp(15rem, 35vh, 17.5rem);
+  padding: clamp(0.75rem, 2vw, 1rem);
+  border-bottom: 1px solid #2a2e39;
+  flex-shrink: 0;
+}
+
+.position-section {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* 底部交易记录面板 */
+.trade-panel {
+  background: #1E222D;
+  border-top: 1px solid #2A2E39;
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 8px;
+  cursor: ns-resize;
+  z-index: 20;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.resize-handle:hover {
+  background: rgba(41, 98, 255, 0.1);
+}
+
+.resize-indicator {
+  width: 3rem;
+  height: 3px;
+  background: #2A2E39;
+  border-radius: 2px;
+  transition: background 0.15s ease;
+}
+
+.resize-handle:hover .resize-indicator {
+  background: #2962FF;
+}
+
+.panel-header {
+  height: clamp(2rem, 6vh, 2.5rem);
+  padding: 0 clamp(0.75rem, 2vw, 1rem);
+  border-bottom: 1px solid #2A2E39;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.panel-header:hover {
+  background: #2A2E39;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+}
+
+.toggle-icon {
+  color: #787B86;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+}
+
+.panel-title {
+  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+  font-weight: 500;
+  color: #D1D4DC;
+  margin: 0;
+}
+
+.loading-indicator {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.25rem, 0.5vw, 0.375rem);
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #787B86;
+}
+
+.panel-content {
+  flex: 1;
+  overflow: hidden;
+  padding: clamp(0.75rem, 2vw, 1rem);
+  background: #1E222D;
+}
+
+.error-message {
+  margin-bottom: clamp(0.75rem, 2vw, 1rem);
+  padding: clamp(0.5rem, 1.5vw, 0.75rem);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 0.25rem;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #f87171;
+  display: flex;
+  align-items: center;
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+}
+
+.empty-state {
+  padding: clamp(1.5rem, 5vh, 2rem);
+  text-align: center;
+}
+
+.empty-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(2.5rem, 6vw, 3rem);
+  height: clamp(2.5rem, 6vw, 3rem);
+  margin-bottom: clamp(0.5rem, 1.5vh, 0.75rem);
+  border-radius: 50%;
+  background: #2A2E39;
+  color: #787B86;
+}
+
+.empty-icon i {
+  font-size: clamp(1rem, 2vw, 1.25rem);
+}
+
+.empty-title {
+  margin: 0 0 clamp(0.25rem, 0.75vh, 0.375rem) 0;
+  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+  font-weight: 500;
+  color: #D1D4DC;
+}
+
+.empty-hint {
+  margin: 0;
+  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  color: #787B86;
+}
+
+/* 响应式适配 */
+@media (max-width: 1199px) {
+  .side-panel {
+    width: clamp(16rem, 22vw, 18rem);
+  }
+}
+
+@media (max-width: 991px) {
+  .toolbar {
+    padding: 0 clamp(0.5rem, 1.5vw, 0.75rem);
+  }
+  
+  .legend {
+    display: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .kline-page {
+    height: calc(100vh - clamp(2.25rem, 7vh, 2.5rem));
+  }
+  
+  .toolbar {
+    height: auto;
+    min-height: clamp(2.5rem, 8vh, 3rem);
+    flex-wrap: wrap;
+    padding: clamp(0.375rem, 1vh, 0.5rem) clamp(0.5rem, 1.5vw, 0.75rem);
+  }
+  
+  .toolbar-left {
+    width: 100%;
+  }
+  
+  .toolbar-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  
+  .main-area {
+    flex-direction: column;
+  }
+  
+  .trade-panel {
+    min-height: 150px;
+  }
+}
+
+@media (max-width: 575px) {
+  .symbol-badge {
+    display: none;
+  }
+  
+  .run-btn span {
+    display: none;
+  }
+}
+</style>

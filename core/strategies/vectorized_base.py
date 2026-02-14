@@ -65,13 +65,13 @@ def safe_matrix_fill(func):
                 warning_msg = f"[{name}] 数据丢弃警告: {invalid_count}/{total_count} ({discard_ratio:.2f}%) 映射失败"
                 if discard_ratio > 5.0:
                     warning_msg += f" | 丢失项示例: {', '.join(lost_items[:5])}"
-                    print(f"⚠️ {warning_msg}")
+                    print(f"[WARN] {warning_msg}")
                 else:
                     print(f"[{name}] 轻微映射失败: {invalid_count} points ({discard_ratio:.2f}%)")
             else:
                 # 兼容旧调用方式
                 if invalid_ratio > 0.05:
-                    print(f"⚠️ [{name}] 严重数据丢弃: {invalid_count}/{total_count} ({discard_ratio*100:.2f}%)")
+                    print(f"[WARN] [{name}] 严重数据丢弃: {invalid_count}/{total_count} ({discard_ratio*100:.2f}%)")
                 else:
                     print(f"[{name}] 映射失败: {invalid_count} points ({discard_ratio*100:.2f}%)")
         
@@ -120,6 +120,8 @@ class VectorizedStrategyBase(StrategyBase):
         self.is_st: Optional[np.ndarray] = None
         self.volume_ratio: Optional[np.ndarray] = None
         self.days_listed: Optional[np.ndarray] = None
+        self.turnover_rate: Optional[np.ndarray] = None  # 换手率
+        self.ma5: Optional[np.ndarray] = None  # 5日均线
         
         # 维度信息
         self.T: Optional[int] = None  # 时间维度
@@ -171,7 +173,8 @@ class VectorizedStrategyBase(StrategyBase):
         self.is_st = np.full((T, N), 0, dtype=np.int8)
         self.volume_ratio = np.full((T, N), np.nan, dtype=np.float32)
         self.days_listed = np.full((T, N), np.nan, dtype=np.float64)
-        self.turnover_rate = np.full((T, N), np.nan, dtype=np.float32)  # 新增：换手率
+        self.turnover_rate = np.full((T, N), np.nan, dtype=np.float32)
+        self.ma5 = np.full((T, N), np.nan, dtype=np.float32)
         
         if preloaded_data is None or len(preloaded_data) == 0:
             return
@@ -274,6 +277,8 @@ class VectorizedStrategyBase(StrategyBase):
         self.is_st = np.full((T, N), 0, dtype=np.int8)
         self.volume_ratio = np.full((T, N), np.nan, dtype=np.float32)
         self.days_listed = np.full((T, N), np.nan, dtype=np.float64)
+        self.turnover_rate = np.full((T, N), np.nan, dtype=np.float32)
+        self.ma5 = np.full((T, N), np.nan, dtype=np.float32)
         
         if preloaded_data is None or len(preloaded_data) == 0:
             return
@@ -337,6 +342,8 @@ class VectorizedStrategyBase(StrategyBase):
         fill_matrix('total_mv', self.total_mv)
         fill_matrix('is_st', self.is_st, dtype=np.int8)
         fill_matrix('volume_ratio', self.volume_ratio)
+        fill_matrix('turnover_rate', self.turnover_rate)
+        fill_matrix('ma5', self.ma5)
         
         # 如果价格矩阵未填充且提供了 price_matrix，则从 price_matrix 填充
         if price_matrix is not None:
@@ -429,9 +436,9 @@ class VectorizedStrategyBase(StrategyBase):
             list_date_arr = np.array([list_date_dict.get(c, np.nan) for c in stock_codes], dtype=np.float64)
             date_ords = np.array([pd.Timestamp(d).toordinal() for d in trading_dates], dtype=np.float64)
             self.days_listed = (date_ords[:, None] - list_date_arr[None, :]).astype(np.float64)
-            print(f"[VectorizedBase] ✓ days_listed calculated: {np.sum(~np.isnan(self.days_listed))} valid entries")
+            print(f"[VectorizedBase] [OK] days_listed calculated: {np.sum(~np.isnan(self.days_listed))} valid entries")
         else:
-            print(f"[VectorizedBase] ⚠️ No list_date data found, days_listed will be NaN")
+            print(f"[VectorizedBase] [WARN] No list_date data found, days_listed will be NaN")
     
     def generate_signals_vectorized(
         self,

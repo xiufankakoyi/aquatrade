@@ -1,7 +1,7 @@
 {
-  "TOKEN": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5NTg5MWM0NzU3MzZjYTViZDlkZjdiZiIsInZlcnNpb24iOjAsImlhdCI6MTc2NzgwMzY0MSwiZXhwIjoxNzcwMzk1NjQxfQ.H9EXB5Ks_OIUOwMkATTSY7s3gHa096dm-1mhdJ1cndM",
-  "USERNAME": "1787856296@qq.com",  
-  "PASSWORD": "1787856296",  
+  "TOKEN": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjY5NTg5MWM0NzU3MzZjYTViZDlkZjdiZiIsInZlcnNpb24iOjAsImlhdCI6MTc3MDY0NjE0MywiZXhwIjoxNzczMjM4MTQzfQ.kV2FwFdCOVWRePjfH9O7l2ra6Gd49QBdxu6q9Z8erfQ",
+  "USERNAME": "1787856296@qq.com",
+  "PASSWORD": "1787856296",
   "HEADERS": {
     "accept": "application/json, text/plain, */*",
     "accept-language": "zh-CN,zh;q=0.9",
@@ -12,5 +12,5 @@
     "sec-ch-ua-platform": "\"Windows\"",
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
   },
-  "DATA_DIR": "./data_lake"
+  "DATA_DIR": "./data/data_lake"
 }

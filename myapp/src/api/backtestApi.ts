@@ -23,7 +23,8 @@ let unsubscribers: Array<() => void> = [];
  */
 function unpackMsgPackData(data: any): any {
   // 检查是否是 MsgPack 打包的数据
-  if (data && typeof data === 'object' && data._msgpack === true && data._data !== undefined) {
+  // 注意：后端 Python 发送的是 _msgpack: True (大写)，需要兼容处理
+  if (data && typeof data === 'object' && (data._msgpack === true || data._msgpack === 'True' || data._msgpack === 1) && data._data !== undefined) {
     try {
       let binaryData: Uint8Array;
       
@@ -82,6 +83,7 @@ function normalizeEvent(eventName: string, data: any): BacktestEvent | null {
     'initialized': 'initialized',
     'backtest_start': 'backtest_start',
     'daily_update': 'daily_equity',
+    'daily_equity': 'daily_equity',
     'daily_equity_engine': 'daily_equity',
     'new_trade': 'new_trade',
     'new_trade_engine': 'new_trade',
@@ -113,7 +115,7 @@ function subscribe(callback: (event: BacktestEvent) => void): () => void {
     isSubscribed = true;
     socketIOInstance = useSocketIO();
     
-    const events = ['initializing', 'initialized', 'backtest_start', 'daily_update', 'daily_equity_engine', 'new_trade', 'new_trade_engine', 'metrics_update', 'final_metrics', 'risk_update', 'risk_data', 'stream_complete', 'progress', 'backtest_error', 'backtest_cancelled'];
+    const events = ['initializing', 'initialized', 'backtest_start', 'daily_update', 'daily_equity', 'daily_equity_engine', 'new_trade', 'new_trade_engine', 'metrics_update', 'final_metrics', 'risk_update', 'risk_data', 'stream_complete', 'progress', 'backtest_error', 'backtest_cancelled'];
     
     events.forEach(eventName => {
       const unsub = socketIOInstance!.onEvent(eventName, (data: any) => {
@@ -840,6 +842,73 @@ export async function fetchStockSentimentTimeline(symbol: string): Promise<Stock
     return result as StockSentimentTimelineResponse;
   } catch (error) {
     console.error('获取个股多空博弈时间序列数据失败:', error);
+    throw error;
+  }
+}
+
+export interface PreloadResponse {
+  success: boolean;
+  task_id: string;
+  status: 'loading' | 'completed' | 'error';
+  strategy_name: string;
+  start_date: string;
+  end_date: string;
+  error?: string;
+}
+
+export interface PreloadStatusResponse {
+  success: boolean;
+  task_id: string;
+  status: 'pending' | 'loading' | 'completed' | 'error';
+  strategy_name: string;
+  start_date: string;
+  end_date: string;
+  error?: string;
+  cache_key?: string;
+}
+
+export async function preloadBacktest(
+  strategyName: string,
+  startDate: string,
+  endDate: string
+): Promise<PreloadResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/preload`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        strategy_name: strategyName,
+        start_date: startDate,
+        end_date: endDate,
+      }),
+    });
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    return data as PreloadResponse;
+  } catch (error) {
+    console.error('预加载回测数据失败:', error);
+    throw error;
+  }
+}
+
+export async function getPreloadStatus(taskId: string): Promise<PreloadStatusResponse> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/preload/status/${taskId}`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    return data as PreloadStatusResponse;
+  } catch (error) {
+    console.error('获取预加载状态失败:', error);
     throw error;
   }
 }

@@ -67,7 +67,7 @@ class BacktestVisualizationAPI:
             self.stock_info_map = self._load_stock_info()
             self._initialized = True
         except Exception as e:
-            logger.error(f"❌ 数据库初始化失败: {e}", exc_info=True)
+            logger.error(f"[ERROR] 数据库初始化失败: {e}", exc_info=True)
             raise
 
     def _load_stock_info(self) -> Dict[str, str]:
@@ -410,17 +410,94 @@ class BacktestVisualizationAPI:
 
     
     # --- 【【代码还原】】: 还原旧的、阻塞的 API 函数 (作为备用) ---
+    def _get_index_kline_from_parquet(self, symbol_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        从 index parquet 文件获取指数K线数据
+        支持：000300(沪深300), 000001(上证指数), 399001(深证成指), 000016(上证50), 399006(创业板), 000905(中证500)
+        """
+        # 指数代码映射
+        INDEX_MAPPING = {
+            '000300': 'hs300_daily.parquet',
+            '000905': 'zz500_daily.parquet',
+            '000001': 'sh_index_daily.parquet',
+            '399001': 'sz_index_daily.parquet',
+            '000016': 'sz50_daily.parquet',
+            '399006': 'cyb_index_daily.parquet',
+        }
+        
+        if symbol_code not in INDEX_MAPPING:
+            return []
+        
+        try:
+            import duckdb
+            parquet_file = Path('data/parquet_data') / INDEX_MAPPING[symbol_code]
+            
+            if not parquet_file.exists():
+                return []
+            
+            con = duckdb.connect()
+            query = """
+                SELECT 
+                    date,
+                    open, high, low, close,
+                    volume,
+                    change_pct
+                FROM read_parquet(?)
+                WHERE date >= ? AND date <= ?
+                ORDER BY date ASC
+            """
+            df = con.execute(query, [str(parquet_file), start_date, end_date]).fetchdf()
+            con.close()
+            
+            if df.empty:
+                return []
+            
+            # 转换为列表格式
+            records = []
+            for _, row in df.iterrows():
+                # 处理 change_pct，可能是字符串如 "-1.30%"
+                change_pct = row.get('change_pct')
+                if pd.notna(change_pct):
+                    if isinstance(change_pct, str):
+                        change_pct = float(change_pct.replace('%', ''))
+                    else:
+                        change_pct = float(change_pct)
+                
+                records.append({
+                    "date": row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])[:10],
+                    "open": float(f"{row['open']:.2f}"),
+                    "high": float(f"{row['high']:.2f}"),
+                    "low": float(f"{row['low']:.2f}"),
+                    "close": float(f"{row['close']:.2f}"),
+                    "volume": float(row['volume']) if pd.notna(row['volume']) else 0,
+                    "change_pct": change_pct
+                })
+            return records
+            
+        except Exception as e:
+            print(f"从 parquet 读取指数数据失败 {symbol_code}: {e}")
+            return []
+
     def get_symbol_kline(self, symbol_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """
         获取K线数据（强制全局前复权）
         修复：不再使用区间内的最新因子，而是使用数据库里的全局最新因子。
+        新增：支持从 index parquet 文件读取指数数据
         """
         if not self._initialized:
             self._ensure_initialized()
 
+        # 保存原始代码用于指数查询（_normalize_symbol_code 会去掉前导零）
+        original_symbol_code = symbol_code.strip().upper() if symbol_code else ''
+        
         symbol_code = self._normalize_symbol_code(symbol_code)
         if not symbol_code:
             return []
+        
+        # 首先尝试从 index parquet 读取（指数数据）- 使用原始代码
+        index_data = self._get_index_kline_from_parquet(original_symbol_code, start_date, end_date)
+        if index_data:
+            return index_data
         
         try:
             # 1. 获取原始数据 (Raw Price + Adj Factor)
@@ -552,21 +629,22 @@ class BacktestVisualizationAPI:
         if not self._initialized:
             self._ensure_initialized()
 
-            # CHANGED: Switch to Unified Data Layer
-            use_unified = os.getenv("USE_UNIFIED_DATA", "1") == "1"
-            
-            if use_unified:
-                try:
-                    from data_svc.unified_data_query import UnifiedDataQueryAdapter
-                    local_data_query = UnifiedDataQueryAdapter(self.db_path)
-                    # print("DEBUG: Using UnifiedDataQueryAdapter for local run")
-                except Exception as e:
-                    print(f"Failed to load UnifiedDataManager, falling back: {e}")
-                    local_data_query = OptimizedStockDataQuery(self.db_path)
-            else:
+        # CHANGED: Switch to Unified Data Layer
+        # NOTE: UnifiedDataQueryAdapter 缺少 get_stock_pool 方法，暂时禁用
+        use_unified = os.getenv("USE_UNIFIED_DATA", "0") == "1"
+        
+        if use_unified:
+            try:
+                from data_svc.unified_data_query import UnifiedDataQueryAdapter
+                local_data_query = UnifiedDataQueryAdapter(self.db_path)
+                # print("DEBUG: Using UnifiedDataQueryAdapter for local run")
+            except Exception as e:
+                print(f"Failed to load UnifiedDataManager, falling back: {e}")
                 local_data_query = OptimizedStockDataQuery(self.db_path)
-                
-            local_engine = OptimizedBacktestEngine(local_data_query)
+        else:
+            local_data_query = OptimizedStockDataQuery(self.db_path)
+            
+        local_engine = OptimizedBacktestEngine(local_data_query)
         
         try:
             creation_kwargs: Dict[str, Any] = params or {}
@@ -651,6 +729,7 @@ class BacktestVisualizationAPI:
         (此函数保持不变, 作为备用)
         转换回测结果
         """
+        from datetime import datetime
         
         metrics = self._calculate_metrics_from_df(results_df, trades_log)
         equity_curve = self._extract_equity_curve_from_df(results_df)
@@ -1062,6 +1141,7 @@ class BacktestVisualizationAPI:
         benchmark_code: Optional[str] = None,
         stop_event: Optional[Event] = None,
         params: Optional[Dict[str, Any]] = None,
+        backtest_config: Optional[Dict[str, Any]] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """
         CHANGED: 流式 API 层（支持懒加载初始化）
@@ -1137,7 +1217,16 @@ class BacktestVisualizationAPI:
         # 【并发安全修复】创建独立的查询对象和引擎对象
         try:
             local_data_query = OptimizedStockDataQuery(self.db_path)
-            local_engine = OptimizedBacktestEngine(local_data_query)
+            
+            # 应用回测配置（初始资金、佣金、滑点）
+            engine_kwargs = {}
+            if backtest_config:
+                if backtest_config.get('initial_capital') is not None:
+                    engine_kwargs['initial_capital'] = backtest_config['initial_capital']
+                if backtest_config.get('commission') is not None:
+                    engine_kwargs['commission_rate'] = backtest_config['commission']
+            
+            local_engine = OptimizedBacktestEngine(local_data_query, **engine_kwargs)
             initial_capital = local_engine.initial_capital
             logger.debug(f"创建独立的引擎实例完成，初始资金: {initial_capital}")
         except Exception as e:

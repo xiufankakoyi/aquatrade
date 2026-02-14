@@ -180,3 +180,216 @@ def generate_strategy():
             {"success": False, "error": f"生成策略失败: {str(e)}"}, 
             status_code=500
         )
+
+
+@strategy_bp.route('/strategies/reload', methods=['POST'])
+def reload_strategies():
+    """
+    手动触发策略热重载
+    
+    请求体:
+        - strategy_id: 指定策略ID（可选）
+        - file_path: 指定文件路径（可选）
+        - refresh_all: 是否刷新所有策略（默认 False）
+    """
+    try:
+        data = request.get_json() or {}
+        strategy_id = data.get('strategy_id')
+        file_path = data.get('file_path')
+        refresh_all = data.get('refresh_all', False)
+        
+        from core.strategies.hot_reload import StrategyLoader, get_watcher
+        
+        watcher = get_watcher()
+        
+        if strategy_id:
+            StrategyLoader.reload_strategy(strategy_id)
+            return json_response({
+                "success": True,
+                "data": {
+                    "action": "reload_strategy",
+                    "strategy_id": strategy_id,
+                    "message": f"策略 {strategy_id} 已重载"
+                }
+            })
+        elif file_path:
+            result = StrategyLoader.reload_by_path(file_path)
+            if result:
+                return json_response({
+                    "success": True,
+                    "data": {
+                        "action": "reload_by_path",
+                        "file_path": file_path,
+                        "strategy_id": result,
+                        "message": f"文件 {file_path} 已重载为策略 {result}"
+                    }
+                })
+            else:
+                return json_response({
+                    "success": False,
+                    "error": f"无法识别文件: {file_path}"
+                }, status_code=400)
+        elif refresh_all:
+            strategies = StrategyLoader.discover_strategies(force_refresh=True)
+            return json_response({
+                "success": True,
+                "data": {
+                    "action": "refresh_all",
+                    "strategies": list(strategies.keys()),
+                    "count": len(strategies),
+                    "message": f"已刷新 {len(strategies)} 个策略"
+                }
+            })
+        else:
+            success = watcher.trigger_reload()
+            if success:
+                return json_response({
+                    "success": True,
+                    "data": {
+                        "action": "trigger_reload",
+                        "message": "策略发现缓存已刷新"
+                    }
+                })
+            else:
+                return json_response({
+                    "success": False,
+                    "error": "重载失败"
+                }, status_code=500)
+                
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"策略重载失败: {e}", exc_info=True)
+        return json_response(
+            {"success": False, "error": f"策略重载失败: {str(e)}"}, 
+            status_code=500
+        )
+
+
+@strategy_bp.route('/strategies/discovered', methods=['GET'])
+def get_discovered_strategies():
+    """获取已发现的策略列表（来自热重载模块）"""
+    try:
+        from core.strategies.hot_reload import StrategyLoader
+        
+        strategies = StrategyLoader.discover_strategies()
+        
+        result = [
+            {"id": sid, "module_path": mpath}
+            for sid, mpath in strategies.items()
+        ]
+        
+        return json_response({
+            "success": True,
+            "data": {
+                "strategies": result,
+                "count": len(result)
+            }
+        })
+        
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"获取已发现策略失败: {e}", exc_info=True)
+        return json_response(
+            {"success": False, "error": str(e)}, 
+            status_code=500
+        )
+
+
+@strategy_bp.route('/strategies/save', methods=['POST'])
+def save_strategy():
+    """
+    保存策略代码到文件
+    
+    请求体:
+        - name: 策略名称（必需）
+        - description: 策略描述（可选）
+        - code: 策略代码（必需）
+        - temp: 是否临时保存（可选，默认 False）
+    """
+    try:
+        data = request.get_json() or {}
+        strategy_name = data.get('name', '').strip()
+        description = data.get('description', '').strip()
+        code = data.get('code', '').strip()
+        is_temp = data.get('temp', False)
+        
+        if not strategy_name:
+            return json_response(
+                {"success": False, "error": "策略名称不能为空"}, 
+                status_code=400
+            )
+        
+        if not code:
+            return json_response(
+                {"success": False, "error": "策略代码不能为空"}, 
+                status_code=400
+            )
+        
+        # 生成文件名（使用策略名称的拼音或英文）
+        import re
+        import os
+        
+        # 将策略名称转换为有效的文件名
+        # 移除特殊字符，替换空格为下划线
+        safe_name = re.sub(r'[^\w\u4e00-\u9fff]', '_', strategy_name)
+        safe_name = re.sub(r'_+', '_', safe_name).strip('_')
+        
+        # 如果名称是中文，使用时间戳作为后缀
+        if re.search(r'[\u4e00-\u9fff]', safe_name):
+            import time
+            safe_name = f"user_strategy_{int(time.time())}"
+        
+        filename = f"{safe_name}.py"
+        
+        # 如果是临时保存，使用临时目录
+        if is_temp:
+            import tempfile
+            temp_dir = tempfile.gettempdir()
+            file_path = os.path.join(temp_dir, filename)
+        else:
+            # 保存到用户策略目录
+            user_strategies_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                'core', 'strategies', 'user'
+            )
+            
+            # 确保目录存在
+            os.makedirs(user_strategies_dir, exist_ok=True)
+            file_path = os.path.join(user_strategies_dir, filename)
+        
+        # 写入文件
+        with open(file_path, 'w', encoding='utf-8') as f:
+            # 添加文件头注释
+            if description:
+                f.write(f'"""\n{description}\n"""\n\n')
+            f.write(code)
+        
+        # 如果不是临时保存，触发策略重载
+        if not is_temp:
+            try:
+                from core.strategies.hot_reload import StrategyLoader
+                StrategyLoader.reload_by_path(file_path)
+            except Exception as reload_error:
+                from config.logger import get_logger
+                logger = get_logger(__name__)
+                logger.warning(f"策略保存后重载失败: {reload_error}")
+        
+        return json_response({
+            "success": True,
+            "data": {
+                "filename": filename,
+                "filepath": file_path,
+                "message": f"策略已成功保存为 {filename}"
+            }
+        })
+        
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"保存策略失败: {e}", exc_info=True)
+        return json_response(
+            {"success": False, "error": f"保存策略失败: {str(e)}"}, 
+            status_code=500
+        )

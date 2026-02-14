@@ -19,13 +19,13 @@ def simple_strategy(required_days=30):
     """
     def decorator(strategy_func):
         @wraps(strategy_func)
-        def wrapper(self, current_date, stock_pool, data_query):
+        def wrapper(self, current_date, stock_pool_today, data_query):
             import pandas as pd  # 延迟导入
             # 记录所需历史长度
             self.required_days = max(getattr(self, "required_days", 0), required_days)
             return self._optimized_generate_signals(
                 current_date=current_date,
-                stock_pool=stock_pool,
+                stock_pool=stock_pool_today,
                 data_query=data_query,
                 strategy_func=strategy_func,
             )
@@ -204,6 +204,7 @@ class StrategyBase:
         try:
             end_ts = pd.to_datetime(end_date)
         except Exception:
+            import pandas as pd
             end_ts = pd.Timestamp(end_date)
 
         lookback_days = max(window * 3, window + shift + 2)
@@ -233,6 +234,7 @@ class StrategyBase:
         return hist.groupby("stock_code", sort=False, as_index=False).tail(1)
 
     def _get_start_date(self, current_date):
+        import pandas as pd  # 延迟导入
         if isinstance(current_date, pd.Timestamp):
             d = current_date
         else:

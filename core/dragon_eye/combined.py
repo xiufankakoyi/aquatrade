@@ -39,7 +39,7 @@ class StockDataCleaner:
         data_list = market_sentiment.get('data', [])
         
         if not data_list:
-            print(f"⚠️ market_sentiment数据为空，跳过生成market_dashboard.csv")
+            print(f"[WARN] market_sentiment数据为空，跳过生成market_dashboard.csv")
             return
         
         sentiment_data = data_list[0]
@@ -63,7 +63,7 @@ class StockDataCleaner:
             writer.writerow(['日期', '炸板率', '跌停数', '主线题材', '最高板高度'])
             writer.writerow([self.date, broken_ratio, limit_down_count, main_themes, max_height])
         
-        print(f"✓ market_dashboard.csv 生成完成 (保存在 {output_dir} 文件夹)")
+        print(f"[OK] market_dashboard.csv 生成完成 (保存在 {output_dir} 文件夹)")
     
     def generate_stock_feature_matrix(self):
         """生成个股因子表 stock_feature_matrix.csv"""
@@ -72,7 +72,7 @@ class StockDataCleaner:
         
         # 检查limit_up数据是否完整
         if 'limit_up' not in self.data or 'data' not in self.data['limit_up'] or 'stocks' not in self.data['limit_up']['data']:
-            print(f"⚠️ limit_up数据不完整，跳过生成stock_feature_matrix.csv")
+            print(f"[WARN] limit_up数据不完整，跳过生成stock_feature_matrix.csv")
             return
         
         # 获取龙虎榜数据，用于判断是否有机构买入
@@ -117,7 +117,7 @@ class StockDataCleaner:
                 
                 writer.writerow([stock_code, continue_num, order_amount, turnover_rate, is_regulation, is_institution_buy, leader_tag])
         
-        print(f"✓ stock_feature_matrix.csv 生成完成 (保存在 {output_dir} 文件夹)")
+        print(f"[OK] stock_feature_matrix.csv 生成完成 (保存在 {output_dir} 文件夹)")
     
     def generate_ai_daily_brief(self):
         """生成 AI 压缩提示词 ai_daily_brief.txt"""
@@ -129,22 +129,22 @@ class StockDataCleaner:
         data_list = market_sentiment.get('data', [])
         
         if not data_list:
-            print(f"⚠️ market_sentiment数据为空，跳过生成ai_daily_brief.txt")
+            print(f"[WARN] market_sentiment数据为空，跳过生成ai_daily_brief.txt")
             return
         
         sentiment_data = data_list[0]
         
         # 检查其他必要数据是否存在
         if 'limit_up' not in self.data or 'data' not in self.data['limit_up'] or 'stocks' not in self.data['limit_up']['data']:
-            print(f"⚠️ limit_up数据不完整，跳过生成ai_daily_brief.txt")
+            print(f"[WARN] limit_up数据不完整，跳过生成ai_daily_brief.txt")
             return
             
         if 'sector_heat' not in self.data or 'data' not in self.data['sector_heat']:
-            print(f"⚠️ sector_heat数据不完整，跳过生成ai_daily_brief.txt")
+            print(f"[WARN] sector_heat数据不完整，跳过生成ai_daily_brief.txt")
             return
             
         if 'ladder_detail' not in self.data:
-            print(f"⚠️ ladder_detail数据缺失，跳过生成ai_daily_brief.txt")
+            print(f"[WARN] ladder_detail数据缺失，跳过生成ai_daily_brief.txt")
             return
             
         limit_up_data = self.data['limit_up']['data']['stocks']
@@ -176,7 +176,7 @@ class StockDataCleaner:
         # 2. 涨停梯队完整性
         # 从ladder_detail获取更完整的梯队信息
         if not ladder_detail.get('dates'):
-            print(f"⚠️ ladder_detail数据不完整，跳过生成ai_daily_brief.txt")
+            print(f"[WARN] ladder_detail数据不完整，跳过生成ai_daily_brief.txt")
             return
             
         ladder_boards = ladder_detail['dates'][0].get('boards', [])
@@ -336,7 +336,7 @@ class StockDataCleaner:
             # 添加监管标记
             tags = stock.get('tags', [])
             if stock['code'] in regulated_stocks:
-                tags.append("[⚠️监管]")
+                tags.append("[[WARN]监管]")
             
             if tags:
                 stock_brief += f"，标签：{','.join(tags)}"
@@ -348,7 +348,7 @@ class StockDataCleaner:
         with open(file_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(brief))
         
-        print(f"✓ ai_daily_brief.txt 生成完成 (保存在 {output_dir} 文件夹)")
+        print(f"[OK] ai_daily_brief.txt 生成完成 (保存在 {output_dir} 文件夹)")
     
     def run(self):
         """执行完整的 ETL 流程"""
@@ -564,7 +564,7 @@ def get_valid_date_dir(data_lake_dir, mode='clean'):
                     return date
         
         # 如果没有找到有ai_daily_brief.txt的目录，返回最新目录
-        print(f"⚠️ 没有找到包含完整数据的目录，使用最新目录: {dates[0]}")
+        print(f"[WARN] 没有找到包含完整数据的目录，使用最新目录: {dates[0]}")
         return dates[0]
 
 # 主函数1：用于运行数据清洗

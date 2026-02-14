@@ -57,10 +57,79 @@ class StockDataService:
             logger.warning(f"读取基准数据时发生错误: {e}")
             return pd.DataFrame()
     
+    def _get_index_kline_from_parquet(self, symbol_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        从 index parquet 文件获取指数K线数据
+        支持：000300(沪深300), 000001(上证指数), 399001(深证成指), 000016(上证50), 399006(创业板), 000905(中证500)
+        """
+        # 指数代码映射
+        INDEX_MAPPING = {
+            '000300': 'hs300_daily.parquet',
+            '000905': 'zz500_daily.parquet',
+            '000001': 'sh_index_daily.parquet',
+            '399001': 'sz_index_daily.parquet',
+            '000016': 'sz50_daily.parquet',
+            '399006': 'cyb_index_daily.parquet',
+        }
+        
+        if symbol_code not in INDEX_MAPPING:
+            return []
+        
+        try:
+            import duckdb
+            parquet_file = Path('data/parquet_data') / INDEX_MAPPING[symbol_code]
+            
+            if not parquet_file.exists():
+                return []
+            
+            con = duckdb.connect()
+            query = """
+                SELECT 
+                    date,
+                    open, high, low, close,
+                    volume,
+                    change_pct
+                FROM read_parquet(?)
+                WHERE date >= ? AND date <= ?
+                ORDER BY date ASC
+            """
+            df = con.execute(query, [str(parquet_file), start_date, end_date]).fetchdf()
+            con.close()
+            
+            if df.empty:
+                return []
+            
+            # 转换为列表格式
+            records = []
+            for _, row in df.iterrows():
+                # 处理 change_pct，可能是字符串如 "-1.30%"
+                change_pct = row.get('change_pct')
+                if pd.notna(change_pct):
+                    if isinstance(change_pct, str):
+                        change_pct = float(change_pct.replace('%', ''))
+                    else:
+                        change_pct = float(change_pct)
+                
+                records.append({
+                    "date": row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])[:10],
+                    "open": float(f"{row['open']:.2f}"),
+                    "high": float(f"{row['high']:.2f}"),
+                    "low": float(f"{row['low']:.2f}"),
+                    "close": float(f"{row['close']:.2f}"),
+                    "volume": float(row['volume']) if pd.notna(row['volume']) else 0,
+                    "change_pct": change_pct
+                })
+            return records
+            
+        except Exception as e:
+            print(f"从 parquet 读取指数数据失败 {symbol_code}: {e}")
+            return []
+    
     def get_symbol_kline(self, symbol_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """
         获取K线数据（强制全局前复权）
         修复：不再使用区间内的最新因子，而是使用数据库里的全局最新因子。
+        新增：支持从 index parquet 文件读取指数数据
         """
         if not self.init_service._initialized:
             self.init_service.ensure_initialized()
@@ -68,6 +137,11 @@ class StockDataService:
         symbol_code = normalize_symbol_code(symbol_code)
         if not symbol_code:
             return []
+        
+        # 首先尝试从 index parquet 读取（指数数据）
+        index_data = self._get_index_kline_from_parquet(symbol_code, start_date, end_date)
+        if index_data:
+            return index_data
         
         try:
             # 1. 获取原始数据 (Raw Price + Adj Factor)
