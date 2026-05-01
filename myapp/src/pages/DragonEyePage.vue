@@ -1,256 +1,403 @@
 <template>
-  <div class="dragon-eye-page p-6 space-y-6 bg-[#0b0e14] min-h-full">
+  <div class="dragon-eye-page bg-[#0a0a0a] min-h-screen">
     <!-- Header -->
-    <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-      <div>
-        <h1 class="text-2xl font-bold text-white flex items-center gap-2">
+    <header class="h-14 px-4 flex items-center justify-between bg-[#111] border-b border-[#1a1a1a]">
+      <div class="flex items-center gap-3">
+        <h1 class="text-lg font-bold text-white flex items-center gap-2">
           <i class="fas fa-dragon text-orange-500"></i>
-          DragonEye 龙虎榜监控
+          DragonEye
         </h1>
-        <p class="text-slate-400 text-sm mt-1">深度监控市场高标股动态、题材热度及龙虎榜资金流向</p>
+        <span class="text-xs text-slate-500 pl-3 border-l border-[#2a2a2a]">龙虎榜监控</span>
       </div>
       
       <div class="flex items-center gap-3">
-        <div class="bg-slate-800/50 backdrop-blur rounded-lg px-3 py-1.5 border border-slate-700 flex items-center gap-2">
-          <span class="text-xs text-slate-400">数据日期:</span>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-slate-500">日期</span>
           <input 
             type="date" 
             v-model="targetDate" 
-            class="bg-transparent text-sm text-indigo-400 outline-none border-none cursor-pointer"
+            class="h-7 px-2 text-xs text-white bg-[#1a1a1a] rounded border-none outline-none focus:ring-2 focus:ring-blue-500/20"
           />
         </div>
         
-        <!-- 工作流按钮组 -->
+        <div class="w-px h-5 bg-[#2a2a2a]"></div>
+        
         <div class="flex gap-2">
-          <button 
+          <button
             @click="startCrawl"
-            :disabled="isCrawling || activeJobId"
-            class="px-4 py-2 bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 text-white rounded-lg text-sm font-semibold transition-all shadow-lg shadow-orange-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            :disabled="!!(isCrawling || activeJobId)"
+            class="h-7 px-3 bg-[#1a1a1a] hover:bg-[#252525] text-slate-300 rounded text-xs font-medium transition-all disabled:opacity-50 flex items-center gap-1.5"
           >
             <i class="fas" :class="isCrawling ? 'fa-spinner fa-spin' : 'fa-spider'"></i>
-            {{ isCrawling ? '抓取中...' : '启动抓取' }}
+            <span>启动抓取</span>
           </button>
           
-          <button 
+          <button
             @click="startPipeline"
-            :disabled="isProcessing || activeJobId"
-            class="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white rounded-lg text-sm font-semibold transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            :disabled="!!(isProcessing || activeJobId)"
+            class="h-7 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-medium transition-all shadow-lg shadow-blue-500/20 disabled:opacity-50 flex items-center gap-1.5"
           >
             <i class="fas" :class="isProcessing ? 'fa-spinner fa-spin' : 'fa-magic'"></i>
-            {{ isProcessing ? '处理中...' : '一键全流程' }}
+            <span>一键全流程</span>
           </button>
         </div>
       </div>
-    </div>
-
-    <!-- Progress & Status Bar -->
-    <div v-if="activeJobId || lastJobStatus" class="bg-[#151925] rounded-xl border border-slate-800 p-4">
-      <div class="flex justify-between items-center mb-2">
-        <div class="flex items-center gap-2">
-          <span class="text-sm font-medium text-white">任务状态</span>
-          <span 
-            class="text-xs px-2 py-0.5 rounded"
-            :class="{
-              'bg-yellow-500/20 text-yellow-400': jobStatus === 'running',
-              'bg-green-500/20 text-green-400': jobStatus === 'completed',
-              'bg-red-500/20 text-red-400': jobStatus === 'failed',
-              'bg-slate-500/20 text-slate-400': !jobStatus
-            }"
-          >
-            {{ statusText }}
-          </span>
+      
+      <div class="flex items-center gap-2">
+        <div v-if="activeJobId" class="flex items-center gap-2 px-2 py-1 bg-[#1a1a1a] rounded">
+          <span class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+          <span class="text-xs text-slate-400">{{ jobProgress }}%</span>
         </div>
-        <span class="text-xs text-slate-500">{{ jobProgress }}%</span>
+        <button @click="showLogs = !showLogs" class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+          <i class="fas fa-terminal text-xs"></i>
+        </button>
+        <button class="w-7 h-7 flex items-center justify-center text-slate-400 hover:text-white transition-colors">
+          <i class="fas fa-cog text-xs"></i>
+        </button>
       </div>
-      
-      <!-- Progress Bar -->
-      <div class="h-2 bg-slate-800 rounded-full overflow-hidden">
-        <div 
-          class="h-full transition-all duration-500 rounded-full"
-          :class="{
-            'bg-gradient-to-r from-orange-500 to-red-500': jobType === 'crawl',
-            'bg-gradient-to-r from-indigo-500 to-purple-500': jobType === 'full_pipeline',
-            'bg-gradient-to-r from-green-500 to-emerald-500': jobType === 'clean'
-          }"
-          :style="{ width: `${jobProgress}%` }"
-        ></div>
-      </div>
-      
-      <p v-if="jobMessage" class="mt-2 text-xs text-slate-400">{{ jobMessage }}</p>
+    </header>
+
+    <!-- Progress Bar -->
+    <div v-if="activeJobId" class="h-0.5 bg-[#1a1a1a]">
+      <div 
+        class="h-full transition-all duration-300 rounded-full"
+        :class="{
+          'bg-gradient-to-r from-orange-500 to-red-500': jobType === 'crawl',
+          'bg-gradient-to-r from-blue-500 to-indigo-500': jobType === 'full_pipeline'
+        }"
+        :style="{ width: `${jobProgress}%` }"
+      ></div>
     </div>
 
-    <!-- Main Content Grid -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <!-- Sentiment Chart -->
-      <div class="lg:col-span-2 bg-[#151925] rounded-xl border border-slate-800 p-5 shadow-sm">
-        <div class="flex justify-between items-center mb-6">
-          <h2 class="text-sm font-semibold text-white">市场情绪走势</h2>
-          <div class="flex gap-2">
-            <span class="text-[10px] bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded border border-indigo-500/20">炸板率</span>
-            <span class="text-[10px] bg-red-500/10 text-red-400 px-2 py-0.5 rounded border border-red-500/20">最高板</span>
+    <!-- Main Content - Two Column Layout -->
+    <div class="main-grid p-3">
+      <!-- Left Column -->
+      <div class="left-column">
+        <!-- Metrics Row -->
+        <div class="grid grid-cols-4 gap-2">
+          <div class="bg-[#111] rounded-lg p-3 flex items-center">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-[10px] text-slate-500 uppercase tracking-wider">涨停家数</span>
+              <span class="text-lg font-semibold font-mono" :class="metrics.limitUp >= 50 ? 'text-[#00d084]' : 'text-slate-300'">{{ metrics.limitUp }}</span>
+            </div>
+          </div>
+          <div class="bg-[#111] rounded-lg p-3 flex items-center">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-[10px] text-slate-500 uppercase tracking-wider">跌停家数</span>
+              <span class="text-lg font-semibold font-mono" :class="metrics.limitDown > 10 ? 'text-[#ff4757]' : 'text-slate-300'">{{ metrics.limitDown }}</span>
+            </div>
+          </div>
+          <div class="bg-[#111] rounded-lg p-3 flex items-center">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-[10px] text-slate-500 uppercase tracking-wider">最高连板</span>
+              <span class="text-lg font-semibold font-mono text-[#ffa502]">{{ metrics.maxHeight }}</span>
+            </div>
+          </div>
+          <div class="bg-[#111] rounded-lg p-3 flex items-center">
+            <div class="flex flex-col gap-0.5">
+              <span class="text-[10px] text-slate-500 uppercase tracking-wider">炸板率</span>
+              <span class="text-lg font-semibold font-mono" :class="parseFloat(metrics.brokenRatio) > 20 ? 'text-[#ff4757]' : 'text-[#ffa502]'">{{ metrics.brokenRatio }}</span>
+            </div>
           </div>
         </div>
-        <div ref="chartRef" class="h-[280px] w-full"></div>
+
+        <!-- Stock Table - 填满剩余高度 -->
+        <div class="bg-[#111] rounded-lg flex-1 min-h-0 flex flex-col">
+          <div class="px-3 py-2 flex items-center justify-between border-b border-[#1a1a1a]">
+            <span class="text-xs font-medium text-white">龙头股实时因子</span>
+            <div class="flex gap-1">
+              <button class="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-white transition-colors">
+                <i class="fas fa-filter text-xs"></i>
+              </button>
+              <button class="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-white transition-colors">
+                <i class="fas fa-download text-xs"></i>
+              </button>
+            </div>
+          </div>
+          <div class="flex-1 overflow-auto">
+            <table class="w-full text-left text-xs">
+              <thead class="sticky top-0 bg-[#111] z-10">
+                <tr class="text-[10px] text-slate-500 uppercase tracking-wider">
+                  <th class="px-3 py-2 font-medium">个股</th>
+                  <th class="px-3 py-2 font-medium">连板</th>
+                  <th class="px-3 py-2 font-medium text-right">封单额</th>
+                  <th class="px-3 py-2 font-medium text-right">换手</th>
+                  <th class="px-3 py-2 font-medium text-center">监管</th>
+                  <th class="px-3 py-2 font-medium text-center">机构</th>
+                  <th class="px-3 py-2 font-medium">题材</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="stock in dragonStocks" :key="stock.stock_code" class="hover:bg-[#1a1a1a] transition-colors">
+                  <td class="px-3 py-2">
+                    <div class="flex flex-col">
+                      <span class="text-blue-400 font-medium">{{ stock.stock_name }}</span>
+                      <span class="text-[10px] text-slate-600 font-mono">{{ stock.stock_code }}</span>
+                    </div>
+                  </td>
+                  <td class="px-3 py-2">
+                    <span class="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium"
+                      :class="stock.continue_num >= 5 ? 'bg-[#ff4757]/20 text-[#ff4757]' : stock.continue_num >= 3 ? 'bg-[#ffa502]/20 text-[#ffa502]' : 'bg-[#787b86]/20 text-[#787b86]'">
+                      {{ stock.continue_num }}板
+                    </span>
+                  </td>
+                  <td class="px-3 py-2 text-right font-mono text-slate-300">{{ (stock.order_amount / 100000000).toFixed(2) }}亿</td>
+                  <td class="px-3 py-2 text-right font-mono text-slate-300">{{ stock.turnover_rate.toFixed(2) }}%</td>
+                  <td class="px-3 py-2 text-center">
+                    <i v-if="stock.is_regulation" class="fas fa-exclamation-triangle text-[#ff4757] text-xs" title="处于监管监控"></i>
+                    <span v-else class="text-slate-600">-</span>
+                  </td>
+                  <td class="px-3 py-2 text-center">
+                    <i v-if="stock.is_institution_buy" class="fas fa-university text-[#00d084] text-xs" title="机构专用买入"></i>
+                    <span v-else class="text-slate-600">-</span>
+                  </td>
+                  <td class="px-3 py-2">
+                    <span class="text-[10px] text-slate-400 truncate max-w-[100px] block" :title="stock.leader_tag">{{ stock.leader_tag }}</span>
+                  </td>
+                </tr>
+                <tr v-if="dragonStocks.length === 0">
+                  <td colspan="7" class="px-3 py-8 text-center text-slate-500 text-xs">
+                    暂无当日龙头个股数据
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Sentiment Chart -->
+        <div class="bg-[#111] rounded-lg h-[200px] flex flex-col">
+          <div class="px-3 py-2 flex items-center justify-between border-b border-[#1a1a1a]">
+            <span class="text-xs font-medium text-white">市场情绪走势</span>
+            <button class="w-6 h-6 flex items-center justify-center text-slate-500 hover:text-white transition-colors">
+              <i class="fas fa-expand text-xs"></i>
+            </button>
+          </div>
+          <div ref="sentimentChartRef" class="flex-1"></div>
+        </div>
       </div>
 
-      <!-- AI Summary -->
-      <div class="bg-gradient-to-br from-[#1e2330] to-[#151925] rounded-xl border border-slate-700 p-5 relative overflow-hidden flex flex-col">
-        <div class="relative z-10 flex flex-col h-full">
-          <h2 class="text-sm font-semibold text-white mb-4 flex items-center gap-2">
-            <i class="fas fa-brain text-purple-400"></i>
-            AI 每日复盘简报
-          </h2>
+      <!-- Right Column -->
+      <div class="right-column">
+        <!-- AI Daily Brief Panel -->
+        <div class="bg-[#111] rounded-lg overflow-hidden" :class="{ 'collapsed': aiBriefCollapsed }">
+          <div class="px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-[#1a1a1a] transition-colors" @click="aiBriefCollapsed = !aiBriefCollapsed">
+            <div class="flex items-center gap-2">
+              <i class="fas fa-robot text-blue-400 text-xs"></i>
+              <span class="text-xs font-medium text-white">AI 每日复盘简报</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[10px] text-slate-500">{{ targetDate }}</span>
+              <i class="fas fa-chevron-down text-[10px] text-slate-500 transition-transform" :class="{ 'rotate-180': !aiBriefCollapsed }"></i>
+            </div>
+          </div>
           
-          <div v-if="aiBrief" class="flex-1 overflow-y-auto text-xs text-slate-300 leading-relaxed bg-black/20 p-3 rounded-lg border border-slate-800/50 mb-4 whitespace-pre-wrap max-h-[300px]">
-            {{ aiBrief }}
-          </div>
-          <div v-else class="flex-1 flex items-center justify-center border border-dashed border-slate-700 rounded-lg mb-4">
-            <p class="text-slate-500 text-xs">暂无数据，请先启动抓取</p>
-          </div>
-
-          <div class="flex gap-2">
-            <button 
-              @click="fetchBrief"
-              class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition-colors border border-slate-700"
-            >
-              刷新简报
-            </button>
-            <button 
-              @click="confirmAndPush"
-              :disabled="!aiBrief || isPushing"
-              class="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-medium transition-all shadow-lg shadow-indigo-500/20 flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              <i class="fas" :class="isPushing ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>
-              推送飞书
-            </button>
+          <div v-show="!aiBriefCollapsed" class="px-3 pb-3 space-y-3">
+            <!-- Key Metrics -->
+            <div class="grid grid-cols-3 gap-2">
+              <div class="bg-[#0a0a0a] rounded p-2 text-center">
+                <div class="text-[10px] text-slate-500 mb-0.5">市场情绪</div>
+                <div class="text-xs font-medium" :class="sentimentColor">{{ sentimentText }}</div>
+              </div>
+              <div class="bg-[#0a0a0a] rounded p-2 text-center">
+                <div class="text-[10px] text-slate-500 mb-0.5">涨停家数</div>
+                <div class="text-xs font-medium text-[#00d084]">{{ metrics.limitUp }}</div>
+              </div>
+              <div class="bg-[#0a0a0a] rounded p-2 text-center">
+                <div class="text-[10px] text-slate-500 mb-0.5">最高连板</div>
+                <div class="text-xs font-medium text-[#ffa502]">{{ metrics.maxHeight }}</div>
+              </div>
+            </div>
+            
+            <!-- Market Overview - Keywords -->
+            <div>
+              <div class="flex items-center gap-1.5 mb-1.5">
+                <i class="fas fa-chart-line text-[10px] text-slate-400"></i>
+                <span class="text-[10px] text-slate-400 uppercase tracking-wider">市场概况</span>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-[#00d084]/10 text-[#00d084]">
+                  <i class="fas fa-arrow-up text-[8px]"></i>
+                  涨停{{ metrics.limitUp }}家
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-[#ff4757]/10 text-[#ff4757]">
+                  <i class="fas fa-arrow-down text-[8px]"></i>
+                  跌停{{ metrics.limitDown }}家
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-[#ffa502]/10 text-[#ffa502]">
+                  <i class="fas fa-layer-group text-[8px]"></i>
+                  最高{{ metrics.maxHeight }}
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-[#6366f1]/10 text-[#6366f1]">
+                  <i class="fas fa-percentage text-[8px]"></i>
+                  炸板{{ metrics.brokenRatio }}
+                </span>
+                <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px]" :class="sentimentTagClass">
+                  <i class="fas fa-thermometer-half text-[8px]"></i>
+                  {{ sentimentText }}
+                </span>
+              </div>
+            </div>
+            
+            <!-- Theme Tags -->
+            <div>
+              <div class="flex items-center gap-1.5 mb-1.5">
+                <i class="fas fa-fire text-[10px] text-slate-400"></i>
+                <span class="text-[10px] text-slate-400 uppercase tracking-wider">题材热点</span>
+              </div>
+              <div class="flex flex-wrap gap-1.5">
+                <span 
+                  v-for="theme in hotThemes" 
+                  :key="theme.name"
+                  @click="filterByTheme(theme.name)"
+                  class="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] cursor-pointer transition-all"
+                  :class="activeTheme === theme.name ? 'bg-blue-500/20 text-blue-400' : 'bg-[#1a1a1a] text-slate-400 hover:bg-[#252525]'"
+                  :style="{ color: activeTheme === theme.name ? theme.color : '' }"
+                >
+                  <i class="fas" :class="theme.icon" :style="{ color: theme.color }"></i>
+                  {{ theme.name }}
+                </span>
+              </div>
+            </div>
+            
+            <!-- Actions -->
+            <div class="flex gap-2 pt-1">
+              <button @click="fetchBrief" class="flex-1 h-7 flex items-center justify-center gap-1.5 bg-[#1a1a1a] hover:bg-[#252525] text-slate-300 rounded-full text-[10px] transition-all">
+                <i class="fas fa-sync-alt" :class="{ 'fa-spin': isLoadingBrief }"></i>
+                <span>刷新简报</span>
+              </button>
+              <button 
+                @click="confirmAndPush" 
+                :disabled="isPushing"
+                class="flex-1 h-7 flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full text-[10px] transition-all shadow-lg shadow-blue-500/20 disabled:opacity-50"
+              >
+                <i class="fas" :class="isPushing ? 'fa-spinner fa-spin' : 'fa-paper-plane'"></i>
+                <span>推送飞书</span>
+              </button>
+            </div>
           </div>
         </div>
-        <div class="absolute -bottom-4 -right-4 w-32 h-32 bg-indigo-500/10 blur-3xl rounded-full"></div>
+
+        <!-- Theme Flow Chart - 放大显示 -->
+        <div class="bg-[#111] rounded-lg flex-1 min-h-0 flex flex-col">
+          <div class="px-3 py-2 flex items-center justify-between border-b border-[#1a1a1a]">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-medium text-white">题材流向路径图</span>
+              <span class="text-[10px] text-slate-500">{{ chartStartDate?.slice(5) }} → {{ chartEndDate?.slice(5) }}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="flex items-center gap-1 text-[10px] text-slate-400">
+                <i class="fas fa-circle text-[6px]" style="color: #00FF88"></i>
+                主流
+              </span>
+              <span class="flex items-center gap-1 text-[10px] text-slate-400">
+                <i class="fas fa-circle text-[6px]" style="color: #787B86"></i>
+                普通
+              </span>
+            </div>
+          </div>
+          <div class="flex-1 min-h-0">
+            <ThemeFlowChart
+              ref="themeFlowChartRef"
+              :data="themeFlowData"
+              :loading="flowLoading"
+            />
+          </div>
+          <!-- 流向解读 - 只保留这一个 -->
+          <div class="px-3 py-2 border-t border-[#1a1a1a]">
+            <div class="grid grid-cols-3 gap-2 text-[10px]">
+              <div class="flex items-center gap-1.5 text-slate-400">
+                <i class="fas fa-arrow-right text-[#00d084]"></i>
+                <span>龙头引领</span>
+              </div>
+              <div class="flex items-center gap-1.5 text-slate-400">
+                <i class="fas fa-arrows-alt text-[#ffa502]"></i>
+                <span>跟风跟进</span>
+              </div>
+              <div class="flex items-center gap-1.5 text-slate-400">
+                <i class="fas fa-expand text-[#ff6b81]"></i>
+                <span>扩散补涨</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trend Chart -->
+        <div class="bg-[#111] rounded-lg h-[140px] flex flex-col">
+          <div class="px-3 py-2 flex items-center justify-between border-b border-[#1a1a1a]">
+            <span class="text-xs font-medium text-white">涨停趋势分析</span>
+            <div class="flex items-center gap-3">
+              <span class="flex items-center gap-1 text-[10px] text-slate-400">
+                <span class="w-2 h-2 rounded-sm bg-[#ef4444]"></span>
+                涨停数
+              </span>
+              <span class="flex items-center gap-1 text-[10px] text-slate-400">
+                <span class="w-2 h-2 rounded-sm bg-[#f59e0b]"></span>
+                最高连板
+              </span>
+            </div>
+          </div>
+          <div class="flex-1 min-h-0">
+            <LimitUpTrendChart
+              :data="limitUpTrendData"
+              :loading="chartsLoading"
+            />
+          </div>
+        </div>
+
+        <!-- Bubble Matrix Chart -->
+        <div class="bg-[#111] rounded-lg h-[140px] flex flex-col">
+          <div class="px-3 py-2 flex items-center justify-between border-b border-[#1a1a1a]">
+            <span class="text-xs font-medium text-white">涨停强度矩阵</span>
+            <div class="flex items-center gap-2">
+              <span class="flex items-center gap-1 text-[10px] text-slate-400">
+                <span class="w-1.5 h-1.5 rounded-full" style="background: #00D2FF"></span>
+                AI
+              </span>
+              <span class="flex items-center gap-1 text-[10px] text-slate-400">
+                <span class="w-1.5 h-1.5 rounded-full" style="background: #00FF88"></span>
+                新能源
+              </span>
+              <span class="flex items-center gap-1 text-[10px] text-slate-400">
+                <span class="w-1.5 h-1.5 rounded-full" style="background: #FF6B35"></span>
+                半导体
+              </span>
+            </div>
+          </div>
+          <div class="flex-1 min-h-0">
+            <BubbleMatrixChart
+              :data="bubbleMatrixData"
+              :loading="bubbleLoading"
+            />
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- Real-time Logs -->
-    <div v-if="showLogs" class="bg-[#151925] rounded-xl border border-slate-800 overflow-hidden">
-      <div class="p-4 border-b border-slate-800 flex justify-between items-center">
-        <h2 class="text-sm font-semibold text-white flex items-center gap-2">
+    <!-- Logs Panel -->
+    <div v-if="showLogs" class="fixed bottom-0 left-0 right-0 h-48 bg-[#111] border-t border-[#1a1a1a] z-50">
+      <div class="h-8 px-3 flex items-center justify-between border-b border-[#1a1a1a]">
+        <span class="text-xs font-medium text-white flex items-center gap-2">
           <i class="fas fa-terminal text-slate-400"></i>
           实时日志
-        </h2>
+        </span>
         <div class="flex gap-2">
-          <button 
-            @click="clearLogs"
-            class="text-xs text-slate-400 hover:text-white transition-colors"
-          >
-            清空
-          </button>
-          <button 
-            @click="showLogs = false"
-            class="text-xs text-slate-400 hover:text-white transition-colors"
-          >
-            收起
-          </button>
+          <button @click="clearLogs" class="text-[10px] text-slate-500 hover:text-white transition-colors">清空</button>
+          <button @click="showLogs = false" class="text-[10px] text-slate-500 hover:text-white transition-colors">收起</button>
         </div>
       </div>
-      
-      <div ref="logContainer" class="h-[200px] overflow-y-auto p-4 space-y-1 font-mono text-xs">
-        <div 
-          v-for="(log, index) in logs" 
-          :key="index"
-          class="flex gap-2"
-        >
+      <div ref="logContainer" class="h-40 overflow-y-auto p-3 space-y-1 font-mono text-[10px]">
+        <div v-for="(log, index) in logs" :key="index" class="flex gap-2">
           <span class="text-slate-600 shrink-0">{{ formatTime(log.timestamp) }}</span>
-          <span 
-            class="shrink-0 w-16 text-right"
-            :class="{
-              'text-blue-400': log.level === 'info',
-              'text-green-400': log.level === 'success',
-              'text-yellow-400': log.level === 'warning',
-              'text-red-400': log.level === 'error'
-            }"
-          >
-            [{{ log.level.toUpperCase() }}]
-          </span>
+          <span class="shrink-0 w-14 text-right" :class="{
+            'text-blue-400': log.level === 'info',
+            'text-green-400': log.level === 'success',
+            'text-yellow-400': log.level === 'warning',
+            'text-red-400': log.level === 'error'
+          }">[{{ log.level.toUpperCase() }}]</span>
           <span class="text-slate-300 break-all">{{ log.message }}</span>
         </div>
-        <div v-if="logs.length === 0" class="text-slate-600 text-center py-8">
-          等待任务启动...
-        </div>
-      </div>
-    </div>
-
-    <!-- Toggle Logs Button -->
-    <button 
-      v-if="!showLogs && logs.length > 0"
-      @click="showLogs = true"
-      class="fixed bottom-6 right-6 w-12 h-12 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-lg shadow-indigo-500/30 flex items-center justify-center transition-all"
-    >
-      <i class="fas fa-terminal"></i>
-    </button>
-
-    <!-- Data Table -->
-    <div class="bg-[#151925] rounded-xl border border-slate-800 overflow-hidden shadow-sm">
-      <div class="p-5 border-b border-slate-800 flex justify-between items-center">
-        <h2 class="text-sm font-semibold text-white">龙头股实时因子矩阵板</h2>
-        <div class="flex gap-4 text-xs">
-          <div class="flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-red-500"></span>
-            <span class="text-slate-400">高连板</span>
-          </div>
-          <div class="flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-green-500"></span>
-            <span class="text-slate-400">机构买入</span>
-          </div>
-        </div>
-      </div>
-      
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-sm">
-          <thead>
-            <tr class="bg-slate-800/30 text-slate-400 text-[11px] uppercase tracking-wider">
-              <th class="px-6 py-3 font-medium">个股</th>
-              <th class="px-6 py-3 font-medium">连板数</th>
-              <th class="px-6 py-3 font-medium">封单额</th>
-              <th class="px-6 py-3 font-medium">换手率</th>
-              <th class="px-6 py-3 font-medium">监管</th>
-              <th class="px-6 py-3 font-medium">机构</th>
-              <th class="px-6 py-3 font-medium">题材标签</th>
-            </tr>
-          </thead>
-          <tbody class="divide-y divide-slate-800">
-            <tr v-for="stock in dragonStocks" :key="stock.stock_code" class="hover:bg-slate-800/50 transition-colors">
-              <td class="px-6 py-4">
-                <div class="flex flex-col">
-                  <span class="text-indigo-400 font-medium">{{ stock.stock_name }}</span>
-                  <span class="text-[10px] text-slate-500">{{ stock.stock_code }}</span>
-                </div>
-              </td>
-              <td class="px-6 py-4">
-                <span class="px-2 py-0.5 rounded text-xs" 
-                   :class="stock.continue_num >= 4 ? 'bg-red-500/20 text-red-500' : 'bg-orange-500/10 text-orange-400'">
-                  {{ stock.continue_num }} 连板
-                </span>
-              </td>
-              <td class="px-6 py-4 text-slate-300">{{ (stock.order_amount / 100000000).toFixed(2) }} 亿</td>
-              <td class="px-6 py-4 text-slate-300">{{ stock.turnover_rate.toFixed(2) }}%</td>
-              <td class="px-6 py-4">
-                <i v-if="stock.is_regulation" class="fas fa-exclamation-triangle text-yellow-500" title="处于监管监控"></i>
-                <span v-else class="text-slate-600">-</span>
-              </td>
-              <td class="px-6 py-4">
-                <i v-if="stock.is_institution_buy" class="fas fa-university text-green-500" title="机构专用买入"></i>
-                <span v-else class="text-slate-600">-</span>
-              </td>
-              <td class="px-6 py-4">
-                <span class="text-xs text-slate-400 truncate max-w-[200px] block">{{ stock.leader_tag }}</span>
-              </td>
-            </tr>
-            <tr v-if="dragonStocks.length === 0">
-              <td colspan="7" class="px-6 py-12 text-center text-slate-500 italic">
-                暂无当日龙头个股数据...
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <div v-if="logs.length === 0" class="text-slate-600 text-center py-4">等待任务启动...</div>
       </div>
     </div>
   </div>
@@ -259,111 +406,216 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, onUnmounted, nextTick } from 'vue';
 import * as echarts from 'echarts';
-import axios from 'axios';
+import axios from '../api/index';
 
-// ==========================================
+import LimitUpTrendChart from '../components/charts/LimitUpTrendChart.vue';
+import BubbleMatrixChart from '../components/charts/BubbleMatrixChart.vue';
+import ThemeFlowChart from '../components/charts/ThemeFlowChart.vue';
+
 // State
-// ==========================================
-const targetDate = ref(new Date().toISOString().split('T')[0]);
+const targetDate = ref('');
 const isCrawling = ref(false);
 const isProcessing = ref(false);
 const isPushing = ref(false);
+const isLoadingBrief = ref(false);
 const dragonStocks = ref<any[]>([]);
 const aiBrief = ref('');
-const chartRef = ref<HTMLElement | null>(null);
-let chartInstance: echarts.ECharts | null = null;
+const aiBriefCollapsed = ref(false);
+const activeTheme = ref<string | null>(null);
 
-// Job & Log State
+// Metrics
+const metrics = ref({
+  limitUp: 72,
+  limitDown: 8,
+  maxHeight: '8板',
+  brokenRatio: '15.0%'
+});
+
+// Chart refs
+const sentimentChartRef = ref<HTMLElement | null>(null);
+let sentimentChart: echarts.ECharts | null = null;
+const themeFlowChartRef = ref<InstanceType<typeof ThemeFlowChart> | null>(null);
+
+// Chart data
+const chartsLoading = ref(false);
+const bubbleLoading = ref(false);
+const flowLoading = ref(false);
+const limitUpTrendData = ref<any>(null);
+const bubbleMatrixData = ref<any>(null);
+const themeFlowData = ref<any>(null);
+const chartStartDate = ref('');
+const chartEndDate = ref('');
+
+// Job & Logs
 const activeJobId = ref<string | null>(null);
 const jobStatus = ref<string>('');
 const jobType = ref<string>('');
 const jobProgress = ref(0);
-const jobMessage = ref('');
-const lastJobStatus = ref<string>('');
 const logs = ref<any[]>([]);
 const showLogs = ref(false);
 const logContainer = ref<HTMLElement | null>(null);
-
 let eventSource: EventSource | null = null;
 
-// ==========================================
+// Hot themes
+const hotThemes = ref([
+  { name: '人工智能', icon: 'fa-arrow-up', color: '#00D2FF' },
+  { name: '新能源', icon: 'fa-bolt', color: '#00FF88' },
+  { name: '半导体', icon: 'fa-microchip', color: '#FF6B35' },
+  { name: '其他', icon: 'fa-car', color: '#787B86' }
+]);
+
 // Computed
-// ==========================================
-const statusText = computed(() => {
-  const map: Record<string, string> = {
-    'pending': '等待中',
-    'running': '运行中',
-    'completed': '已完成',
-    'failed': '失败',
-    'cancelled': '已取消'
-  };
-  return map[jobStatus.value] || '空闲';
+const sentimentText = computed(() => {
+  const ratio = metrics.value.limitUp / (metrics.value.limitUp + metrics.value.limitDown);
+  if (ratio > 0.9) return '强势';
+  if (ratio > 0.8) return '偏暖';
+  if (ratio > 0.6) return '震荡';
+  return '偏冷';
 });
 
-// ==========================================
+const sentimentColor = computed(() => {
+  const text = sentimentText.value;
+  if (text === '强势') return 'text-[#00d084]';
+  if (text === '偏暖') return 'text-[#00d084]';
+  if (text === '震荡') return 'text-[#ffa502]';
+  return 'text-[#ff4757]';
+});
+
+const sentimentTagClass = computed(() => {
+  const text = sentimentText.value;
+  if (text === '强势') return 'bg-[#00d084]/10 text-[#00d084]';
+  if (text === '偏暖') return 'bg-[#00d084]/10 text-[#00d084]';
+  if (text === '震荡') return 'bg-[#ffa502]/10 text-[#ffa502]';
+  return 'bg-[#ff4757]/10 text-[#ff4757]';
+});
+
+// 获取数据库最新日期
+const fetchLatestDate = async () => {
+  try {
+    const res = await axios.get('/api/dragon/latest-date');
+    if (res.data && res.data.latest_date) {
+      targetDate.value = res.data.latest_date;
+    } else {
+      // 如果 API 返回空，使用今天
+      targetDate.value = new Date().toISOString().split('T')[0];
+    }
+  } catch (e) {
+    console.error('Fetch latest date failed:', e);
+    // 出错时使用今天
+    targetDate.value = new Date().toISOString().split('T')[0];
+  }
+};
+
 // API Functions
-// ==========================================
 const fetchStocks = async () => {
   try {
     const res = await axios.get('/api/dragon/stocks', {
       params: { start_date: targetDate.value, end_date: targetDate.value }
     });
     dragonStocks.value = res.data;
+    // Update metrics from first stock if available
+    if (res.data.length > 0) {
+      // Calculate metrics from data
+      const maxBoard = Math.max(...res.data.map((s: any) => s.continue_num));
+      metrics.value.maxHeight = maxBoard + '板';
+    }
   } catch (e) {
     console.error('Fetch stocks failed:', e);
   }
 };
 
 const fetchBrief = async () => {
+  isLoadingBrief.value = true;
   try {
     const res = await axios.get('/api/dragon/brief', { params: { date: targetDate.value } });
     aiBrief.value = res.data.content;
   } catch (e) {
     console.error('Fetch brief failed:', e);
+  } finally {
+    isLoadingBrief.value = false;
   }
 };
 
 const fetchSentimentHistory = async () => {
   try {
     const end = targetDate.value;
+    if (!end) return;
     const start = new Date(new Date(end).getTime() - 15 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const res = await axios.get('/api/dragon/sentiment', { params: { start_date: start, end_date: end } });
-    updateChart(res.data);
+    updateSentimentChart(res.data);
   } catch (e) {
     console.error('Fetch sentiment history failed:', e);
   }
 };
 
-// ==========================================
+const fetchLimitUpTrend = async () => {
+  if (!chartStartDate.value || !chartEndDate.value) return;
+  chartsLoading.value = true;
+  try {
+    const res = await axios.get('/api/dragon/limit-up-trend', {
+      params: { start_date: chartStartDate.value, end_date: chartEndDate.value }
+    });
+    limitUpTrendData.value = res.data;
+  } catch (e) {
+    console.error('Fetch limit up trend failed:', e);
+  } finally {
+    chartsLoading.value = false;
+  }
+};
+
+const fetchBubbleMatrix = async () => {
+  if (!targetDate.value) return;
+  bubbleLoading.value = true;
+  try {
+    const res = await axios.get('/api/dragon/bubble-matrix', { params: { date: targetDate.value } });
+    bubbleMatrixData.value = res.data;
+  } catch (e) {
+    console.error('Fetch bubble matrix failed:', e);
+  } finally {
+    bubbleLoading.value = false;
+  }
+};
+
+const fetchThemeFlow = async () => {
+  if (!chartStartDate.value || !chartEndDate.value) return;
+  flowLoading.value = true;
+  try {
+    const res = await axios.get('/api/dragon/theme-flow', {
+      params: { start_date: chartStartDate.value, end_date: chartEndDate.value }
+    });
+    themeFlowData.value = res.data;
+  } catch (e) {
+    console.error('Fetch theme flow failed:', e);
+  } finally {
+    flowLoading.value = false;
+  }
+};
+
 // Chart
-// ==========================================
-const updateChart = (data: any[]) => {
-  if (!chartInstance) return;
+const updateSentimentChart = (data: any[]) => {
+  if (!sentimentChart) return;
   
-  const options = {
+  const option = {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-    legend: { textStyle: { color: '#64748b', fontSize: 10 }, top: 0 },
-    grid: { left: '3%', right: '4%', bottom: '3%', top: '15%', containLabel: true },
+    grid: { left: '3%', right: '4%', bottom: '3%', top: '10%', containLabel: true },
     xAxis: {
       type: 'category',
       data: data.map(d => d.trade_date.slice(5)),
-      axisLine: { lineStyle: { color: '#1e293b' } },
-      axisLabel: { color: '#64748b', fontSize: 10 }
+      axisLine: { lineStyle: { color: '#1a1a1a' } },
+      axisLabel: { color: '#64748b', fontSize: 9 }
     },
     yAxis: [
       {
         type: 'value',
-        name: '最高板',
         min: 0,
-        axisLabel: { color: '#64748b', fontSize: 10 },
-        splitLine: { lineStyle: { color: '#1e293b' } }
+        axisLabel: { color: '#64748b', fontSize: 9 },
+        splitLine: { lineStyle: { color: '#1a1a1a' } }
       },
       {
         type: 'value',
-        name: '炸板率',
         max: 1,
-        axisLabel: { color: '#64748b', fontSize: 10, formatter: (v: number) => (v * 100).toFixed(0) + '%' },
+        axisLabel: { color: '#64748b', fontSize: 9, formatter: (v: number) => (v * 100).toFixed(0) + '%' },
         splitLine: { show: false }
       }
     ],
@@ -373,26 +625,35 @@ const updateChart = (data: any[]) => {
         type: 'line',
         data: data.map(d => d.max_height),
         smooth: true,
-        lineStyle: { color: '#ef4444', width: 2 },
+        lineStyle: { color: '#00d084', width: 2 },
         symbol: 'none',
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(239, 68, 68, 0.2)' }, { offset: 1, color: 'transparent' }]) }
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: 'rgba(0, 208, 132, 0.2)' }, { offset: 1, color: 'transparent' }]) }
       },
       {
         name: '炸板率',
         type: 'bar',
         yAxisIndex: 1,
         data: data.map(d => d.broken_ratio),
-        itemStyle: { color: '#6366f1', borderRadius: [2, 2, 0, 0] },
-        barWidth: '20%'
+        itemStyle: { color: '#6366f1', borderRadius: [1, 1, 0, 0] },
+        barWidth: '30%'
       }
     ]
   };
-  chartInstance.setOption(options);
+  sentimentChart.setOption(option);
 };
 
-// ==========================================
-// Job & SSE Functions
-// ==========================================
+// Theme filter
+const filterByTheme = (theme: string) => {
+  if (activeTheme.value === theme) {
+    activeTheme.value = null;
+    themeFlowChartRef.value?.highlightTheme(null);
+  } else {
+    activeTheme.value = theme;
+    themeFlowChartRef.value?.highlightTheme(theme);
+  }
+};
+
+// Job functions
 const startCrawl = async () => {
   try {
     isCrawling.value = true;
@@ -405,7 +666,6 @@ const startCrawl = async () => {
     activeJobId.value = job_id;
     jobType.value = 'crawl';
     connectToStream(job_id);
-    
   } catch (e: any) {
     console.error('Start crawl failed:', e);
     alert('启动抓取失败: ' + (e.response?.data?.error || e.message));
@@ -428,7 +688,6 @@ const startPipeline = async () => {
     activeJobId.value = job_id;
     jobType.value = 'full_pipeline';
     connectToStream(job_id);
-    
   } catch (e: any) {
     console.error('Start pipeline failed:', e);
     alert('启动工作流失败: ' + (e.response?.data?.error || e.message));
@@ -437,10 +696,7 @@ const startPipeline = async () => {
 };
 
 const connectToStream = (jobId: string) => {
-  // 关闭旧连接
-  if (eventSource) {
-    eventSource.close();
-  }
+  if (eventSource) eventSource.close();
   
   eventSource = new EventSource(`/api/dragon/stream/${jobId}`);
   
@@ -449,8 +705,7 @@ const connectToStream = (jobId: string) => {
     handleStreamData(data);
   };
   
-  eventSource.onerror = (error) => {
-    console.error('SSE Error:', error);
+  eventSource.onerror = () => {
     eventSource?.close();
   };
 };
@@ -460,52 +715,31 @@ const handleStreamData = (data: any) => {
     case 'connected':
       jobStatus.value = 'running';
       break;
-      
     case 'log':
       logs.value.push(data.data);
       scrollToBottom();
-      
-      // 更新进度（如果日志中包含进度信息）
       if (data.data.message.includes('%')) {
         const match = data.data.message.match(/(\d+)%/);
-        if (match) {
-          jobProgress.value = parseInt(match[1]);
-        }
+        if (match) jobProgress.value = parseInt(match[1]);
       }
-      jobMessage.value = data.data.message;
       break;
-      
     case 'complete':
       jobStatus.value = data.status;
-      jobProgress.value = data.progress || 100;
-      lastJobStatus.value = data.status;
+      jobProgress.value = 100;
       activeJobId.value = null;
       isCrawling.value = false;
       isProcessing.value = false;
-      
-      // 刷新数据
       fetchStocks();
       fetchBrief();
       fetchSentimentHistory();
-      
       eventSource?.close();
-      eventSource = null;
       break;
-      
     case 'error':
       jobStatus.value = 'failed';
-      jobMessage.value = data.message;
-      lastJobStatus.value = 'failed';
       activeJobId.value = null;
       isCrawling.value = false;
       isProcessing.value = false;
-      
       eventSource?.close();
-      eventSource = null;
-      break;
-      
-    case 'heartbeat':
-      // 心跳包，无需处理
       break;
   }
 };
@@ -524,13 +758,9 @@ const clearLogs = () => {
 
 const formatTime = (timestamp: string) => {
   if (!timestamp) return '';
-  const date = new Date(timestamp);
-  return date.toLocaleTimeString('zh-CN', { hour12: false });
+  return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false });
 };
 
-// ==========================================
-// Push to Feishu
-// ==========================================
 const confirmAndPush = async () => {
   isPushing.value = true;
   try {
@@ -543,58 +773,87 @@ const confirmAndPush = async () => {
   }
 };
 
-// ==========================================
 // Lifecycle
-// ==========================================
-onMounted(() => {
-  if (chartRef.value) {
-    chartInstance = echarts.init(chartRef.value);
-    const resizeHandler = () => chartInstance?.resize();
-    window.addEventListener('resize', resizeHandler);
+onMounted(async () => {
+  if (sentimentChartRef.value) {
+    sentimentChart = echarts.init(sentimentChartRef.value);
+    window.addEventListener('resize', () => sentimentChart?.resize());
   }
+  
+  // 先获取数据库最新日期
+  await fetchLatestDate();
+  
+  // Init date range
+  const today = new Date();
+  const startDate = new Date(today.getTime() - 15 * 24 * 60 * 60 * 1000);
+  chartStartDate.value = startDate.toISOString().split('T')[0];
+  chartEndDate.value = today.toISOString().split('T')[0];
+  
+  // Fetch data
   fetchStocks();
   fetchBrief();
   fetchSentimentHistory();
+  fetchLimitUpTrend();
+  fetchBubbleMatrix();
+  fetchThemeFlow();
 });
 
 watch(targetDate, () => {
   fetchStocks();
   fetchBrief();
   fetchSentimentHistory();
+  fetchBubbleMatrix();
 });
 
 onUnmounted(() => {
-  chartInstance?.dispose();
+  sentimentChart?.dispose();
   eventSource?.close();
 });
 </script>
 
 <style scoped>
 .dragon-eye-page {
-  animation: fadeIn 0.4s ease-out;
+  display: flex;
+  flex-direction: column;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
 }
 
-/* Custom scrollbar for logs */
+.left-column,
+.right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* Custom scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #1e293b;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #475569;
-  border-radius: 3px;
+  background: #333;
+  border-radius: 2px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
+  background: #444;
+}
+
+/* Collapsed state for AI brief */
+.collapsed .tv-ai-brief-content {
+  display: none;
 }
 </style>

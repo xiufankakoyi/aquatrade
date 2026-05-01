@@ -1,22 +1,59 @@
 """
-高性能向量化计算函数 - 使用 Numba JIT 加速
+高性能向量化计算函数 - 使用 Numba JIT + GPU (CuPy) 加速
 
 所有函数接收 (T, N) 形状的 NumPy 数组，输出也是 (T, N)
 T: 时间维度（交易日数）
 N: 股票数量
+
+性能优化策略：
+1. 小矩阵 (< 5000 行): 使用 Numba JIT (CPU)
+2. 大矩阵 (>= 5000 行): 自动切换到 GPU (CuPy)
+3. GPU 不可用时自动降级到 CPU
 """
 import numpy as np
+import os
 
 try:
-    from numba import jit
+    from numba import jit, prange
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
-    # 降级：如果没有 Numba，使用普通装饰器
     def jit(*args, **kwargs):
         def decorator(func):
             return func
         return decorator
+    prange = range
+
+try:
+    import cupy as cp
+    from cupy import RawKernel
+    CUPY_AVAILABLE = True
+except ImportError:
+    CUPY_AVAILABLE = False
+    cp = None
+
+GPU_THRESHOLD_ROWS = int(os.getenv('GPU_THRESHOLD_ROWS', '5000'))
+USE_GPU = os.getenv('USE_GPU', 'auto')
+
+
+def is_gpu_available() -> bool:
+    """检查 GPU 是否可用"""
+    if not CUPY_AVAILABLE:
+        return False
+    try:
+        cp.cuda.runtime.getDeviceCount()
+        return True
+    except Exception:
+        return False
+
+
+def should_use_gpu(rows: int) -> bool:
+    """判断是否应该使用 GPU"""
+    if USE_GPU == '0' or USE_GPU.lower() == 'false':
+        return False
+    if USE_GPU == '1' or USE_GPU.lower() == 'true':
+        return is_gpu_available()
+    return rows >= GPU_THRESHOLD_ROWS and is_gpu_available()
 
 
 @jit(nopython=True, cache=True, fastmath=True)
@@ -177,4 +214,175 @@ def calc_cross_under(fast_line: np.ndarray, slow_line: np.ndarray) -> np.ndarray
                 cross_under_matrix[t, n] = False
     
     return cross_under_matrix
+
+
+# ============================================================================
+# GPU 加速版本 (CuPy)
+# ============================================================================
+
+_MA_GPU_KERNEL = r'''
+extern "C" __global__
+void ma_kernel(const double* __restrict__ data, double* __restrict__ result,
+               int T, int N, int window) {
+    int n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+    
+    double sum = 0.0;
+    int count = 0;
+    
+    for (int t = 0; t < T; t++) {
+        double val = data[t * N + n];
+        if (!isnan(val)) {
+            sum += val;
+            count++;
+        }
+        
+        if (t >= window) {
+            double old_val = data[(t - window) * N + n];
+            if (!isnan(old_val)) {
+                sum -= old_val;
+                count--;
+            }
+        }
+        
+        if (t >= window - 1 && count > 0) {
+            result[t * N + n] = sum / count;
+        } else {
+            result[t * N + n] = nan("");
+        }
+    }
+}
+'''
+
+
+def calc_ma_gpu(matrix: np.ndarray, window: int) -> np.ndarray:
+    """
+    GPU 版本的移动平均计算 (使用 CuPy)
+    
+    参数:
+        matrix: (T, N) 形状的 NumPy 数组
+        window: 窗口大小
+    
+    返回:
+        ma_matrix: (T, N) 形状的 NumPy 数组
+    """
+    if not is_gpu_available():
+        return calc_ma_vectorized(matrix, window)
+    
+    T, N = matrix.shape
+    
+    if T < window:
+        return np.full((T, N), np.nan, dtype=np.float64)
+    
+    data_gpu = cp.asarray(matrix, dtype=cp.float64)
+    result_gpu = cp.full((T, N), cp.nan, dtype=cp.float64)
+    
+    threads_per_block = 256
+    blocks = (N + threads_per_block - 1) // threads_per_block
+    
+    kernel = RawKernel(_MA_GPU_KERNEL, 'ma_kernel')
+    kernel((blocks,), (threads_per_block,), (data_gpu, result_gpu, T, N, window))
+    
+    return cp.asnumpy(result_gpu)
+
+
+def calc_ma_hybrid(matrix: np.ndarray, window: int) -> np.ndarray:
+    """
+    混合版移动平均计算 - 自动选择 CPU/GPU
+    
+    参数:
+        matrix: (T, N) 形状的 NumPy 数组
+        window: 窗口大小
+    
+    返回:
+        ma_matrix: (T, N) 形状的 NumPy 数组
+    
+    性能说明:
+        - 小矩阵 (< 5000 行): CPU 更快（避免 GPU 数据传输开销）
+        - 大矩阵 (>= 5000 行): GPU 更快（并行计算优势）
+    """
+    T, N = matrix.shape
+    
+    if should_use_gpu(T):
+        return calc_ma_gpu(matrix, window)
+    else:
+        return calc_ma_vectorized(matrix, window)
+
+
+def calc_cross_over_gpu(fast_line: np.ndarray, slow_line: np.ndarray) -> np.ndarray:
+    """
+    GPU 版本的金叉计算
+    
+    参数:
+        fast_line: (T, N) 形状的 NumPy 数组
+        slow_line: (T, N) 形状的 NumPy 数组
+    
+    返回:
+        cross_over_matrix: (T, N) 形状的布尔数组
+    """
+    if not is_gpu_available():
+        return calc_cross_over(fast_line, slow_line)
+    
+    fast_gpu = cp.asarray(fast_line)
+    slow_gpu = cp.asarray(slow_line)
+    
+    curr_above = fast_gpu > slow_gpu
+    prev_below = cp.roll(fast_gpu, 1, axis=0) <= cp.roll(slow_gpu, 1, axis=0)
+    
+    result = curr_above & prev_below
+    result[0, :] = False
+    
+    return cp.asnumpy(result)
+
+
+def calc_cross_over_hybrid(fast_line: np.ndarray, slow_line: np.ndarray) -> np.ndarray:
+    """
+    混合版金叉计算 - 自动选择 CPU/GPU
+    """
+    T, _ = fast_line.shape
+    
+    if should_use_gpu(T):
+        return calc_cross_over_gpu(fast_line, slow_line)
+    else:
+        return calc_cross_over(fast_line, slow_line)
+
+
+def calc_cross_under_gpu(fast_line: np.ndarray, slow_line: np.ndarray) -> np.ndarray:
+    """
+    GPU 版本的死叉计算
+    """
+    if not is_gpu_available():
+        return calc_cross_under(fast_line, slow_line)
+    
+    fast_gpu = cp.asarray(fast_line)
+    slow_gpu = cp.asarray(slow_line)
+    
+    curr_below = fast_gpu < slow_gpu
+    prev_above = cp.roll(fast_gpu, 1, axis=0) >= cp.roll(slow_gpu, 1, axis=0)
+    
+    result = curr_below & prev_above
+    result[0, :] = False
+    
+    return cp.asnumpy(result)
+
+
+def calc_cross_under_hybrid(fast_line: np.ndarray, slow_line: np.ndarray) -> np.ndarray:
+    """
+    混合版死叉计算 - 自动选择 CPU/GPU
+    """
+    T, _ = fast_line.shape
+    
+    if should_use_gpu(T):
+        return calc_cross_under_gpu(fast_line, slow_line)
+    else:
+        return calc_cross_under(fast_line, slow_line)
+
+
+# ============================================================================
+# 便捷别名（默认使用混合版本）
+# ============================================================================
+
+ma = calc_ma_hybrid
+cross_over = calc_cross_over_hybrid
+cross_under = calc_cross_under_hybrid
 

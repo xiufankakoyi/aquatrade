@@ -1,41 +1,43 @@
 <template>
   <div class="app-container">
-    <SplashScreen 
-      v-if="showSplash" 
-      @ready="onSplashReady" 
+    <!-- 加载界面 - 保持显示直到动画完成 -->
+    <SplashScreen
+      v-if="showSplash"
+      @ready="onSplashReady"
       @error="onSplashError"
     />
-    
-    <Transition name="fade-slow" mode="out-in">
-      <DashboardSkeleton v-if="showSkeleton && !showSplash" />
-      <div v-else-if="!showSplash" class="main-content">
+
+    <!-- 主界面 - 在加载界面消失前就开始渲染并淡入 -->
+    <Transition name="main-fade">
+      <div v-show="showMainContent" class="main-content">
         <RouterView />
       </div>
     </Transition>
-    
+
     <BacktestLoading />
     <ErrorReporter />
+    <DataStatusAlert />
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import SplashScreen from './components/SplashScreen.vue'
-import DashboardSkeleton from './components/DashboardSkeleton.vue'
 import BacktestLoading from './components/BacktestLoading.vue'
 import ErrorReporter from './components/ErrorReporter.vue'
+import DataStatusAlert from './components/modals/DataStatusAlert.vue'
 
 const showSplash = ref(true)
-const showSkeleton = ref(false)
-const SKELETON_DURATION = 800
+const showMainContent = ref(false)
 
 const onSplashReady = () => {
-  showSkeleton.value = true
-  showSplash.value = false
+  // 先让主界面开始淡入（此时加载界面还在）
+  showMainContent.value = true
   
+  // 等待主界面淡入和加载界面退出动画完成后，再移除加载界面
   setTimeout(() => {
-    showSkeleton.value = false
-  }, SKELETON_DURATION)
+    showSplash.value = false
+  }, 800)
 }
 
 const onSplashError = (code: string, message: string) => {
@@ -46,6 +48,7 @@ onMounted(() => {
   const skipSplash = localStorage.getItem('aquatrade_skip_splash') === 'true'
   if (skipSplash) {
     showSplash.value = false
+    showMainContent.value = true
   }
 })
 </script>
@@ -53,20 +56,22 @@ onMounted(() => {
 <style scoped>
 .app-container {
   min-height: 100vh;
-  background: #0F172A;
+  background: #0A0A0A;
 }
 
 .main-content {
   min-height: 100vh;
 }
 
-.fade-slow-enter-active,
-.fade-slow-leave-active {
-  transition: opacity 0.4s ease;
+.main-fade-enter-active {
+  transition: opacity 0.6s ease 0.2s;
 }
 
-.fade-slow-enter-from,
-.fade-slow-leave-to {
+.main-fade-enter-from {
   opacity: 0;
+}
+
+.main-fade-enter-to {
+  opacity: 1;
 }
 </style>

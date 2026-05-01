@@ -123,6 +123,20 @@ def ensure_indexes(conn: sqlite3.Connection, defer_analyze: bool = True) -> None
         # 9. optimization_results 索引
         "CREATE INDEX IF NOT EXISTS idx_optimization_backtest ON optimization_results(backtest_id)",
         "CREATE INDEX IF NOT EXISTS idx_optimization_strategy ON optimization_results(strategy_name)",
+        
+        # 10. portfolio_positions 索引
+        "CREATE INDEX IF NOT EXISTS idx_portfolio_positions_code ON portfolio_positions(stock_code)",
+        "CREATE INDEX IF NOT EXISTS idx_portfolio_positions_active ON portfolio_positions(is_active)",
+        "CREATE INDEX IF NOT EXISTS idx_portfolio_positions_date ON portfolio_positions(buy_date)",
+        
+        # 11. signal_rules 索引
+        "CREATE INDEX IF NOT EXISTS idx_signal_rules_type ON signal_rules(rule_type)",
+        "CREATE INDEX IF NOT EXISTS idx_signal_rules_enabled ON signal_rules(enabled)",
+        
+        # 12. signal_history 索引
+        "CREATE INDEX IF NOT EXISTS idx_signal_history_code ON signal_history(stock_code)",
+        "CREATE INDEX IF NOT EXISTS idx_signal_history_date ON signal_history(signal_date)",
+        "CREATE INDEX IF NOT EXISTS idx_signal_history_type ON signal_history(signal_type)",
     ]
     
     for index_sql in indexes:
@@ -296,11 +310,66 @@ def ensure_tables(conn: sqlite3.Connection) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 strategy_name TEXT NOT NULL,
                 backtest_id INTEGER NOT NULL,
-                params TEXT NOT NULL,  -- JSON 格式的参数
+                params TEXT NOT NULL,
                 score REAL NOT NULL,
                 rank INTEGER NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (backtest_id) REFERENCES backtest_results(id)
+            )
+        """)
+    
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='portfolio_positions'")
+    if cur.fetchone() is None:
+        print("[DB] 创建 portfolio_positions 表...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS portfolio_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT NOT NULL,
+                buy_price REAL NOT NULL,
+                shares REAL NOT NULL,
+                cost REAL NOT NULL,
+                buy_date DATE NOT NULL,
+                stop_loss REAL,
+                take_profit REAL,
+                notes TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='signal_rules'")
+    if cur.fetchone() is None:
+        print("[DB] 创建 signal_rules 表...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS signal_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_name TEXT NOT NULL UNIQUE,
+                rule_type TEXT NOT NULL,
+                rule_config TEXT NOT NULL,
+                enabled BOOLEAN DEFAULT 1,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+    
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='signal_history'")
+    if cur.fetchone() is None:
+        print("[DB] 创建 signal_history 表...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stock_code TEXT NOT NULL,
+                stock_name TEXT NOT NULL,
+                signal_date DATE NOT NULL,
+                signal_type TEXT NOT NULL,
+                signal_name TEXT NOT NULL,
+                signal_strength REAL,
+                price_at_signal REAL,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
     

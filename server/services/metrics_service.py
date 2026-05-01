@@ -144,6 +144,12 @@ class MetricsService:
         # [Unchanged] 后续逻辑保持不变
         avg_trade_return = (sum_trade_return_pct / sell_trades_count) if sell_trades_count > 0 else 0
 
+        # 计算胜率
+        win_rate = (win_trades / sell_trades_count * 100) if sell_trades_count > 0 else 0
+
+        # 计算盈亏比
+        profit_factor = (total_profit / total_loss) if total_loss > 0 else 0
+
         def _to_scalar(x: Any) -> float:
             try:
                 if isinstance(x, (int, float)):
@@ -202,22 +208,33 @@ class MetricsService:
         dates = date_series.dt.strftime('%Y-%m-%d').tolist()
         start_date_str = dates[0]
         end_date_str = dates[-1]
+        print(f"[DEBUG extract_equity_curve] dates: {len(dates)}, {start_date_str} ~ {end_date_str}")
         if stock_data_service:
             benchmark_df = stock_data_service.get_benchmark_data_from_db('000300', start_date_str, end_date_str)
+            print(f"[DEBUG extract_equity_curve] benchmark_df: {len(benchmark_df)} rows")
         else:
             benchmark_df = pd.DataFrame()
         benchmark_curve = []
 
         if not benchmark_df.empty:
              try:
+                print(f"[DEBUG extract_equity_curve] benchmark_df columns: {benchmark_df.columns.tolist()}")
+                print(f"[DEBUG extract_equity_curve] benchmark_df date type: {type(benchmark_df['date'].iloc[0])}, sample: {benchmark_df['date'].tolist()[:3]}")
                 strategy_dates_df = pd.DataFrame({'date': dates})
                 merged_df = pd.merge(strategy_dates_df, benchmark_df, on='date', how='left')
+                print(f"[DEBUG extract_equity_curve] merged_df: {len(merged_df)} rows, close na: {merged_df['close'].isna().sum()}")
                 merged_df['close'] = merged_df['close'].ffill().bfill()
                 first_valid_benchmark = merged_df['close'].dropna().iloc[0]
+                print(f"[DEBUG extract_equity_curve] first_valid_benchmark: {first_valid_benchmark}")
                 if first_valid_benchmark > 0:
                     normalized_curve = (merged_df['close'] / first_valid_benchmark) * initial_capital
                     benchmark_curve = normalized_curve.fillna(initial_capital).tolist()
-             except: pass # (忽略错误)
+                    print(f"[DEBUG extract_equity_curve] benchmark_curve: {len(benchmark_curve)}, first 3: {benchmark_curve[:3]}")
+             except Exception as e:
+                 print(f"[DEBUG extract_equity_curve] error: {e}")
+                 import traceback
+                 traceback.print_exc()
+                 pass # (忽略错误)
         
         if not benchmark_curve:
              benchmark_curve = np.linspace(initial_capital, initial_capital, len(results_df)).tolist() 

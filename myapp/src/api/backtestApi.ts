@@ -1,9 +1,10 @@
-import type { Metrics, MonthlyReturn, Trade } from '../types/backtest';
+import type { Trade, BacktestMetrics } from '../types/backtest';
 import type { BacktestResult, ParameterSearchResult, StrategyVersion } from '../store/strategyStore';
 import { useSocketIO } from '../composables/useSocketIO';
 import { decode } from '@msgpack/msgpack';
 
-const API_BASE_URL = 'http://localhost:5000/api';
+// 使用相对路径，让 Vite 代理可以正确代理请求到后端
+const API_BASE_URL = '/api';
 
 type BacktestEventType = 'initializing' | 'initialized' | 'backtest_start' | 'daily_equity' | 'new_trade' | 'metrics_update' | 'final_metrics' | 'risk_data' | 'stream_complete' | 'progress' | 'error' | 'cancelled';
 
@@ -119,6 +120,11 @@ function subscribe(callback: (event: BacktestEvent) => void): () => void {
     
     events.forEach(eventName => {
       const unsub = socketIOInstance!.onEvent(eventName, (data: any) => {
+        // 【调试】记录接收到的事件
+        if (eventName === 'daily_update' || eventName === 'daily_equity') {
+          console.log(`[Socket] 收到 ${eventName} 事件:`, data ? '有数据' : '无数据');
+        }
+        
         // 【修复】处理批量消息：如果数据是批量消息（_batch: true），需要拆分为多个事件
         // 注意：需要在解包前检查 _batch 标志，因为解包后标志会丢失
         if (data && typeof data === 'object' && data._batch === true && data._msgpack === true) {
@@ -169,7 +175,7 @@ export async function getDashboardResult(): Promise<{
     versionId: string;
     versionName: string;
     equityCurve: Array<{ date: string; equity: number }>;
-    metrics: Metrics;
+    metrics: BacktestMetrics;
   }>;
   benchmark: Array<{ date: string; equity: number }>;
 }> {
@@ -275,7 +281,7 @@ export async function getKlineData(
 export async function getLatestPrices(
   symbols: string[],
   targetDate?: string
-): Promise<Record<string, { price: number; date: string }>> {
+): Promise<Record<string, { price: number; date: string; name?: string }>> {
   if (!symbols.length) {
     return {};
   }
@@ -291,8 +297,13 @@ export async function getLatestPrices(
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-    const data = await response.json();
-    return data || {};
+    const result = await response.json();
+    // 【修复】处理新的响应格式 { success: true, data: {...} }
+    if (result && result.success && result.data) {
+      return result.data;
+    }
+    // 兼容旧格式
+    return result || {};
   } catch (error) {
     console.error('获取最新价格失败:', error);
     throw error;

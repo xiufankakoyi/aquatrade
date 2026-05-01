@@ -188,12 +188,12 @@ const selectedProfileId = ref<string | null>(null);
 
 // 回测参数
 const backtestParams = ref({
-  startDate: '2024-05-20',
-  endDate: '2024-05-25',
+  startDate: '2024-01-01',
+  endDate: '2024-03-31',
   benchmarkCode: '000300'
 });
 
-const formatDate = (d: Date) => d.toISOString().split('T')[0];
+const formatDate = (d: Date): string => d.toISOString().split('T')[0] || '';
 
 function setQuickRange(type: string) {
   activePeriod.value = type;
@@ -336,7 +336,9 @@ async function triggerPreload() {
 }
 
 onMounted(async () => {
-  connect('http://localhost:5000');
+  // 使用相对路径 ''，让 Socket.IO 自动使用当前域名
+  // 这样 Vite 代理可以正确代理 /socket.io 请求到后端
+  connect('');
   await dashboardStore.loadStrategies();
   historyStore.loadFromStorage();
 });

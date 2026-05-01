@@ -1,5 +1,5 @@
 <template>
-  <div class="h-10 flex items-center bg-[#131722] border-b border-[#2a2e39] px-4 space-x-6 overflow-hidden select-none">
+  <div class="h-10 flex items-center bg-[#0A0A0A] border-b border-[#2a2e39] px-4 space-x-6 overflow-hidden select-none">
     <!-- Status Ticker -->
     <div class="flex items-center space-x-2 border-r border-[#2a2e39] pr-6 h-full">
       <div 

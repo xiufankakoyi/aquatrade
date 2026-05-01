@@ -4,12 +4,12 @@ flask==2.3.3
 flask-cors==4.0.0
 pandas>=2.2.0
 numpy>=1.26.0
-duckdb>=1.2.0
 
 # Data processing
 pyarrow>=15.0.0
 polars>=0.20.0
 msgpack>=1.0.0
+openpyxl>=3.1.0
 
 # NLP
 jieba==0.42.1
@@ -17,6 +17,9 @@ snownlp==0.12.3
 
 # Database & Cache
 redis>=4.5.0
+
+# Task Queue (Celery)
+celery[redis]>=5.3.0
 
 # AI
 openai>=1.0.0
@@ -27,6 +30,9 @@ python-socketio>=5.0.0
 
 # Development
 watchdog>=4.0.0
+
+# Similarity matching
+dtaidistance>=2.3.0
 
 # Optional: Dragon Eye feature (uncomment if needed)
 # lancedb>=0.3.0

@@ -139,3 +139,10 @@ core/strategies/templates/
 3. **前端集成**: 在 Web 界面中添加策略生成功能
 
 
+### 验证脚本
+已创建以下脚本供后续使用：
+
+- validate_arcticdb_integrity.py - 完整数据验证
+- check_arcticdb_storage.py - 存储结构检查
+- fix_null_close.py - 修复 null close
+- add_stat_factors_to_arcticdb.py - 补充统计因子

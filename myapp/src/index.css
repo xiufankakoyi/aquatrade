@@ -3,8 +3,8 @@
 @tailwind utilities;
 
 :root {
-  --tv-bg: #131722;
-  --tv-pane-bg: #1c202b;
+  --tv-bg: #0A0A0A;
+  --tv-pane-bg: #141414;
   --tv-border: #2a2e39;
   --tv-text-muted: #787b86;
   --tv-text-active: #d1d4dc;
@@ -31,7 +31,7 @@
 
 @layer base {
   body {
-    @apply bg-[#131722] text-[#d1d4dc];
+    @apply bg-[#0A0A0A] text-[#d1d4dc];
     font-size: var(--tv-font-base);
   }
 }
@@ -42,7 +42,7 @@
   }
 
   .tv-pane-header-flat {
-    @apply absolute top-2 left-3 z-10 flex items-center space-x-2 pointer-events-none;
+    @apply absolute top-2 left-3 right-3 z-10 flex items-center gap-2 pointer-events-none;
   }
 
   .tv-pane-label {
@@ -285,4 +285,45 @@
     width: 100% !important;
     height: auto !important;
   }
+}
+
+/* ========== Ant Design 深色主题覆盖 ========== */
+
+/* 下拉菜单和子菜单样式 */
+.ant-dropdown-menu,
+.ant-menu-submenu-popup {
+  background: #1a1a1a !important;
+  border: 1px solid #2a2a2a !important;
+}
+
+.ant-dropdown-menu-item,
+.ant-menu-item {
+  color: #d1d4dc !important;
+}
+
+.ant-dropdown-menu-item:hover,
+.ant-menu-item:hover {
+  background: #252526 !important;
+}
+
+/* 子菜单标题 */
+.ant-menu-submenu-title {
+  color: #d1d4dc !important;
+}
+
+.ant-menu-submenu-title:hover {
+  background: #252526 !important;
+}
+
+/* 子菜单弹出层 */
+.ant-menu-submenu-popup .ant-menu {
+  background: #1a1a1a !important;
+}
+
+.ant-menu-submenu-popup .ant-menu-item {
+  color: #d1d4dc !important;
+}
+
+.ant-menu-submenu-popup .ant-menu-submenu-title {
+  color: #d1d4dc !important;
 }

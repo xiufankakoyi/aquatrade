@@ -54,7 +54,7 @@
 <style scoped>
 .skeleton-dashboard {
   min-height: 100vh;
-  background: #0F172A;
+  background: #0A0A0A;
   padding: 1.5rem;
 }
 

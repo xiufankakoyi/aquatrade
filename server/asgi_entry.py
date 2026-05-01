@@ -7,28 +7,24 @@ ASGI 入口点 - 使用 python-socketio AsyncServer
 """
 import os
 import sys
+import threading
 import warnings
 from pathlib import Path
 
-# 忽略 asgiref.wsgi 中的非异步标注警告
 warnings.filterwarnings(
     "ignore", 
     message="async_to_sync was passed a non-async-marked callable", 
     module="asgiref.wsgi"
 )
 
-# 添加项目根目录到路径
 _project_root = Path(__file__).parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
-# 关键：先设置环境变量，避免 Flask-SocketIO 初始化错误
 os.environ['USE_GRANIAN'] = 'true'
 
-# 导入 Flask 应用（包含所有路由和 CORS 配置）
 from server.app import app as flask_app
 
-# 创建异步 SocketIO 服务器
 import socketio
 
 sio = socketio.AsyncServer(
@@ -37,10 +33,10 @@ sio = socketio.AsyncServer(
     logger=False,
     engineio_logger=False,
     ping_interval=25000,
-    ping_timeout=60000
+    ping_timeout=60000,
+    per_message_deflate=True  # 启用消息压缩，节省 70-80% 带宽
 )
 
-# 导入 SocketIO 事件处理器
 print("\n" + "="*80)
 print("[ASGI] Importing asgi_socketio_handlers...")
 try:
@@ -55,14 +51,11 @@ except Exception as e:
     raise
 print("="*80 + "\n")
 
-# 将 Flask 应用包装成 ASGI 应用
 from asgiref.wsgi import WsgiToAsgi
 flask_asgi_app = WsgiToAsgi(flask_app)
 
-# 创建 ASGIApp，将 SocketIO 和 Flask 组合
 app_asgi = socketio.ASGIApp(sio, other_asgi_app=flask_asgi_app, socketio_path='socket.io')
 
-# 启动文件监听器（热重载）
 try:
     from core.strategies.hot_reload import get_watcher
     watcher = get_watcher()
@@ -71,5 +64,134 @@ try:
 except Exception as e:
     print(f"[WARNING] File watcher startup failed: {e}")
 
-# 导出给 Granian 使用
+print("\n" + "="*80)
+print("[Startup] Starting background data preload (non-blocking)...")
+
+def background_preload():
+    """后台预加载线程：不阻塞服务器启动"""
+    import time
+    time.sleep(1)
+
+    try:
+        from data_svc.unified_data_manager import get_unified_manager
+
+        manager = get_unified_manager()
+
+        print("[BackgroundPreload] Starting data preload (3 months)...")
+        t0 = time.time()
+        manager.preload_to_memory(years=0.25)
+        elapsed = time.time() - t0
+        cache_info = manager._cache_loaded
+        print(f"[BackgroundPreload] Completed in {elapsed:.1f}s - cache_loaded={cache_info}")
+    except Exception as e:
+        print(f"[BackgroundPreload] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+preload_thread = threading.Thread(target=background_preload, daemon=True)
+preload_thread.start()
+print("[Startup] Background preload thread started (server ready immediately)")
+print("="*80 + "\n")
+
+print("\n" + "="*80)
+print("[Startup] Scheduling background data sync...")
+import threading
+
+def background_sync_data():
+    """
+    后台线程：检查数据是否过期
+    用 Tushare API 获取最新交易日，与数据库对比
+    """
+    import time
+    time.sleep(5)
+
+    try:
+        from datetime import datetime
+        from data_svc.unified_data_manager import get_unified_manager
+
+        manager = get_unified_manager()
+
+        try:
+            stats = manager.get_stats()
+            row_count = stats.get('row_count', 0)
+            print(f"[BackgroundSync] Stock data: {row_count} rows")
+
+            if row_count == 0:
+                print("[BackgroundSync] WARNING: No data found in LanceDB!")
+                print("[BackgroundSync] Please run data update: python -m data_svc.storage.unified_updater")
+                return
+
+            dates = manager.get_trading_dates()
+            if not dates:
+                print("[BackgroundSync] WARNING: No trading dates found!")
+                return
+
+            db_latest_date = max(dates)
+
+            # 用 Tushare API 获取最近交易日
+            try:
+                import tushare as ts
+                from config.config import Config
+
+                pro = ts.pro_api(Config.TUSHARE_TOKEN)
+                today_str = datetime.now().strftime('%Y%m%d')
+
+                # 获取最近几个交易日期
+                cal_df = pro.trade_cal(
+                    exchange='SSE',
+                    start_date=(datetime.now() - datetime.timedelta(days=10)).strftime('%Y%m%d'),
+                    end_date=today_str
+                )
+
+                if cal_df is not None and not cal_df.empty:
+                    trading_days = cal_df[cal_df['is_open'] == 1]['cal_date'].tolist()
+                    if trading_days:
+                        api_latest_date = trading_days[-1]  # 最近一个交易日
+                        # 格式化
+                        api_latest_date_fmt = f"{api_latest_date[:4]}-{api_latest_date[4:6]}-{api_latest_date[6:8]}"
+
+                        # 比较
+                        days_behind = 0
+                        if db_latest_date < api_latest_date_fmt:
+                            # 计算差距
+                            db_dt = datetime.strptime(db_latest_date, '%Y-%m-%d')
+                            api_dt = datetime.strptime(api_latest_date_fmt, '%Y-%m-%d')
+                            days_behind = (api_dt - db_dt).days
+
+                        print(f"[BackgroundSync] DB latest: {db_latest_date}, API latest: {api_latest_date_fmt}")
+                        print(f"[BackgroundSync] Days behind: {days_behind}")
+
+                        if days_behind > 0:
+                            print(f"[BackgroundSync] WARNING: Data is {days_behind} day(s) behind!")
+                            print(f"[BackgroundSync] Please update: python -m data_svc.storage.unified_updater")
+
+                        if days_behind > 7:
+                            print(f"[BackgroundSync] CRITICAL: Data is more than 7 days behind!")
+                    else:
+                        print("[BackgroundSync] No trading days found in recent period")
+                else:
+                    print("[BackgroundSync] WARNING: Failed to get trading calendar from API")
+
+            except Exception as e:
+                print(f"[BackgroundSync] API check failed: {e}, falling back to simple check")
+                # 回退：简单用数据库最新日期
+                print(f"[BackgroundSync] DB latest date: {db_latest_date}")
+
+            print("[BackgroundSync] Data check completed!")
+
+        except Exception as e:
+            print(f"[BackgroundSync] Stats check failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    except Exception as e:
+        print(f"[BackgroundSync] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+sync_thread = threading.Thread(target=background_sync_data, daemon=True)
+sync_thread.start()
+print("[Startup] Background sync thread started (non-blocking)")
+print("="*80 + "\n")
+
 asgi_app = app_asgi

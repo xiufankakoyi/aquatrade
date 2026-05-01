@@ -373,7 +373,8 @@ async function analyzeStrategy() {
       },
     };
 
-    const url = 'http://localhost:5000/api/analyze_report';
+    // 使用相对路径，让 Vite 代理可以正确代理请求到后端
+    const url = '/api/analyze_report';
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

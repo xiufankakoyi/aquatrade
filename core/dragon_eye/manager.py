@@ -11,37 +11,92 @@ from config.logger import get_logger
 logger = get_logger(__name__)
 
 
-class _FallbackLanceDBManager:
-    """LanceDBManager 备用实现"""
-    def __init__(self, lance_dir: Optional[str] = None, table_name: str = "default"):
+class _FallbackDataManager:
+    """数据管理器备用实现（当 LanceDB 不可用时）"""
+    def __init__(self, data_dir: Optional[str] = None, table_name: str = "default"):
         self.table_name = table_name
-        logger.debug(f"FallbackLanceDBManager for {table_name}")
+        self.data_dir = Path(data_dir) if data_dir else Path(Config.PARQUET_DIR) / "dragon_eye"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"FallbackDataManager for {table_name}")
     
     def upsert_daily_data(self, df: pd.DataFrame):
-        logger.info(f"Fallback: would upsert {len(df)} rows to {self.table_name}")
+        """使用 Parquet 文件作为备用存储"""
+        if df.empty:
+            return
+            
+        file_path = self.data_dir / f"{self.table_name}.parquet"
+        
+        try:
+            if file_path.exists():
+                # 读取现有数据
+                existing_df = pd.read_parquet(file_path)
+                # 合并并去重
+                combined_df = pd.concat([existing_df, df], ignore_index=True)
+                if "_id" in combined_df.columns:
+                    combined_df = combined_df.drop_duplicates(subset=["_id"], keep="last")
+            else:
+                combined_df = df
+            
+            # 保存
+            combined_df.to_parquet(file_path, index=False)
+            logger.info(f"Fallback: saved {len(df)} rows to {file_path}")
+        except Exception as e:
+            logger.error(f"Fallback save failed: {e}")
     
     def load_to_polars(self, **kwargs) -> pl.DataFrame:
-        return pl.DataFrame()
+        """从 Parquet 文件加载数据"""
+        file_path = self.data_dir / f"{self.table_name}.parquet"
+        
+        if not file_path.exists():
+            return pl.DataFrame()
+        
+        try:
+            df = pd.read_parquet(file_path)
+            
+            # 应用过滤条件
+            start_date = kwargs.get('start_date')
+            end_date = kwargs.get('end_date')
+            
+            if start_date and 'trade_date' in df.columns:
+                df = df[df['trade_date'] >= start_date]
+            if end_date and 'trade_date' in df.columns:
+                df = df[df['trade_date'] <= end_date]
+            
+            return pl.from_pandas(df)
+        except Exception as e:
+            logger.error(f"Fallback load failed: {e}")
+            return pl.DataFrame()
 
 
 class DragonEyeManager:
-    """DragonEye 模块数据管理器，专注于龙头股与市场情绪数据的持久化"""
+    """DragonEye 模块数据管理器，专注于龙头股与市场情绪数据的持久化
+    
+    【架构变更说明】
+    已从 LanceDB 迁移到 LanceDB 三层架构。
+    - 如果 LanceDB 可用，使用 LanceDB 存储
+    - 如果不可用，使用 Parquet 文件作为备用存储
+    """
     
     def __init__(self):
         # 使用统一的数据目录
-        self.parquet_dir = Path(Config.PARQUET_DIR)
-        self.lance_dir = self.parquet_dir / "lance_db"
+        self.data_dir = Path(Config.PARQUET_DIR) / "dragon_eye"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         
-        # 尝试使用真正的 LanceDBManager，失败则使用备用实现
+        # 尝试使用 LanceDB，失败则使用备用实现
         try:
-            from data_svc.lance_manager import LanceDBManager
-            self.stock_mgr = LanceDBManager(lance_dir=str(self.lance_dir), table_name="dragon_stock")
-            self.sentiment_mgr = LanceDBManager(lance_dir=str(self.lance_dir), table_name="market_sentiment")
-            logger.info("DragonEyeManager initialized with LanceDB")
-        except ImportError as e:
-            logger.warning(f"LanceDB not available: {e}, using fallback mode")
-            self.stock_mgr = _FallbackLanceDBManager(lance_dir=str(self.lance_dir), table_name="dragon_stock")
-            self.sentiment_mgr = _FallbackLanceDBManager(lance_dir=str(self.lance_dir), table_name="market_sentiment")
+            if Config.is_lancedb_backend():
+                from data_svc.storage.lancedb_manager import get_lancedb_manager
+                self.lancedb_mgr = get_lancedb_manager()
+                self.stock_mgr = None  # 使用 LanceDB 直接操作
+                self.sentiment_mgr = None
+                logger.info("DragonEyeManager initialized with LanceDB")
+            else:
+                raise ImportError("LanceDB backend not enabled")
+        except Exception as e:
+            logger.warning(f"LanceDB not available: {e}, using fallback mode (Parquet)")
+            self.lancedb_mgr = None
+            self.stock_mgr = _FallbackDataManager(data_dir=str(self.data_dir), table_name="dragon_stock")
+            self.sentiment_mgr = _FallbackDataManager(data_dir=str(self.data_dir), table_name="market_sentiment")
 
     def upsert_stocks(self, df_stocks: pd.DataFrame):
         """更新龙头个股数据"""
@@ -53,8 +108,48 @@ class DragonEyeManager:
         # 补全 _id 字段用于 Upsert
         if "_id" not in df_stocks.columns:
             df_stocks["_id"] = df_stocks["stock_code"].astype(str) + "_" + df_stocks["trade_date"].astype(str)
-            
-        self.stock_mgr.upsert_daily_data(df_stocks)
+        
+        if self.lancedb_mgr:
+            # 使用 LanceDB 存储
+            try:
+                # 龙头股数据是多条记录共享同一个日期索引
+                # 不能使用 append 模式，因为会导致按索引去重只保留最后一条
+                # 改为使用 stock_code + trade_date 作为复合索引
+                df_to_write = df_stocks.copy()
+                if 'trade_date' in df_to_write.columns:
+                    df_to_write['trade_date'] = pd.to_datetime(df_to_write['trade_date'])
+                
+                # 创建复合索引: stock_code + trade_date
+                df_to_write['index_key'] = df_to_write['stock_code'].astype(str) + '_' + df_to_write['trade_date'].dt.strftime('%Y%m%d')
+                df_to_write.set_index('index_key', inplace=True)
+                
+                # 读取已有数据
+                lib = self.lancedb_mgr._get_or_create_library("factor")
+                try:
+                    existing = lib.read("dragon_stock")
+                    if existing is not None and not existing.data.empty:
+                        # 合并数据，按 index_key 去重
+                        combined = pd.concat([existing.data, df_to_write])
+                        combined = combined[~combined.index.duplicated(keep='last')]
+                        df_to_write = combined
+                        logger.info(f"Merged with existing data, total {len(df_to_write)} records")
+                except Exception:
+                    # 数据不存在，直接写入
+                    pass
+                
+                # 写入数据（不使用 write_daily_data 的 append 逻辑）
+                meta = {
+                    "type": "dragon_eye",
+                    "updated_at": datetime.now().isoformat(),
+                    "rows": len(df_to_write),
+                    "columns": list(df_to_write.columns),
+                }
+                lib.write("dragon_stock", df_to_write, metadata=meta)
+                logger.info(f"Successfully wrote {len(df_to_write)} records to dragon_stock")
+            except Exception as e:
+                logger.error(f"LanceDB upsert failed: {e}")
+        elif self.stock_mgr:
+            self.stock_mgr.upsert_daily_data(df_stocks)
 
     def upsert_sentiment(self, df_sentiment: pd.DataFrame):
         """更新当日市场情绪大盘指标"""
@@ -66,13 +161,75 @@ class DragonEyeManager:
         # 补全 _id
         if "_id" not in df_sentiment.columns:
             df_sentiment["_id"] = df_sentiment["trade_date"].astype(str)
-            
-        self.sentiment_mgr.upsert_daily_data(df_sentiment)
+        
+        if self.lancedb_mgr:
+            # 使用 LanceDB 存储
+            try:
+                # LanceDB 要求 DatetimeIndex
+                df_to_write = df_sentiment.copy()
+                if 'trade_date' in df_to_write.columns:
+                    df_to_write['trade_date'] = pd.to_datetime(df_to_write['trade_date'])
+                    df_to_write.set_index('trade_date', inplace=True)
+                
+                self.lancedb_mgr.write_daily_data(
+                    library="factor",
+                    symbol="market_sentiment",
+                    df=df_to_write,
+                    metadata={"type": "dragon_eye", "updated_at": datetime.now().isoformat()}
+                )
+            except Exception as e:
+                logger.error(f"LanceDB upsert failed: {e}")
+        elif self.sentiment_mgr:
+            self.sentiment_mgr.upsert_daily_data(df_sentiment)
 
     def get_historical_dragon(self, start_date: str, end_date: str) -> pl.DataFrame:
         """获取历史龙头股列表"""
-        return self.stock_mgr.load_to_polars(start_date=start_date, end_date=end_date)
+        if self.lancedb_mgr:
+            try:
+                # 直接读取数据，不过滤日期范围（因为索引是 stock_code_date 格式）
+                lib = self.lancedb_mgr._get_or_create_library("factor")
+                try:
+                    result = lib.read("dragon_stock")
+                    if result is not None and not result.data.empty:
+                        df = result.data
+                        # 恢复索引为列
+                        df = df.reset_index()
+                        # 如果 trade_date 列存在，过滤日期范围
+                        if 'trade_date' in df.columns:
+                            df['trade_date'] = pd.to_datetime(df['trade_date'])
+                            start_dt = pd.to_datetime(start_date)
+                            end_dt = pd.to_datetime(end_date)
+                            df = df[(df['trade_date'] >= start_dt) & (df['trade_date'] <= end_dt)]
+                        return pl.from_pandas(df)
+                except Exception:
+                    pass
+                return pl.DataFrame()
+            except Exception as e:
+                logger.error(f"LanceDB read failed: {e}")
+                return pl.DataFrame()
+        elif self.stock_mgr:
+            return self.stock_mgr.load_to_polars(start_date=start_date, end_date=end_date)
+        return pl.DataFrame()
 
     def get_market_sentiment(self, start_date: str, end_date: str) -> pl.DataFrame:
         """获取历史大盘情绪指标"""
-        return self.sentiment_mgr.load_to_polars(start_date=start_date, end_date=end_date)
+        if self.lancedb_mgr:
+            try:
+                df = self.lancedb_mgr.read_data(
+                    library="factor",
+                    symbol="market_sentiment",
+                    start=start_date,
+                    end=end_date
+                )
+                if df is not None:
+                    # 恢复索引为列
+                    if df.index.name == 'trade_date':
+                        df = df.reset_index()
+                    return pl.from_pandas(df)
+                return pl.DataFrame()
+            except Exception as e:
+                logger.error(f"LanceDB read failed: {e}")
+                return pl.DataFrame()
+        elif self.sentiment_mgr:
+            return self.sentiment_mgr.load_to_polars(start_date=start_date, end_date=end_date)
+        return pl.DataFrame()

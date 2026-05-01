@@ -1,5 +1,5 @@
 <template>
-  <div class="p-6">
+  <div>
     <div class="bg-[#151925] rounded-lg p-6 border border-slate-800">
       <h2 class="text-xl font-semibold text-white mb-4">历史记录</h2>
       <div class="overflow-x-auto">

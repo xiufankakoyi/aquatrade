@@ -17,14 +17,32 @@ export interface BacktestConfig {
 export interface Trade {
   id: string;
   date: string;
-  stockCode: string;
+  symbol?: string;
+  symbolCode?: string;
+  stockCode?: string;
   stockName?: string;
   action: 'buy' | 'sell';
   price: number;
-  volume: number;
+  quantity?: number;
+  volume?: number;
+  value?: number;
   amount?: number;
   commission?: number;
-  pnl?: number; // 单笔盈亏
+  profitLoss?: number;
+  profit_loss?: number;
+  pnl?: number;
+  cumulativePnL?: number;
+  positionId?: string;
+  entryDate?: string;
+  exitDate?: string;
+  entryPrice?: number;
+  exitPrice?: number;
+  entry_price?: number;
+  exit_price?: number;
+  holdingDays?: number;
+  holding_days?: number;
+  roi?: number;
+  profitRatio?: number;
 }
 
 // 持仓记录
@@ -37,6 +55,20 @@ export interface Position {
   marketPrice?: number;
   marketValue?: number;
   pnl?: number;
+}
+
+// 持仓周期（用于显示当前持仓和历史持仓）
+export interface HoldingPeriod {
+  positionId: string;
+  symbolCode: string;
+  symbolName: string;
+  entryDate: string;
+  exitDate: string | null;
+  entryPrice?: number;
+  exitPrice?: number;
+  quantity?: number;
+  profit?: number;
+  holdingDays?: number;
 }
 
 // 日志条目
@@ -60,6 +92,35 @@ export interface BacktestMetrics {
   calmarRatio?: number; // 卡玛比率
   sortinoRatio?: number; // 索提诺比率
   monthlyReturns: Record<string, number>; // 月度回报
+}
+
+// Metrics 类型别名（用于 backtestStore）
+export type Metrics = {
+  totalReturn: number;
+  annualizedReturn?: number;
+  annualReturn?: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
+  sortinoRatio?: number;
+  volatility?: number;
+  winRate: number;
+  profitFactor?: number;
+  profitLossRatio?: number;
+  tradesCount?: number;
+  totalTrades?: number;
+  avgTradeReturn?: number;
+  avgHoldingDays?: number;
+  maxWinningStreak?: number;
+  maxLosingStreak?: number;
+  calmarRatio?: number;
+  benchmarkReturn?: number;
+  benchmarkVolatility?: number;
+};
+
+// 月度收益类型
+export interface MonthlyReturn {
+  year: number;
+  months: (number | null)[];
 }
 
 // 回测结果

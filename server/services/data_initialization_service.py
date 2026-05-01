@@ -5,7 +5,7 @@
 from typing import Dict, Optional
 import pandas as pd
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
-from core.backtest.optimized_backtest_engine import OptimizedBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from config.config import Config
 from config.logger import get_logger
 
@@ -16,7 +16,7 @@ class DataInitializationService:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or Config.DB_PATH
         self.data_query: Optional[OptimizedStockDataQuery] = None
-        self.backtest_engine: Optional[OptimizedBacktestEngine] = None
+        self.backtest_engine: Optional[UnifiedBacktestEngine] = None
         self.stock_info_map: Dict[str, str] = {}
         self._initialized = False
         self.initial_capital = Config.INITIAL_CAPITAL
@@ -29,7 +29,7 @@ class DataInitializationService:
         logger = get_logger(__name__)
         try:
             self.data_query = OptimizedStockDataQuery(self.db_path)
-            self.backtest_engine = OptimizedBacktestEngine(self.data_query)
+            self.backtest_engine = UnifiedBacktestEngine(self.data_query)
             self.stock_info_map = self.load_stock_info()
             self._initialized = True
         except Exception as e:
@@ -38,14 +38,14 @@ class DataInitializationService:
     
     def load_stock_info(self) -> Dict[str, str]:
         """
-        【核心修复】使用 data_query 方法加载股票信息，支持 DuckDB + Parquet 后端
+        【核心修复】使用 data_query 方法加载股票信息，支持 Polars + Parquet 后端
         """
         logger = get_logger(__name__)
         try:
             if self.data_query is None:
                 return {}
             
-            # 使用 data_query 的 _query_df 方法，支持 DuckDB 和 SQLite
+            # 使用 data_query 的 _query_df 方法，支持 Polars 和 SQLite
             query = "SELECT stock_code, stock_name FROM stock_info"
             df = self.data_query._query_df(query)
             
@@ -70,14 +70,14 @@ class DataInitializationService:
     def get_global_latest_factor(self, symbol_code: str) -> float:
         """
         【核心修复】获取该股票在数据库中最新（最后一天）的复权因子
-        使用 data_query 方法，支持 DuckDB + Parquet 后端
+        使用 data_query 方法，支持 Polars + Parquet 后端
         """
         logger = get_logger(__name__)
         try:
             if self.data_query is None:
                 return 1.0
             
-            # 使用 data_query 的 _query_df 方法，支持 DuckDB 和 SQLite
+            # 使用 data_query 的 _query_df 方法，支持 Polars 和 SQLite
             query = """
                 SELECT adj_factor 
                 FROM stock_daily 

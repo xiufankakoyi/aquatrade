@@ -1,98 +1,189 @@
 <template>
-  <div class="kline-page">
+  <div class="strategy-detail-page">
     <!-- 顶部工具栏 -->
     <div class="toolbar">
+      <!-- A. 左侧：策略信息 -->
       <div class="toolbar-left">
-        <div class="symbol-info">
-          <h2 class="symbol-name">
-            {{ selectedSymbolName || selectedSymbol || '--' }}
-            <span class="symbol-badge">DAY</span>
+        <div class="strategy-info">
+          <h2 class="strategy-name">
+            {{ strategyStore.currentVersion?.name || strategyId || '策略详情' }}
           </h2>
+          <span class="strategy-badge" v-if="hasBacktestData">回测模式</span>
         </div>
-        
+
         <div class="divider"></div>
-        <div class="legend">
-          <div class="legend-item">
-            <div class="legend-dot buy"></div>
-            <span class="legend-text">买入</span>
-          </div>
-          <div class="legend-item">
-            <div class="legend-dot sell"></div>
-            <span class="legend-text">卖出</span>
-          </div>
+
+        <!-- 图表缩放控制 -->
+        <div class="chart-scale">
+          <span class="scale-label">缩放:</span>
+          <button
+            @click="chartScale = 'linear'"
+            :class="['scale-btn', { 'active': chartScale === 'linear' }]"
+          >线性</button>
+          <button
+            @click="chartScale = 'log'"
+            :class="['scale-btn', { 'active': chartScale === 'log' }]"
+          >对数</button>
         </div>
       </div>
 
-      <div class="toolbar-right">
-        <!-- Shadow Curve Toggle -->
-        <div class="shadow-toggle">
-          <span class="toggle-label">影子曲线:</span>
-          <button 
-            @click="backtestStore.toggleAutoExcludeAlphaLoss()"
-            :class="['toggle-btn', { 'active': backtestStore.autoExcludeAlphaLoss }]"
-          >
-            剔除 Alpha 亏损单
-          </button>
+      <!-- B. 中间：核心指标 -->
+      <div class="toolbar-center">
+        <div class="metric-item" v-if="backtestStore.metrics">
+          <span class="metric-label">总收益</span>
+          <span class="metric-value" :class="backtestStore.metrics.totalReturn >= 0 ? 'positive' : 'negative'">
+            {{ formatPercent(backtestStore.metrics.totalReturn) }}
+          </span>
         </div>
+        <div class="metric-item" v-if="backtestStore.metrics">
+          <span class="metric-label">最大回撤</span>
+          <span class="metric-value negative">{{ formatPercent(backtestStore.metrics.maxDrawdown, true) }}</span>
+        </div>
+        <div class="metric-item" v-if="backtestStore.metrics">
+          <span class="metric-label">夏普比率</span>
+          <span class="metric-value">{{ backtestStore.metrics.sharpeRatio?.toFixed(2) || 'N/A' }}</span>
+        </div>
+        <div class="metric-item" v-if="backtestStore.metrics">
+          <span class="metric-label">胜率</span>
+          <span class="metric-value">{{ formatPercent(backtestStore.metrics.winRate) }}</span>
+        </div>
+      </div>
+
+      <!-- C. 右侧：操作按钮 -->
+      <div class="toolbar-right">
+        <button @click="runBacktest" class="run-btn primary" :disabled="isBacktestRunning">
+          <i class="fas fa-play"></i>
+          <span>{{ isBacktestRunning ? '运行中...' : '运行回测' }}</span>
+        </button>
 
         <button
-          @click="$emit('run-backtest')"
-          class="run-btn"
+          @click="toggleTradePanel"
+          :class="['toolbar-icon-btn', { 'active': isTradePanelExpanded }]"
+          title="交易明细"
         >
-          <i class="fas fa-play"></i>运行回测
+          <i class="fas fa-exchange-alt"></i>
+        </button>
+
+        <button
+          @click="toggleFullscreen"
+          class="toolbar-icon-btn"
+          title="全屏"
+        >
+          <i :class="['fas', isFullscreen ? 'fa-compress' : 'fa-expand']"></i>
         </button>
       </div>
     </div>
 
-    <!--主要内容区域：图表 + 侧边/底部面板-->
+    <!-- 主要内容区域 -->
     <div class="main-area">
-      <!-- 图表区域 -->
-      <div class="chart-area">
-        <EquityCurve
-          :kline-data="klineData"
-          :highlight-ranges="highlightRanges"
-          :trade-markers="tradeMarkersForKline"
-          :versions="equityCurveVersions"
-          :shadow-series="backtestStore.shadowEquitySeries"
-          :benchmark="benchmarkSeries"
-          :x-axis-min="fullRange.min"
-          :x-axis-max="fullRange.max"
-          mode="kline"
-          class="kline-chart"
-        />
-        
-        <!-- Playback Controller Overlay -->
-        <div class="playback-overlay">
-          <PlaybackController v-if="backtestStore.hasData" />
+      <!-- 左侧图表区域：净值曲线 + 回撤 + 交易频率 -->
+      <div class="charts-container" v-if="hasBacktestData">
+        <!-- 净值曲线 -->
+        <div 
+          class="chart-pane equity-pane" 
+          :style="{ height: equityPaneHeight + 'px' }"
+        >
+          <div class="pane-header">
+            <span class="pane-label">净值曲线</span>
+          </div>
+          <div class="pane-content">
+            <EquityCurve
+              :versions="equityCurveData"
+              :benchmark="benchmarkData"
+              :scale="chartScale"
+              :sync-x-axis="syncDate"
+              @hover="handleChartHover"
+            />
+          </div>
+          <!-- 拖动调整高度手柄 -->
+          <div 
+            class="pane-resize-handle"
+            @mousedown="startPaneResize($event, 'equity')"
+          >
+            <div class="pane-resize-indicator"></div>
+          </div>
+        </div>
+
+        <!-- 回撤序列 -->
+        <div 
+          class="chart-pane drawdown-pane"
+          :style="{ height: isDrawdownCollapsed ? '32px' : drawdownPaneHeight + 'px' }"
+        >
+          <div class="pane-header" @click="toggleDrawdownPane">
+            <div class="header-left">
+              <i :class="['fas', isDrawdownCollapsed ? 'fa-chevron-right' : 'fa-chevron-down', 'collapse-icon']"></i>
+              <span class="pane-label">回撤序列</span>
+            </div>
+            <button class="pane-action-btn" @click.stop="isDrawdownCollapsed = !isDrawdownCollapsed">
+              <i :class="['fas', isDrawdownCollapsed ? 'fa-expand' : 'fa-compress']"></i>
+            </button>
+          </div>
+          <div class="pane-content" v-show="!isDrawdownCollapsed">
+            <DrawdownChart
+              :equity-series="backtestStore.equitySeries"
+              :sync-x-axis="syncDate"
+            />
+          </div>
+        </div>
+
+        <!-- 交易频率 -->
+        <div 
+          class="chart-pane frequency-pane"
+          :style="{ height: isFrequencyCollapsed ? '32px' : frequencyPaneHeight + 'px' }"
+        >
+          <div class="pane-header" @click="toggleFrequencyPane">
+            <div class="header-left">
+              <i :class="['fas', isFrequencyCollapsed ? 'fa-chevron-right' : 'fa-chevron-down', 'collapse-icon']"></i>
+              <span class="pane-label">交易频率</span>
+            </div>
+            <button class="pane-action-btn" @click.stop="isFrequencyCollapsed = !isFrequencyCollapsed">
+              <i :class="['fas', isFrequencyCollapsed ? 'fa-expand' : 'fa-compress']"></i>
+            </button>
+          </div>
+          <div class="pane-content" v-show="!isFrequencyCollapsed">
+            <TradeFrequencyChart
+              :trades="backtestStore.trades"
+              :sync-x-axis="syncDate"
+            />
+          </div>
         </div>
       </div>
-      
-      <!-- 右侧持仓面板/雷达 -->
-      <div class="side-panel">
-        <!-- Risk Radar -->
-        <div class="radar-section">
-          <LiveRiskRadar />
+
+      <!-- 无数据状态 -->
+      <div class="empty-state" v-else>
+        <div class="empty-icon">
+          <i class="fas fa-chart-line"></i>
         </div>
-        
-        <div class="position-section">
-          <PositionCard
-            :holding-periods="currentHoldingPeriods"
-            :current-date="currentDate"
-            :latest-prices="latestPrices"
-            :total-equity="currentDateEquity"
-            @analyze="handlePositionAnalyze"
-          />
-        </div>
+        <h3 class="empty-title">暂无回测数据</h3>
+        <p class="empty-hint">请点击"运行回测"按钮开始策略回测</p>
+        <button @click="runBacktest" class="empty-action-btn" :disabled="isBacktestRunning">
+          <i class="fas fa-play"></i>
+          <span>{{ isBacktestRunning ? '运行中...' : '立即运行回测' }}</span>
+        </button>
+      </div>
+
+      <!-- 右侧持仓面板 -->
+      <div class="position-sidebar" v-if="hasBacktestData">
+        <PositionCard
+          :holding-periods="mappedHoldingPeriods"
+          :current-date="currentDate"
+          :latest-prices="latestPrices"
+          :total-equity="currentEquity"
+          :stock-names="stockNames"
+          @analyze="handlePositionAnalyze"
+        />
       </div>
     </div>
 
-    <!-- 底部交易记录面板 (可调整高度) -->
-    <div 
+    <!-- 回放控制器 -->
+    <PlaybackController v-if="hasBacktestData && backtestStore.equitySeries.length > 0" />
+
+    <!-- 底部交易记录面板 -->
+    <div
       class="trade-panel"
       :style="{ height: isTradePanelExpanded ? `${tradePanelHeight}px` : '40px' }"
     >
-      <!-- Resize Handle -->
-      <div 
+      <div
         class="resize-handle"
         @mousedown="startResizing"
       >
@@ -101,39 +192,60 @@
 
       <div class="panel-header" @click="toggleTradePanel">
         <div class="header-left">
-           <i :class="['fas', isTradePanelExpanded ? 'fa-chevron-down' : 'fa-chevron-up', 'toggle-icon']"></i>
-           <h3 class="panel-title">交易明细</h3>
+          <i :class="['fas', isTradePanelExpanded ? 'fa-chevron-down' : 'fa-chevron-up', 'toggle-icon']"></i>
+          <h3 class="panel-title">交易明细 ({{ trades.length }} 笔)</h3>
         </div>
-        
+
         <div v-if="strategyStore.isLoading" class="loading-indicator">
           <i class="fas fa-spinner fa-spin"></i>
           <span>加载中...</span>
         </div>
       </div>
-      
+
       <div v-show="isTradePanelExpanded" class="panel-content">
-         <!-- 错误信息 -->
         <div v-if="strategyStore.error" class="error-message">
           <i class="fas fa-exclamation-circle"></i>{{ strategyStore.error }}
         </div>
-        
-        <!-- 交易记录表格 -->
+
         <TradeTable
           v-if="trades.length > 0"
           :trades="trades"
           :highlight-date="normalizeDate(playbackCursor)"
-          @trade-select="handleTradeSelect($event, true)"
+          @trade-select="handleTradeSelect"
         />
-        
-        <!-- 无交易记录提示 -->
-        <div v-else-if="!strategyStore.isLoading" class="empty-state">
+
+        <div v-else-if="!strategyStore.isLoading" class="empty-trades">
           <div class="empty-icon">
             <i class="fas fa-exchange-alt"></i>
           </div>
           <h4 class="empty-title">暂无交易记录</h4>
-          <p class="empty-hint">
-            {{ getNoTradesMessage() }}
-          </p>
+          <p class="empty-hint">{{ getNoTradesMessage() }}</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- K线图弹窗 -->
+    <div v-if="showKlineModal" class="kline-modal-overlay" @click.self="closeKlineModal">
+      <div class="kline-modal">
+        <div class="modal-header">
+          <h3 class="modal-title">
+            {{ selectedTrade?.symbol || selectedSymbol }} K线图
+          </h3>
+          <button @click="closeKlineModal" class="close-btn">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        <div class="modal-content">
+          <TVKlineChart
+            ref="klineChartRef"
+            :data="klineDataForChart"
+            :markers="tradeMarkersForKline"
+            :show-legend="true"
+            :show-volume="true"
+            :is-loading="klineStore.isLoading"
+            :symbol="selectedSymbol"
+            class="kline-chart"
+          />
         </div>
       </div>
     </div>
@@ -155,79 +267,92 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useRoute, useRouter } from 'vue-router';
 import { useStrategyStore } from '../store/strategyStore';
 import { useKlineStore } from '../store/klineStore';
 import { useBacktestStore } from '../store/backtestStore';
-import { useDashboardStore } from '../store/dashboardStore';
 import { useSocketIO } from '../composables/useSocketIO';
+import { useStreamingBacktest } from '../composables/useStreamingBacktest';
 import { getStrategyDetail, getLatestPrices, getAvailableVersions } from '../api/backtestApi';
 import EquityCurve from '../components/EquityCurve.vue';
+import DrawdownChart from '../components/charts/DrawdownChart.vue';
+import TradeFrequencyChart from '../components/charts/TradeFrequencyChart.vue';
+import TVKlineChart from '../components/charts/TVKlineChart.vue';
 import TradeTable from '../components/tables/TradeTable.vue';
+import TradeDeepDive from '../components/modals/TradeDeepDive.vue';
 import PositionCard from '../components/PositionCard.vue';
 import PlaybackController from '../components/PlaybackController.vue';
-import TradeDeepDive from '../components/modals/TradeDeepDive.vue';
-import LiveRiskRadar from '../components/LiveRiskRadar.vue';
 import type { Trade, HoldingPeriod as HoldingPeriodType } from '../types/backtest';
+
+/**
+ * 策略详情页面
+ * 主界面显示回测收益曲线，右侧显示持仓面板，个股K线图作为弹窗
+ */
 
 const route = useRoute();
 const router = useRouter();
 const strategyStore = useStrategyStore();
 const klineStore = useKlineStore();
 const backtestStore = useBacktestStore();
-const dashboardStore = useDashboardStore();
 const { connect } = useSocketIO();
+const { start: startBacktest, isRunning: isBacktestRunning } = useStreamingBacktest();
+
+const klineChartRef = ref<InstanceType<typeof TVKlineChart> | null>(null);
 const isTradePanelExpanded = ref(true);
-const tradePanelHeight = ref(256);
+const tradePanelHeight = ref(200);
 const isResizing = ref(false);
+const isFullscreen = ref(false);
+const chartScale = ref<'linear' | 'log'>('linear');
+const syncDate = ref('');
 
-function startResizing(e: MouseEvent) {
-  isResizing.value = true;
-  document.addEventListener('mousemove', doResize);
-  document.addEventListener('mouseup', stopResizing);
-  e.preventDefault();
-}
+const showKlineModal = ref(false);
+const selectedTrade = ref<Trade | null>(null);
 
-function doResize(e: MouseEvent) {
-  if (!isResizing.value) return;
-  
-  const newHeight = window.innerHeight - e.clientY;
-  
-  if (newHeight > 100 && newHeight < window.innerHeight * 0.8) {
-    tradePanelHeight.value = newHeight;
-    isTradePanelExpanded.value = true;
+const equityPaneHeight = ref(400);
+const drawdownPaneHeight = ref(160);
+const frequencyPaneHeight = ref(160);
+const isDrawdownCollapsed = ref(false);
+const isFrequencyCollapsed = ref(false);
+const isPaneResizing = ref(false);
+const currentResizingPane = ref<string | null>(null);
+
+const strategyId = computed(() => route.params.id as string);
+
+const hasBacktestData = computed(() => {
+  // 只要有权益曲线数据就显示图表，不依赖 metrics
+  return backtestStore.equitySeries.length > 0;
+});
+
+const equityCurveData = computed(() => {
+  if (backtestStore.equitySeries.length > 0) {
+    return [{
+      versionId: 'current',
+      versionName: '当前回测',
+      data: backtestStore.equitySeries
+    }];
   }
-}
+  return [];
+});
 
-function stopResizing() {
-  isResizing.value = false;
-  document.removeEventListener('mousemove', doResize);
-  document.removeEventListener('mouseup', stopResizing);
-}
+const benchmarkData = computed(() => backtestStore.benchmarkEquitySeries);
 
-const selectedDeepDiveTrade = ref<Trade | null>(null);
-const isDeepDiveOpen = ref(false);
-const deepDiveStartDate = ref('');
-const deepDiveEndDate = ref('');
-const stockNames = ref<Record<string, string>>({});
-
-const { 
-  holdingPeriods: holdingPeriodsRef, 
-  lastUpdated: lastUpdatedRef, 
-  trades: tradesRef, 
-  playbackMode, 
-  playbackCursor 
+const {
+  holdingPeriods: holdingPeriodsRef,
+  lastUpdated: lastUpdatedRef,
+  trades: tradesRef,
+  playbackMode,
+  playbackCursor
 } = storeToRefs(backtestStore);
 
 const trades = computed<Trade[]>(() => {
   let baseTrades: Trade[] = backtestStore.trades;
-  
+
   if (baseTrades.length === 0 && strategyStore.currentBacktestResult?.trades) {
     baseTrades = strategyStore.currentBacktestResult.trades;
   }
-  
+
   if (baseTrades.length === 0 && mappedHoldingPeriods.value.length > 0) {
     baseTrades = mappedHoldingPeriods.value.flatMap(hp => {
       const arr = [];
@@ -244,17 +369,12 @@ const trades = computed<Trade[]>(() => {
 
   return baseTrades.map(trade => {
     const normalizedCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
-    
     let displayName = trade.symbol || normalizedCode;
-    
+
     if (/^\d{6}$/.test(displayName)) {
-      if (stockNames.value[normalizedCode]) {
-        displayName = stockNames.value[normalizedCode];
-      } else {
-        const holding = mappedHoldingPeriods.value.find(hp => normalizeSymbolCode(hp.symbolCode) === normalizedCode);
-        if (holding && holding.symbolName && !/^\d{6}$/.test(holding.symbolName)) {
-          displayName = holding.symbolName;
-        }
+      const holding = mappedHoldingPeriods.value.find(hp => normalizeSymbolCode(hp.symbolCode) === normalizedCode);
+      if (holding && holding.symbolName && !/^\d{6}$/.test(holding.symbolName)) {
+        displayName = holding.symbolName;
       }
     }
 
@@ -269,99 +389,9 @@ const trades = computed<Trade[]>(() => {
   });
 });
 
-const currentDate = computed(() => {
-  if (playbackMode.value && playbackCursor.value) return normalizeDate(playbackCursor.value);
-  const endDate = backtestStore.lastRunParams?.endDate || lastUpdatedRef.value;
-  if (endDate) return normalizeDate(endDate);
-  return new Date().toISOString().split('T')[0];
-});
-
-const currentDateEquity = computed(() => {
-  const date = currentDate.value;
-  if (!date || backtestStore.equitySeries.length === 0) return 0;
-  const point = backtestStore.equitySeries.find(p => normalizeDate(p.date) === date);
-  return point ? point.equity : 0;
-});
-
-const equityCurveVersions = computed(() => {
-  let series = backtestStore.equitySeries;
-  
-  if (series.length === 0 && strategyStore.currentBacktestResult?.equityCurve) {
-    series = strategyStore.currentBacktestResult.equityCurve.map(p => ({
-      date: p.date,
-      equity: p.equity
-    }));
-  }
-
-  if (playbackMode.value && playbackCursor.value) {
-    const cursor = normalizeDate(playbackCursor.value);
-    series = series.filter(p => normalizeDate(p.date) <= cursor);
-  }
-  
-  if (series.length === 0) return [];
-  
-  return [{
-    versionId: 'current',
-    versionName: '策略净值',
-    data: series
-  }];
-});
-
-const benchmarkSeries = computed(() => {
-  let series = backtestStore.benchmarkEquitySeries;
-  
-  if (series.length === 0 && strategyStore.currentBacktestResult?.equityCurve) {
-    series = strategyStore.currentBacktestResult.equityCurve
-      .filter(p => p.benchmarkEquity !== undefined && p.benchmarkEquity !== null)
-      .map(p => ({
-        date: p.date,
-        equity: p.benchmarkEquity!
-      }));
-  }
-
-  if (playbackMode.value && playbackCursor.value) {
-    const cursor = normalizeDate(playbackCursor.value);
-    series = series.filter(p => normalizeDate(p.date) <= cursor);
-  }
-  
-  return series;
-});
-
-const fullRange = computed(() => {
-  const series = backtestStore.equitySeries;
-  if (series.length === 0) return { min: '', max: '' };
-  return {
-    min: normalizeDate(series[0].date),
-    max: normalizeDate(series[series.length - 1].date)
-  };
-});
-
-function normalizeSymbolCode(value?: string | null): string {
-  if (!value) return '';
-  const trimmed = value.trim().toUpperCase();
-  const match = trimmed.match(/(\d+)/);
-  if (match) {
-    const digits = match[1];
-    return digits.length < 6 ? digits.padStart(6, '0') : digits;
-  }
-  return trimmed;
-}
-
-function normalizeDate(dateStr?: string | null): string {
-  if (!dateStr) return '';
-  return dateStr.replace(/\//g, '-').split(' ')[0];
-}
-
-const highlightRanges = ref<Array<{ start: string; end: string }>>([]);
-const selectedTrade = ref<Trade | null>(null);
-const realtimeTrades = ref<Trade[]>([]);
-
-function toggleTradePanel() {
-  isTradePanelExpanded.value = !isTradePanelExpanded.value;
-}
-
 const selectedSymbol = computed(() => klineStore.selectedSymbol);
-const klineData = computed(() => {
+
+const klineDataForChart = computed(() => {
   const data = klineStore.klineData;
   if (playbackMode.value && playbackCursor.value) {
     const cursor = normalizeDate(playbackCursor.value);
@@ -370,68 +400,34 @@ const klineData = computed(() => {
   return data;
 });
 
-const selectedSymbolName = computed(() => {
-  const targetSymbol = normalizeSymbolCode(selectedSymbol.value);
-  if (!targetSymbol) return '';
-  
-  const holding = mappedHoldingPeriods.value.find(hp => 
-    normalizeSymbolCode(hp.symbolCode || hp.symbol) === targetSymbol
-  );
-  if (holding && holding.symbolName) {
-    return holding.symbolName;
-  }
-  
-  const trade = trades.value.find(t => 
-    normalizeSymbolCode(t.symbolCode || t.symbol) === targetSymbol
-  );
-  if (trade && trade.symbol) {
-    if (trade.symbol && !/^\d{6}$/.test(trade.symbol)) {
-      return trade.symbol;
-    }
-  }
-  
-  return targetSymbol;
-});
-
 const tradeMarkersForKline = computed(() => {
   const targetSymbol = normalizeSymbolCode(selectedSymbol.value);
   if (!targetSymbol) return [];
 
-  const openHoldingCodes = new Set(
-    currentHoldingPeriods.value.map(hp => normalizeSymbolCode(hp.symbolCode || hp.symbol))
-  );
-
   const closeMap: Record<string, number> = {};
-  klineData.value.forEach(item => {
+  klineDataForChart.value.forEach(item => {
     if (item?.date && typeof item.close === 'number') {
       closeMap[item.date] = item.close;
     }
   });
-  
-  const symbolTrades = trades.value.filter(t => 
+
+  const symbolTrades = trades.value.filter(t =>
     normalizeSymbolCode(t.symbolCode || t.symbol) === targetSymbol
   );
 
-  return symbolTrades
-    .filter(trade => {
-      if (trade.action === 'sell' && openHoldingCodes.has(targetSymbol) && !trade.exitDate) {
-        return false;
-      }
-      return true;
-    })
-    .map(trade => ({
-      date: trade.date,
-      action: trade.action,
-      price: closeMap[trade.date] ?? trade.price,
-      quantity: trade.quantity,
-      symbol: trade.symbol,
-      profitLoss: trade.profitLoss,
-      entryDate: trade.entryDate,
-      exitDate: trade.exitDate,
-      holdingDays: trade.entryDate && trade.exitDate
-        ? Math.floor((new Date(trade.exitDate).getTime() - new Date(trade.entryDate).getTime()) / (1000 * 60 * 60 * 24))
-        : undefined
-    }));
+  return symbolTrades.map(trade => ({
+    date: trade.date,
+    action: trade.action,
+    price: closeMap[trade.date] ?? trade.price,
+    quantity: trade.quantity,
+    symbol: trade.symbol,
+    profitLoss: trade.profitLoss,
+    entryDate: trade.entryDate,
+    exitDate: trade.exitDate,
+    holdingDays: trade.entryDate && trade.exitDate
+      ? Math.floor((new Date(trade.exitDate).getTime() - new Date(trade.entryDate).getTime()) / (1000 * 60 * 60 * 24))
+      : undefined
+  }));
 });
 
 type RawHoldingPeriod = HoldingPeriodType & {
@@ -451,7 +447,88 @@ const rawHoldingPeriods = computed<RawHoldingPeriod[]>(() => {
     return holdingPeriodsRef.value as unknown as RawHoldingPeriod[];
   }
   const fallback = (strategyStore.currentBacktestResult as any)?.holdingPeriods;
-  return Array.isArray(fallback) ? fallback : [];
+  if (Array.isArray(fallback) && fallback.length > 0) {
+    return fallback;
+  }
+
+  const allTrades = backtestStore.trades.length > 0 ? backtestStore.trades : (strategyStore.currentBacktestResult?.trades || []);
+  if (allTrades.length === 0) return [];
+
+  const sellTrades = allTrades.filter(t => t.action === 'sell');
+  const holdingPeriodsMap = new Map<string, RawHoldingPeriod>();
+
+  allTrades.forEach(trade => {
+    const symbolCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
+    const positionId = trade.positionId || `${symbolCode}_${trade.entryDate || trade.date}`;
+
+    if (trade.action === 'buy') {
+      if (!holdingPeriodsMap.has(positionId)) {
+        holdingPeriodsMap.set(positionId, {
+          positionId,
+          position_id: positionId,
+          symbolCode,
+          symbol_code: symbolCode,
+          symbolName: trade.symbol || symbolCode,
+          symbol_name: trade.symbol || symbolCode,
+          entryDate: trade.entryDate || trade.date,
+          entry_date: trade.entryDate || trade.date,
+          entryPrice: trade.entryPrice || trade.price,
+          entry_price: trade.entryPrice || trade.price,
+          quantity: trade.quantity,
+          exitDate: null,
+          exit_date: null,
+          exitPrice: undefined,
+          exit_price: undefined,
+          profit: 0,
+          holdingDays: undefined
+        });
+      } else {
+        const existing = holdingPeriodsMap.get(positionId)!;
+        existing.quantity = (existing.quantity || 0) + trade.quantity;
+        if (!existing.entryDate && trade.entryDate) {
+          existing.entryDate = trade.entryDate;
+          existing.entry_date = trade.entryDate;
+        }
+      }
+    }
+  });
+
+  sellTrades.forEach(trade => {
+    const symbolCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
+    const positionId = trade.positionId || `${symbolCode}_${trade.entryDate || trade.date}`;
+
+    if (holdingPeriodsMap.has(positionId)) {
+      const hp = holdingPeriodsMap.get(positionId)!;
+      hp.exitDate = trade.exitDate || trade.date;
+      hp.exit_date = trade.exitDate || trade.date;
+      hp.exitPrice = trade.exitPrice || trade.price;
+      hp.exit_price = trade.exitPrice || trade.price;
+      hp.profit = trade.profitLoss || trade.profit_loss || 0;
+      hp.holdingDays = trade.holdingDays || trade.holding_days;
+    } else {
+      holdingPeriodsMap.set(positionId, {
+        positionId,
+        position_id: positionId,
+        symbolCode,
+        symbol_code: symbolCode,
+        symbolName: trade.symbol || symbolCode,
+        symbol_name: trade.symbol || symbolCode,
+        entryDate: trade.entryDate || '',
+        entry_date: trade.entryDate || '',
+        entryPrice: trade.entryPrice || trade.entry_price,
+        entry_price: trade.entryPrice || trade.entry_price,
+        quantity: trade.quantity,
+        exitDate: trade.exitDate || trade.date,
+        exit_date: trade.exitDate || trade.date,
+        exitPrice: trade.exitPrice || trade.price,
+        exit_price: trade.exitPrice || trade.price,
+        profit: trade.profitLoss || trade.profit_loss || 0,
+        holdingDays: trade.holdingDays || trade.holding_days
+      });
+    }
+  });
+
+  return Array.from(holdingPeriodsMap.values());
 });
 
 const mappedHoldingPeriods = computed<HoldingPeriodType[]>(() => {
@@ -472,140 +549,47 @@ const mappedHoldingPeriods = computed<HoldingPeriodType[]>(() => {
   });
 });
 
-function isOpenHolding(hp: HoldingPeriodType): boolean {
-  if (!hp.exitDate) return true;
-  const exit = String(hp.exitDate).trim().toLowerCase();
-  return exit === 'open' || exit === '未平仓' || exit === 'ongoing';
-}
-
-const derivedHoldingsFromTrades = computed<HoldingPeriodType[]>(() => {
-  if (trades.value.length === 0) return [];
-  const sortedTrades = [...trades.value].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  const positionMap = new Map<string, {
-    symbolCode: string;
-    symbolName: string;
-    quantity: number;
-    totalCost: number;
-    entryDate: string;
-  }>();
-
-  sortedTrades.forEach(trade => {
-    const symbolCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
-    if (!symbolCode || !trade.quantity) return;
-    const symbolName = trade.symbol || symbolCode;
-    const qty = trade.quantity;
-    const price = trade.price || 0;
-
-    if (trade.action === 'buy') {
-      if (!positionMap.has(symbolCode)) {
-        positionMap.set(symbolCode, {
-          symbolCode,
-          symbolName,
-          quantity: 0,
-          totalCost: 0,
-          entryDate: trade.entryDate || trade.date
-        });
-      }
-      const position = positionMap.get(symbolCode)!;
-      position.totalCost += price * qty;
-      position.quantity += qty;
-      if (!position.entryDate) {
-        position.entryDate = trade.entryDate || trade.date;
-      }
-    } else if (trade.action === 'sell') {
-      const position = positionMap.get(symbolCode);
-      if (!position || position.quantity <= 0) return;
-      const sellQty = Math.min(qty, position.quantity);
-      const avgCost = position.quantity > 0 ? position.totalCost / position.quantity : price;
-      position.quantity -= sellQty;
-      position.totalCost -= avgCost * sellQty;
-      if (position.quantity <= 0) {
-        positionMap.delete(symbolCode);
-      }
-    }
-  });
-
-  return Array.from(positionMap.values())
-    .filter(position => position.quantity > 0)
-    .map(position => ({
-      positionId: `${position.symbolCode}-derived`,
-      symbolCode: position.symbolCode,
-      symbolName: position.symbolName,
-      entryDate: position.entryDate,
-      exitDate: null,
-      entryPrice: position.quantity > 0 ? position.totalCost / position.quantity : undefined,
-      quantity: position.quantity
-    }));
+const currentDate = computed(() => {
+  if (playbackMode.value && playbackCursor.value) return normalizeDate(playbackCursor.value);
+  const endDate = backtestStore.lastRunParams?.endDate || lastUpdatedRef.value;
+  if (endDate) return normalizeDate(endDate);
+  return new Date().toISOString().split('T')[0];
 });
 
-const openHoldingPeriods = computed(() => mappedHoldingPeriods.value.filter(isOpenHolding));
-
-const currentHoldingPeriods = computed<HoldingPeriodType[]>(() => {
-  if (playbackMode.value) {
-    return derivedHoldingsFromTrades.value;
-  }
-  
-  if (openHoldingPeriods.value.length > 0) {
-    return openHoldingPeriods.value;
-  }
-  return derivedHoldingsFromTrades.value;
+const currentEquity = computed(() => {
+  const date = currentDate.value;
+  if (!date || backtestStore.equitySeries.length === 0) return 0;
+  const point = backtestStore.equitySeries.find(p => normalizeDate(p.date) === date);
+  return point ? point.equity : 0;
 });
 
-function getNoTradesMessage(): string {
-  const versionId = route.params.id as string || route.params.versionId as string;
-  
-  if (!versionId || versionId === 'default') {
-    return '请从总览页面选择一个有效的策略版本，或直接运行回测生成交易记录。';
-  }
-  
-  if (strategyStore.error) {
-    return `无法加载该策略版本的交易记录。${strategyStore.error}`;
-  }
-  
-  return '该策略版本还没有交易记录，请运行回测生成交易数据。';
-}
-
-const emit = defineEmits(['run-backtest']);
-
-const fetchedLatestPrices = ref<Record<string, number>>({});
+const latestPrices = ref<Record<string, number>>({});
+const stockNames = ref<Record<string, string>>({});
 const requestedLatestPriceSymbols = new Set<string>();
 
-const latestPrices = computed<Record<string, number>>(() => {
-  const normalized: Record<string, number> = {};
-
-  Object.entries(fetchedLatestPrices.value).forEach(([symbol, price]) => {
-    const normalizedCode = normalizeSymbolCode(symbol);
-    if (normalizedCode && typeof price === 'number' && !Number.isNaN(price) && price > 0) {
-      normalized[normalizedCode] = price;
-    }
-  });
-
-  return normalized;
-});
-
 let fetchTimeout: any = null;
-watch([currentHoldingPeriods, trades, playbackCursor], ([holdings, allTrades, cursor]) => {
+watch([mappedHoldingPeriods, trades, playbackCursor], ([holdings, allTrades, cursor]) => {
   if (fetchTimeout) clearTimeout(fetchTimeout);
-  
+
   fetchTimeout = setTimeout(() => {
     const symbolsToFetch: string[] = [];
-    
+
     holdings.forEach(hp => {
       const symbolCode = normalizeSymbolCode(hp.symbolCode || hp.symbol);
       if (symbolCode) symbolsToFetch.push(symbolCode);
     });
-    
+
     allTrades.forEach(t => {
       const symbolCode = normalizeSymbolCode(t.symbolCode || t.symbol);
       if (symbolCode) symbolsToFetch.push(symbolCode);
     });
-    
+
     const uniqueSymbols = [...new Set(symbolsToFetch)];
 
     if (uniqueSymbols.length > 0) {
       if (!playbackMode.value) {
         const filteredSymbols = uniqueSymbols.filter(symbolCode => {
-          if (fetchedLatestPrices.value[symbolCode] && stockNames.value[symbolCode]) return false;
+          if (latestPrices.value[symbolCode] && stockNames.value[symbolCode]) return false;
           if (requestedLatestPriceSymbols.has(symbolCode)) return false;
           return true;
         });
@@ -623,10 +607,10 @@ watch([currentHoldingPeriods, trades, playbackCursor], ([holdings, allTrades, cu
 async function fetchLatestPrices(symbols: string[]) {
   if (!symbols.length) return;
   try {
-    let targetDate: string | undefined = playbackMode.value && playbackCursor.value 
+    let targetDate: string | undefined = playbackMode.value && playbackCursor.value
       ? normalizeDate(playbackCursor.value)
       : backtestStore.lastRunParams?.endDate;
-    
+
     if (!targetDate && strategyStore.currentBacktestResult) {
       const result = strategyStore.currentBacktestResult as any;
       if (result.endDate) {
@@ -638,36 +622,36 @@ async function fetchLatestPrices(symbols: string[]) {
         }
       }
     }
-    
+
     if (targetDate && !/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
       console.warn(`[价格获取] 日期格式无效: ${targetDate}，跳过价格获取`);
       return;
     }
-    
+
     if (!targetDate) {
       if (!backtestStore.running) {
         console.warn('[价格获取] 没有回测结束日期，无法获取价格');
       }
       return;
     }
-    
+
     console.log(`[价格获取] 开始获取 ${symbols.length} 个标的的价格（目标日期: ${targetDate}）:`, symbols);
     const response = await getLatestPrices(symbols, targetDate);
     console.log(`[价格获取] API 响应:`, response);
     const priceMap: Record<string, number> = {};
     const nameMap: Record<string, string> = {};
-    
+
     Object.entries(response || {}).forEach(([symbol, payload]) => {
       const price = (payload as any)?.price;
       const date = (payload as any)?.date;
       const name = (payload as any)?.name;
       const normalizedCode = normalizeSymbolCode(symbol);
-      
+
       if (typeof price === 'number' && !Number.isNaN(price) && price > 0) {
         priceMap[normalizedCode] = price;
         console.log(`[价格获取] ${symbol}: 价格=${price}, 名称=${name}, 日期=${date}`);
       }
-      
+
       if (name && normalizedCode) {
         nameMap[normalizedCode] = name;
       }
@@ -680,17 +664,17 @@ async function fetchLatestPrices(symbols: string[]) {
           requestedLatestPriceSymbols.delete(normalizedCode);
         }
       });
-      
-      fetchedLatestPrices.value = {
-        ...fetchedLatestPrices.value,
+
+      latestPrices.value = {
+        ...latestPrices.value,
         ...priceMap
       };
-      
+
       stockNames.value = {
         ...stockNames.value,
         ...nameMap
       };
-      
+
       console.log(`[价格信息] 更新了 ${Object.keys(priceMap).length} 个价格和 ${Object.keys(nameMap).length} 个名称`);
     } else {
       symbols.forEach(symbol => {
@@ -712,16 +696,125 @@ async function fetchLatestPrices(symbols: string[]) {
   }
 }
 
-async function handleTradeSelect(trade: Trade, openModal = false) {
-  selectedTrade.value = trade;
-  klineStore.setSelectedSymbol(trade.symbolCode || trade.symbol);
-  
-  if (!openModal) return;
+function formatPercent(value: number, isDrawdown = false): string {
+  if (isDrawdown) {
+    return `-${Math.abs(value).toFixed(2)}%`;
+  }
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}%`;
+}
 
+function handleChartHover(data: any) {
+  if (data?.date) {
+    syncDate.value = data.date;
+  }
+}
+
+function toggleTradePanel() {
+  isTradePanelExpanded.value = !isTradePanelExpanded.value;
+}
+
+function toggleDrawdownPane() {
+  isDrawdownCollapsed.value = !isDrawdownCollapsed.value;
+}
+
+function toggleFrequencyPane() {
+  isFrequencyCollapsed.value = !isFrequencyCollapsed.value;
+}
+
+function startPaneResize(e: MouseEvent, pane: string) {
+  isPaneResizing.value = true;
+  currentResizingPane.value = pane;
+  document.addEventListener('mousemove', doPaneResize);
+  document.addEventListener('mouseup', stopPaneResize);
+  e.preventDefault();
+}
+
+function doPaneResize(e: MouseEvent) {
+  if (!isPaneResizing.value || !currentResizingPane.value) return;
+
+  const chartsContainer = document.querySelector('.charts-container');
+  if (!chartsContainer) return;
+
+  const containerRect = chartsContainer.getBoundingClientRect();
+  const relativeY = e.clientY - containerRect.top;
+
+  if (currentResizingPane.value === 'equity') {
+    const newHeight = Math.max(200, Math.min(relativeY - 28, 600));
+    equityPaneHeight.value = newHeight;
+  }
+}
+
+function stopPaneResize() {
+  isPaneResizing.value = false;
+  currentResizingPane.value = null;
+  document.removeEventListener('mousemove', doPaneResize);
+  document.removeEventListener('mouseup', stopPaneResize);
+}
+
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen().then(() => {
+      isFullscreen.value = true;
+    });
+  } else {
+    document.exitFullscreen().then(() => {
+      isFullscreen.value = false;
+    });
+  }
+}
+
+function startResizing(e: MouseEvent) {
+  isResizing.value = true;
+  document.addEventListener('mousemove', doResize);
+  document.addEventListener('mouseup', stopResizing);
+  e.preventDefault();
+}
+
+function doResize(e: MouseEvent) {
+  if (!isResizing.value) return;
+
+  const newHeight = window.innerHeight - e.clientY;
+
+  if (newHeight > 100 && newHeight < window.innerHeight * 0.8) {
+    tradePanelHeight.value = newHeight;
+    isTradePanelExpanded.value = true;
+  }
+}
+
+function stopResizing() {
+  isResizing.value = false;
+  document.removeEventListener('mousemove', doResize);
+  document.removeEventListener('mouseup', stopResizing);
+}
+
+const selectedDeepDiveTrade = ref<Trade | null>(null);
+const isDeepDiveOpen = ref(false);
+const deepDiveStartDate = ref('');
+const deepDiveEndDate = ref('');
+
+async function handleTradeSelect(trade: Trade) {
+  selectedTrade.value = trade;
+  const symbolCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
+  klineStore.setSelectedSymbol(symbolCode);
+
+  // 先显示弹窗，提升用户体验，避免等待感
   selectedDeepDiveTrade.value = trade;
   isDeepDiveOpen.value = true;
-  
-  const symbolCode = normalizeSymbolCode(trade.symbolCode || trade.symbol);
+  showKlineModal.value = true;
+
+  // 弹窗显示后再异步加载数据
+  if (symbolCode) {
+    const entry = new Date(trade.entryDate || trade.date);
+    const start = new Date(entry);
+    start.setDate(start.getDate() - 60);
+    const end = new Date(entry);
+    end.setDate(end.getDate() + 60);
+
+    const formatDate = (date: Date) => date.toISOString().split('T')[0];
+    await klineStore.loadKlineData(symbolCode, formatDate(start), formatDate(end));
+  }
+
   if (!symbolCode) return;
 
   const entry = new Date(trade.entryDate || trade.date);
@@ -736,31 +829,78 @@ async function handleTradeSelect(trade: Trade, openModal = false) {
   const formatDate = (date: Date) => date.toISOString().split('T')[0];
   deepDiveStartDate.value = formatDate(start);
   deepDiveEndDate.value = formatDate(end);
-
-  if (!isTradePanelExpanded.value) {
-    isTradePanelExpanded.value = true;
-  }
 }
 
 async function handlePositionAnalyze(pos: any) {
   const syntheticTrade: Trade = {
     id: `current-pos-${pos.symbolCode}`,
-    date: pos.entryDate,
+    date: pos.entryDate || currentDate.value,
     symbol: pos.symbolName,
     symbolCode: pos.symbolCode,
     action: 'buy',
     price: pos.cost,
     quantity: pos.quantity,
     entryPrice: pos.cost,
-    entryDate: pos.entryDate
+    entryDate: pos.entryDate || currentDate.value
   };
-  
-  await handleTradeSelect(syntheticTrade, true);
+
+  await handleTradeSelect(syntheticTrade);
+}
+
+function closeKlineModal() {
+  showKlineModal.value = false;
+}
+
+function getNoTradesMessage(): string {
+  const versionId = route.params.id as string || route.params.versionId as string;
+
+  if (!versionId || versionId === 'default') {
+    return '请从总览页面选择一个有效的策略版本，或直接运行回测生成交易记录。';
+  }
+
+  if (strategyStore.error) {
+    return `无法加载该策略版本的交易记录。${strategyStore.error}`;
+  }
+
+  return '该策略版本还没有交易记录，请运行回测生成交易数据。';
+}
+
+function normalizeSymbolCode(value?: string | null): string {
+  if (!value) return '';
+  const trimmed = value.trim().toUpperCase();
+  const match = trimmed.match(/(\d+)/);
+  if (match) {
+    const digits = match[1];
+    return digits.length < 6 ? digits.padStart(6, '0') : digits;
+  }
+  return trimmed;
+}
+
+function normalizeDate(dateStr?: string | null): string {
+  if (!dateStr) return '';
+  return dateStr.replace(/\//g, '-').split(' ')[0];
+}
+
+function runBacktest() {
+  if (!strategyStore.currentVersion) {
+    alert('请先选择策略');
+    return;
+  }
+
+  startBacktest({
+    strategy_name: strategyStore.currentVersion.name,
+    start_date: '2024-01-01',
+    end_date: new Date().toISOString().split('T')[0],
+    benchmark_code: '000300',
+    initial_capital: 1000000,
+    commission: 0.0003,
+    slippage: 0.001
+  });
 }
 
 async function loadStrategyDetail() {
   let versionId = route.params.id as string || route.params.versionId as string;
-  
+
   if (!versionId || versionId === 'default') {
     try {
       strategyStore.setLoading(true);
@@ -772,31 +912,29 @@ async function loadStrategyDetail() {
           router.replace({ name: 'StrategyDetail', params: { id: firstId } });
           versionId = firstId;
         } else {
-            throw new Error('无法获取有效的策略ID');
+          throw new Error('无法获取有效的策略ID');
         }
       } else {
         throw new Error('系统未找到任何可用策略，请先创建或从代码库加载策略');
       }
     } catch (e) {
       console.error('自动加载策略失败:', e);
-      realtimeTrades.value = [];
       const msg = e instanceof Error ? e.message : '请提供有效的策略版本ID';
       strategyStore.setError(msg);
       strategyStore.setLoading(false);
       return;
     }
   }
-  
+
   try {
     strategyStore.setLoading(true);
     strategyStore.setError(null);
-    
+
     try {
       const result = await getStrategyDetail(versionId);
       if (result) {
         strategyStore.setCurrentBacktestResult(result);
         strategyStore.setCurrentVersion(versionId);
-        dashboardStore.setSelectedStrategy(versionId);
       } else {
         strategyStore.setError('未找到该策略版本的回测结果');
       }
@@ -815,26 +953,21 @@ async function loadStrategyDetail() {
 
 watch(() => route.params, () => {
   loadStrategyDetail();
-  realtimeTrades.value = [];
-}, { immediate: true });
-
-watch(trades, (newTrades) => {
-  if (newTrades.length > 0 && !selectedTrade.value && newTrades[0]) {
-    handleTradeSelect(newTrades[0], false);
-  }
 }, { immediate: true });
 
 onMounted(() => {
   backtestStore.hydrateFromStorage();
-  connect(window.location.origin);
+  // 使用相对路径 ''，让 Socket.IO 自动使用当前域名
+  // 这样 Vite 代理可以正确代理 /socket.io 请求到后端
+  connect('');
   loadStrategyDetail();
 });
 </script>
 
 <style scoped>
-.kline-page {
-  height: calc(100vh - clamp(2.5rem, 8vh, 2.75rem));
-  background: #131722;
+.strategy-detail-page {
+  height: 100vh;
+  background: #0A0A0A;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -843,45 +976,45 @@ onMounted(() => {
 /* 顶部工具栏 */
 .toolbar {
   height: clamp(3rem, 9vh, 3.5rem);
-  padding: 0 clamp(0.75rem, 2vw, 1rem);
+  padding: 0 clamp(0.5rem, 1.5vw, 0.75rem);
   background: #1E222D;
   border-bottom: 1px solid #2A2E39;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: clamp(0.5rem, 1vw, 1rem);
+  gap: clamp(0.25rem, 0.5vw, 0.5rem);
   flex-shrink: 0;
 }
 
 .toolbar-left {
   display: flex;
   align-items: center;
-  gap: clamp(0.75rem, 1.5vw, 1rem);
+  gap: clamp(0.375rem, 0.75vw, 0.5rem);
   flex: 1;
   min-width: 0;
 }
 
-.symbol-info {
-  flex-shrink: 0;
+.strategy-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.symbol-name {
-  font-size: clamp(0.9375rem, 1.2vw, 1rem);
+.strategy-name {
+  font-size: clamp(0.875rem, 1.1vw, 1rem);
   font-weight: 600;
   color: #D1D4DC;
   margin: 0;
-  display: flex;
-  align-items: center;
-  gap: clamp(0.375rem, 0.75vw, 0.5rem);
 }
 
-.symbol-badge {
-  padding: clamp(0.125rem, 0.3vh, 0.25rem) clamp(0.25rem, 0.5vw, 0.375rem);
-  font-size: clamp(0.625rem, 0.7vw, 0.75rem);
-  font-weight: normal;
-  background: #2A2E39;
-  color: #787B86;
+.strategy-badge {
+  padding: 0.125rem 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: #2962FF;
+  background: rgba(41, 98, 255, 0.15);
   border-radius: 0.25rem;
+  text-transform: uppercase;
 }
 
 .divider {
@@ -891,88 +1024,82 @@ onMounted(() => {
   flex-shrink: 0;
 }
 
-.legend {
+.chart-scale {
   display: flex;
   align-items: center;
-  gap: clamp(0.5rem, 1vw, 0.75rem);
-  flex-shrink: 0;
+  gap: 0.375rem;
 }
 
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: clamp(0.25rem, 0.5vw, 0.375rem);
-}
-
-.legend-dot {
-  width: clamp(0.5rem, 1vw, 0.625rem);
-  height: clamp(0.5rem, 1vw, 0.625rem);
-  border-radius: 50%;
-}
-
-.legend-dot.buy {
-  background: #ef4444;
-}
-
-.legend-dot.sell {
-  background: #22c55e;
-}
-
-.legend-text {
-  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+.scale-label {
+  font-size: 0.6875rem;
   color: #787B86;
+}
+
+.scale-btn {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  color: #787B86;
+  background: #2A2E39;
+  border: 1px solid #363A45;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.scale-btn:hover {
+  color: #D1D4DC;
+}
+
+.scale-btn.active {
+  color: #2962FF;
+  background: rgba(41, 98, 255, 0.15);
+  border-color: rgba(41, 98, 255, 0.4);
+}
+
+.toolbar-center {
+  display: flex;
+  align-items: center;
+  gap: clamp(0.75rem, 2vw, 1.5rem);
+  flex: 1;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.metric-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.125rem;
+  min-width: 60px;
+}
+
+.metric-label {
+  font-size: 0.625rem;
+  color: #787B86;
+  text-transform: uppercase;
+}
+
+.metric-value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #D1D4DC;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.metric-value.positive {
+  color: #22c55e;
+}
+
+.metric-value.negative {
+  color: #ef4444;
 }
 
 .toolbar-right {
   display: flex;
   align-items: center;
-  gap: clamp(0.5rem, 1vw, 0.75rem);
-  flex-shrink: 0;
-}
-
-.shadow-toggle {
-  display: none;
-  align-items: center;
-  background: #2A2E39;
-  border-radius: 0.25rem;
-  padding: clamp(0.25rem, 0.5vw, 0.375rem) clamp(0.375rem, 0.75vw, 0.5rem);
-  gap: clamp(0.375rem, 0.75vw, 0.5rem);
-  border: 1px solid #363A45;
-}
-
-@media (min-width: 768px) {
-  .shadow-toggle {
-    display: flex;
-  }
-}
-
-.toggle-label {
-  font-size: clamp(0.625rem, 0.7vw, 0.75rem);
-  color: #787B86;
-  text-transform: uppercase;
-  font-weight: 600;
-}
-
-.toggle-btn {
-  font-size: clamp(0.625rem, 0.7vw, 0.75rem);
-  padding: clamp(0.125rem, 0.3vh, 0.25rem) clamp(0.25rem, 0.5vw, 0.375rem);
-  border-radius: 0.25rem;
-  transition: all 0.15s ease;
-  font-weight: 600;
-  background: transparent;
-  border: none;
-  color: #D1D4DC;
-  cursor: pointer;
-}
-
-.toggle-btn:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.toggle-btn.active {
-  background: rgba(245, 158, 11, 0.2);
-  color: #fbbf24;
-  border: 1px solid rgba(245, 158, 11, 0.4);
+  gap: clamp(0.25rem, 0.4vw, 0.375rem);
+  flex: 1;
+  justify-content: flex-end;
 }
 
 .run-btn {
@@ -982,22 +1109,47 @@ onMounted(() => {
   color: white;
   background: #2962FF;
   border: none;
-  border-radius: 0.25rem;
+  border-radius: 0.375rem;
   cursor: pointer;
   transition: all 0.15s ease;
   display: flex;
   align-items: center;
-  gap: clamp(0.25rem, 0.5vw, 0.375rem);
-  box-shadow: 0 4px 12px rgba(41, 98, 255, 0.15);
-  flex-shrink: 0;
+  gap: 0.375rem;
 }
 
-.run-btn:hover {
+.run-btn:hover:not(:disabled) {
   background: #1E53E5;
 }
 
-.run-btn i {
-  font-size: clamp(0.625rem, 0.7vw, 0.75rem);
+.run-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar-icon-btn {
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: #787B86;
+  background: #2A2E39;
+  border: 1px solid #363A45;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.toolbar-icon-btn:hover {
+  color: #D1D4DC;
+  background: #363A45;
+}
+
+.toolbar-icon-btn.active {
+  color: #2962FF;
+  background: rgba(41, 98, 255, 0.15);
+  border-color: rgba(41, 98, 255, 0.4);
 }
 
 /* 主要内容区域 */
@@ -1005,65 +1157,213 @@ onMounted(() => {
   flex: 1;
   display: flex;
   overflow: hidden;
+  min-height: 0;
 }
 
-.chart-area {
+.charts-container {
   flex: 1;
-  position: relative;
-  min-width: 0;
-}
-
-.kline-chart {
-  width: 100%;
-  height: 100%;
-}
-
-.playback-overlay {
-  position: absolute;
-  bottom: clamp(0.75rem, 2vh, 1rem);
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(90%, 600px);
-  z-index: 20;
-}
-
-/* 侧边面板 */
-.side-panel {
-  width: clamp(17.5rem, 25vw, 21.25rem);
-  min-width: 280px;
-  max-width: 400px;
-  background: #1c202b;
-  border-left: 1px solid #2a2e39;
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
-  z-index: 10;
+  gap: 1px;
+  background: #2A2E39;
+  overflow: hidden;
 }
 
-@media (max-width: 991px) {
-  .side-panel {
-    width: clamp(16rem, 22vw, 18rem);
-    min-width: 260px;
+.chart-pane {
+  background: #131722;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pane-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: #787B86;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pane-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-header {
+  height: 28px;
+  padding: 0 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #1E222D;
+  border-bottom: 1px solid #2A2E39;
+  flex-shrink: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pane-header:hover {
+  background: #252932;
+}
+
+.pane-header .header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.collapse-icon {
+  font-size: 0.625rem;
+  color: #787B86;
+  transition: transform 0.2s ease;
+}
+
+.pane-action-btn {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.625rem;
+  color: #787B86;
+  background: transparent;
+  border: none;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.pane-action-btn:hover {
+  color: #D1D4DC;
+  background: #2A2E39;
+}
+
+.pane-resize-handle {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  cursor: ns-resize;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pane-resize-handle:hover {
+  background: rgba(41, 98, 255, 0.1);
+}
+
+.pane-resize-indicator {
+  width: 2.5rem;
+  height: 2px;
+  background: #2A2E39;
+  border-radius: 1px;
+  transition: background 0.15s ease;
+}
+
+.pane-resize-handle:hover .pane-resize-indicator {
+  background: #2962FF;
+}
+
+.equity-pane {
+  position: relative;
+  flex: none;
+  min-height: 200px;
+}
+
+.drawdown-pane,
+.frequency-pane {
+  flex: none;
+  min-height: 32px;
+  transition: height 0.2s ease;
+}
+
+/* 右侧持仓面板 */
+.position-sidebar {
+  width: clamp(260px, 25vw, 320px);
+  flex-shrink: 0;
+  border-left: 1px solid #2A2E39;
+  background: #131722;
+  overflow: hidden;
+}
+
+@media (max-width: 1024px) {
+  .position-sidebar {
+    width: 280px;
   }
 }
 
-@media (max-width: 767px) {
-  .side-panel {
+@media (max-width: 768px) {
+  .position-sidebar {
     display: none;
   }
 }
 
-.radar-section {
-  height: clamp(15rem, 35vh, 17.5rem);
-  padding: clamp(0.75rem, 2vw, 1rem);
-  border-bottom: 1px solid #2a2e39;
-  flex-shrink: 0;
+/* 空状态 */
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
 }
 
-.position-section {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
+.empty-state .empty-icon {
+  width: 4rem;
+  height: 4rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #2A2E39;
+  border-radius: 50%;
+  margin-bottom: 1rem;
+}
+
+.empty-state .empty-icon i {
+  font-size: 1.5rem;
+  color: #787B86;
+}
+
+.empty-state .empty-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: #D1D4DC;
+  margin: 0 0 0.5rem 0;
+}
+
+.empty-state .empty-hint {
+  font-size: 0.875rem;
+  color: #787B86;
+  margin: 0 0 1.5rem 0;
+}
+
+.empty-action-btn {
+  padding: 0.75rem 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: white;
+  background: #2962FF;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.empty-action-btn:hover:not(:disabled) {
+  background: #1E53E5;
+  transform: translateY(-1px);
+}
+
+.empty-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* 底部交易记录面板 */
@@ -1085,7 +1385,6 @@ onMounted(() => {
   height: 8px;
   cursor: ns-resize;
   z-index: 20;
-  transition: all 0.15s ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1100,7 +1399,6 @@ onMounted(() => {
   height: 3px;
   background: #2A2E39;
   border-radius: 2px;
-  transition: background 0.15s ease;
 }
 
 .resize-handle:hover .resize-indicator {
@@ -1108,15 +1406,13 @@ onMounted(() => {
 }
 
 .panel-header {
-  height: clamp(2rem, 6vh, 2.5rem);
-  padding: 0 clamp(0.75rem, 2vw, 1rem);
-  border-bottom: 1px solid #2A2E39;
+  height: 40px;
+  padding: 0 1rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background 0.15s ease;
 }
 
 .panel-header:hover {
@@ -1126,16 +1422,16 @@ onMounted(() => {
 .header-left {
   display: flex;
   align-items: center;
-  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+  gap: 0.5rem;
 }
 
 .toggle-icon {
   color: #787B86;
-  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  font-size: 0.75rem;
 }
 
 .panel-title {
-  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+  font-size: 0.8125rem;
   font-weight: 500;
   color: #D1D4DC;
   margin: 0;
@@ -1144,119 +1440,214 @@ onMounted(() => {
 .loading-indicator {
   display: flex;
   align-items: center;
-  gap: clamp(0.25rem, 0.5vw, 0.375rem);
-  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  gap: 0.375rem;
+  font-size: 0.75rem;
   color: #787B86;
 }
 
 .panel-content {
   flex: 1;
   overflow: hidden;
-  padding: clamp(0.75rem, 2vw, 1rem);
-  background: #1E222D;
+  padding: 0.75rem 1rem;
 }
 
 .error-message {
-  margin-bottom: clamp(0.75rem, 2vw, 1rem);
-  padding: clamp(0.5rem, 1.5vw, 0.75rem);
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.75rem;
   background: rgba(239, 68, 68, 0.1);
   border: 1px solid rgba(239, 68, 68, 0.3);
   border-radius: 0.25rem;
-  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  font-size: 0.75rem;
   color: #f87171;
   display: flex;
   align-items: center;
-  gap: clamp(0.375rem, 0.75vw, 0.5rem);
+  gap: 0.5rem;
 }
 
-.empty-state {
-  padding: clamp(1.5rem, 5vh, 2rem);
+.empty-trades {
+  padding: 1.5rem;
   text-align: center;
 }
 
-.empty-icon {
+.empty-trades .empty-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: clamp(2.5rem, 6vw, 3rem);
-  height: clamp(2.5rem, 6vw, 3rem);
-  margin-bottom: clamp(0.5rem, 1.5vh, 0.75rem);
+  width: 2.5rem;
+  height: 2.5rem;
+  margin-bottom: 0.5rem;
   border-radius: 50%;
   background: #2A2E39;
   color: #787B86;
 }
 
-.empty-icon i {
-  font-size: clamp(1rem, 2vw, 1.25rem);
+.empty-trades .empty-icon i {
+  font-size: 1rem;
 }
 
-.empty-title {
-  margin: 0 0 clamp(0.25rem, 0.75vh, 0.375rem) 0;
-  font-size: clamp(0.8125rem, 1vw, 0.875rem);
+.empty-trades .empty-title {
+  margin: 0 0 0.25rem 0;
+  font-size: 0.8125rem;
   font-weight: 500;
   color: #D1D4DC;
 }
 
-.empty-hint {
+.empty-trades .empty-hint {
   margin: 0;
-  font-size: clamp(0.6875rem, 0.8vw, 0.75rem);
+  font-size: 0.6875rem;
   color: #787B86;
 }
 
-/* 响应式适配 */
+/* K线图弹窗 */
+.kline-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 2rem;
+}
+
+.kline-modal {
+  width: 90%;
+  max-width: 1200px;
+  min-width: 320px;
+  height: 80vh;
+  max-height: 800px;
+  min-height: 400px;
+  background: #1E222D;
+  border: 1px solid #2A2E39;
+  border-radius: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+@media (max-width: 768px) {
+  .kline-modal {
+    width: 95%;
+    height: 90vh;
+    max-height: none;
+  }
+  
+  .kline-modal-overlay {
+    padding: 1rem;
+  }
+}
+
+.modal-header {
+  height: 48px;
+  padding: 0 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #131722;
+  border-bottom: 1px solid #2A2E39;
+  flex-shrink: 0;
+}
+
+.modal-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #D1D4DC;
+  margin: 0;
+}
+
+.close-btn {
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #787B86;
+  background: transparent;
+  border: none;
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.close-btn:hover {
+  color: #D1D4DC;
+  background: #2A2E39;
+}
+
+.modal-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.kline-chart {
+  width: 100%;
+  height: 100%;
+}
+
+/* 响应式 */
 @media (max-width: 1199px) {
-  .side-panel {
-    width: clamp(16rem, 22vw, 18rem);
+  .position-sidebar {
+    width: 280px;
   }
 }
 
 @media (max-width: 991px) {
   .toolbar {
-    padding: 0 clamp(0.5rem, 1.5vw, 0.75rem);
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 3rem;
+    padding: 0.5rem;
   }
-  
-  .legend {
+
+  .toolbar-left,
+  .toolbar-center,
+  .toolbar-right {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .toolbar-left {
+    order: 1;
+    border-bottom: 1px solid #2A2E39;
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .toolbar-center {
+    order: 2;
+    gap: 1rem;
+  }
+
+  .toolbar-right {
+    order: 3;
+    border-top: 1px solid #2A2E39;
+    padding-top: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .position-sidebar {
     display: none;
+  }
+
+  .drawdown-pane,
+  .frequency-pane {
+    height: 120px;
   }
 }
 
 @media (max-width: 767px) {
-  .kline-page {
-    height: calc(100vh - clamp(2.25rem, 7vh, 2.5rem));
+  .metric-item {
+    display: none;
   }
-  
-  .toolbar {
-    height: auto;
-    min-height: clamp(2.5rem, 8vh, 3rem);
-    flex-wrap: wrap;
-    padding: clamp(0.375rem, 1vh, 0.5rem) clamp(0.5rem, 1.5vw, 0.75rem);
-  }
-  
-  .toolbar-left {
-    width: 100%;
-  }
-  
-  .toolbar-right {
-    width: 100%;
-    justify-content: flex-end;
-  }
-  
-  .main-area {
-    flex-direction: column;
-  }
-  
-  .trade-panel {
-    min-height: 150px;
-  }
-}
 
-@media (max-width: 575px) {
-  .symbol-badge {
-    display: none;
+  .metric-item:nth-child(-n+2) {
+    display: flex;
   }
-  
-  .run-btn span {
-    display: none;
+
+  .drawdown-pane,
+  .frequency-pane {
+    height: 100px;
   }
 }
 </style>

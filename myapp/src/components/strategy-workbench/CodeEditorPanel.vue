@@ -390,35 +390,40 @@ function insertSnippet(code: string) {
   position: relative;
 }
 
-/* 配置面板 */
+/* 配置面板 - 卡片样式 */
 .config-section {
-  border-bottom: 1px solid var(--border-color);
-  background-color: var(--bg-secondary);
+  background-color: transparent;
   flex-shrink: 0;
+}
+
+.config-section.collapsed {
+  background-color: transparent;
 }
 
 .section-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
+  padding: 12px 16px;
   cursor: pointer;
   user-select: none;
-  transition: background-color 0.2s;
+  transition: all 0.2s;
+  background-color: rgba(41, 98, 255, 0.1);
+  border-bottom: 1px solid var(--border-color);
 }
 
 .section-header:hover {
-  background-color: var(--bg-hover);
+  background-color: rgba(41, 98, 255, 0.2);
 }
 
 .section-icon {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--accent-primary);
 }
 
 .section-title {
   flex: 1;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
   text-transform: uppercase;
@@ -429,22 +434,24 @@ function insertSnippet(code: string) {
 .section-header .fa-chevron-down {
   font-size: 10px;
   color: var(--text-muted);
+  transition: transform 0.2s;
 }
 
 .section-content {
-  padding: 0 12px 12px;
+  padding: 16px;
+  background-color: var(--bg-secondary);
 }
 
 .config-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
+  gap: 12px;
 }
 
 .config-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .config-item.full-width {
@@ -456,6 +463,7 @@ function insertSnippet(code: string) {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  font-weight: 500;
 }
 
 .config-input-wrapper {
@@ -463,32 +471,42 @@ function insertSnippet(code: string) {
   align-items: center;
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: 6px;
   overflow: hidden;
+  transition: border-color 0.2s;
+}
+
+.config-input-wrapper:focus-within {
+  border-color: var(--accent-primary);
 }
 
 .config-input {
   flex: 1;
-  height: 26px;
-  padding: 0 8px;
+  height: 28px;
+  padding: 0 10px;
   background: transparent;
   border: none;
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: 12px;
   font-family: 'JetBrains Mono', monospace;
   outline: none;
 }
 
 .config-select {
-  height: 26px;
-  padding: 0 8px;
+  height: 28px;
+  padding: 0 10px;
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--text-primary);
-  font-size: 11px;
+  font-size: 12px;
   outline: none;
   cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.config-select:focus {
+  border-color: var(--accent-primary);
 }
 
 .input-prefix,

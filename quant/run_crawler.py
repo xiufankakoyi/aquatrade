@@ -5,7 +5,7 @@ import os
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 result = subprocess.run(
-    ['python', 'main_launcher.py', sys.argv[1] if len(sys.argv) > 1 else '2026-01-28'],
+    ['python', 'main.py', '--date', sys.argv[1] if len(sys.argv) > 1 else '2026-01-28'],
     capture_output=True,
     text=True,
     encoding='utf-8',

@@ -1,5 +1,5 @@
 <template>
-  <div class="p-6 space-y-6">
+  <div class="space-y-6">
     <div class="grid grid-cols-2 gap-6">
       <div class="bg-[#151925] rounded-lg p-6 border border-slate-800">
         <h2 class="text-xl font-semibold text-white mb-2">防守仓位配置</h2>

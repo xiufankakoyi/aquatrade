@@ -7,7 +7,8 @@ import type {
 } from '../types/api';
 import { useSocketIO } from '../composables/useSocketIO';
 
-const API_BASE_URL = 'http://localhost:5000/api';
+// 使用相对路径，让 Vite 代理可以正确代理请求到后端
+const API_BASE_URL = '/api';
 
 class ApiError extends Error {
   constructor(
@@ -202,14 +203,24 @@ export const apiService = {
     symbolCode: string,
     startDate: string,
     endDate: string
-  ): Promise<KlineData[]> {
+  ): Promise<{ data: KlineData[]; perf?: { query_ms: number; total_ms: number } }> {
     const { emitEvent, onEvent } = useSocketIO();
 
     return new Promise((resolve, reject) => {
       const requestId = `kline_${Date.now()}_${Math.random()}`;
       let timeout: ReturnType<typeof setTimeout>;
 
-      const unsubscribe = onEvent('kline_data', (response: KlineResponse) => {
+      const unsubscribe = onEvent('kline_data', (response: KlineResponse & { perf?: { query_ms: number; total_ms: number } }) => {
+        console.log('[API] 收到 kline_data 事件:', {
+          response_request_id: response?.request_id,
+          expected_request_id: requestId,
+          matched: response?.request_id === requestId,
+          has_data: !!response?.data,
+          data_length: response?.data?.length,
+          has_error: !!response?.error,
+          perf: response?.perf
+        });
+
         if (response.request_id === requestId) {
           clearTimeout(timeout);
           unsubscribe();
@@ -217,12 +228,28 @@ export const apiService = {
           if (response.error) {
             reject(new ApiError(response.error));
           } else {
-            resolve(response.data || []);
+            const data = response.data || [];
+            console.log('[API] 解析 K 线数据成功, 长度:', data.length);
+            resolve({
+              data,
+              perf: response.perf
+            });
           }
+        } else {
+          console.warn('[API] request_id 不匹配，忽略此响应:', {
+            expected: requestId,
+            received: response.request_id
+          });
         }
       });
 
       timeout = setTimeout(() => {
+        console.error('[API] K线数据请求超时:', {
+          request_id: requestId,
+          symbol_code: symbolCode,
+          start_date: startDate,
+          end_date: endDate
+        });
         unsubscribe();
         reject(new ApiError('K线数据请求超时', 408));
       }, 30000);

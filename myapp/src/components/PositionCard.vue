@@ -1,5 +1,5 @@
 <template>
-  <div class="bg-[#131722] rounded-lg border border-[#2a2e39] overflow-hidden flex flex-col h-full shadow-2xl">
+  <div class="bg-[#0A0A0A] rounded-lg border border-[#2a2e39] overflow-hidden flex flex-col h-full shadow-2xl">
     <!-- Header -->
     <div class="px-4 py-3 border-b border-[#2a2e39] flex items-center justify-between bg-[#1c202b]">
       <div class="flex items-center gap-2">
@@ -22,7 +22,7 @@
     <!-- Content -->
     <div class="flex-1 overflow-y-auto custom-scrollbar">
       <table v-if="positions.length > 0" class="w-full text-left border-collapse table-fixed">
-        <thead class="sticky top-0 bg-[#131722] z-10 shadow-sm">
+        <thead class="sticky top-0 bg-[#0A0A0A] z-10 shadow-sm">
           <tr class="text-[11px] text-[#868993] uppercase tracking-tight">
             <th class="px-4 py-2 font-medium w-[30%]">标的/数量</th>
             <th class="px-2 py-2 font-medium w-[25%] text-right">成本/现价</th>
@@ -158,13 +158,15 @@ interface Props {
   currentDate: string;
   latestPrices?: Record<string, number>;
   totalEquity?: number; // NEW: Passes from parent to sync with chart
+  stockNames?: Record<string, string>; // 【修复】添加股票名称映射
 }
 
 const props = withDefaults(defineProps<Props>(), {
   holdingPeriods: () => [],
   currentDate: () => '',
   latestPrices: () => ({}),
-  totalEquity: 0
+  totalEquity: 0,
+  stockNames: () => ({}) // 【修复】默认值
 });
 
 const emit = defineEmits<{
@@ -187,24 +189,62 @@ const normalizeSymbolCode = (value?: string): string => {
   return trimmed;
 };
 
+/**
+ * Normalize date string to YYYY-MM-DD format
+ */
+const normalizeDate = (dateStr?: string | null): string => {
+  if (!dateStr) return '';
+  return dateStr.replace(/\//g, '-').split(' ')[0];
+};
+
+/**
+ * Compare two dates (YYYY-MM-DD format)
+ * Returns: -1 if a < b, 0 if a === b, 1 if a > b
+ */
+const compareDates = (a: string, b: string): number => {
+  const dateA = new Date(a);
+  const dateB = new Date(b);
+  if (dateA < dateB) return -1;
+  if (dateA > dateB) return 1;
+  return 0;
+};
+
 const positions = computed<Position[]>(() => {
-  const openPositions = props.holdingPeriods.filter(
-    hp => !hp.exitDate || hp.exitDate === null
-  );
+  const currentDateStr = normalizeDate(props.currentDate);
+  
+  const openPositions = props.holdingPeriods.filter(hp => {
+    const entryDate = normalizeDate(hp.entryDate);
+    const exitDate = normalizeDate(hp.exitDate);
+    
+    if (!entryDate) return false;
+    
+    if (compareDates(entryDate, currentDateStr) > 0) {
+      return false;
+    }
+    
+    if (exitDate && compareDates(exitDate, currentDateStr) <= 0) {
+      return false;
+    }
+    
+    return true;
+  });
 
   const positionMap = new Map<string, {
     symbolCode: string;
     symbolName: string;
     totalQuantity: number;
     totalCost: number;
+    entryDate: string;
   }>();
 
   openPositions.forEach(hp => {
     const rawSymbolCode = hp.symbolCode || '';
     const symbolCode = normalizeSymbolCode(rawSymbolCode);
-    const symbolName = hp.symbolName || rawSymbolCode;
+    // 【修复】优先使用 props.stockNames 中的名称，其次是 holdingPeriods 中的名称
+    const symbolName = props.stockNames[symbolCode] || hp.symbolName || rawSymbolCode;
     const quantity = hp.quantity || 0;
     const entryPrice = hp.entryPrice || 0;
+    const entryDate = normalizeDate(hp.entryDate) || '';
 
     if (!symbolCode || quantity <= 0) return;
 
@@ -217,7 +257,8 @@ const positions = computed<Position[]>(() => {
         symbolCode,
         symbolName,
         totalQuantity: quantity,
-        totalCost: quantity * entryPrice
+        totalCost: quantity * entryPrice,
+        entryDate
       });
     }
   });
@@ -225,7 +266,6 @@ const positions = computed<Position[]>(() => {
   const list: Position[] = [];
   positionMap.forEach((pos, code) => {
     const avgCost = pos.totalQuantity > 0 ? pos.totalCost / pos.totalQuantity : 0;
-    // 使用逻辑与后端同步后的 normalizeCode 找价格
     const currentPrice = props.latestPrices[code] ?? avgCost;
     
     const positionValue = pos.totalQuantity * currentPrice;

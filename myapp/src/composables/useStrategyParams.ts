@@ -2,7 +2,8 @@ import { ref } from 'vue';
 import { CUSTOM_PARAM_CONFIG } from '@/config/strategyConfig';
 import { getDefaultRange } from '@/utils/paramUtils';
 
-const API_BASE_URL = 'http://localhost:5000/api';
+// 使用相对路径，让 Vite 代理可以正确代理请求到后端
+const API_BASE_URL = '/api';
 
 export function useStrategyParams(selectedStrategy: { value: string }) {
   const availableParams = ref<any[]>([]);

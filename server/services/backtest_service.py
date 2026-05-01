@@ -2,17 +2,21 @@
 回测服务
 负责回测执行和结果处理
 """
-from typing import Dict, List, Any, Optional, Generator
+from typing import Dict, List, Any, Optional, Generator, Tuple
 from datetime import datetime
 from threading import Event
 import pandas as pd
+import numpy as np
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
-from core.backtest.optimized_backtest_engine import OptimizedBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from core.strategies.strategy_factory import StrategyFactory
 from server.services.data_initialization_service import DataInitializationService
 from server.services.metrics_service import MetricsService
 from server.services.stock_data_service import StockDataService
 from server.utils.symbol_utils import normalize_symbol_code
+from config.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class BacktestService:
@@ -26,30 +30,208 @@ class BacktestService:
     @property
     def stock_info_map(self) -> Dict[str, str]:
         """获取股票信息映射"""
-        return self.init_service.stock_info_map
+        if self.init_service.stock_info_map:
+            return self.init_service.stock_info_map
+        
+        try:
+            from data_svc.unified_data_query import get_stock_basic
+            df = get_stock_basic()
+            if df is not None and not df.empty:
+                result = {}
+                for _, row in df.iterrows():
+                    code = str(row.get('code', '')).strip()
+                    name = str(row.get('name', '')).strip()
+                    if code and name:
+                        code_6 = code.zfill(6) if len(code) <= 6 else code[-6:]
+                        result[code_6] = name
+                return result
+        except Exception as e:
+            logger.warning(f"从 ArcticDB 获取股票信息失败: {e}")
+        
+        return {}
+    
+    def _prepare_benchmark_data(
+        self, 
+        benchmark_code: Optional[str], 
+        start_date: str, 
+        end_date: str,
+        dates: List[str],
+        initial_capital: float
+    ) -> Tuple[List[float], Dict[str, float]]:
+        """
+        准备基准数据
+        
+        Args:
+            benchmark_code: 基准代码
+            start_date: 开始日期
+            end_date: 结束日期
+            dates: 交易日列表
+            initial_capital: 初始资金
+        
+        Returns:
+            Tuple[benchmark_curve, benchmark_map]: 基准曲线和日期映射
+        """
+        if not benchmark_code:
+            benchmark_curve = [initial_capital] * len(dates)
+            return benchmark_curve, dict(zip(dates, benchmark_curve))
+        
+        benchmark_df = self.stock_data_service.get_benchmark_data_from_db(benchmark_code, start_date, end_date)
+        
+        if benchmark_df.empty:
+            benchmark_curve = [initial_capital] * len(dates)
+            return benchmark_curve, dict(zip(dates, benchmark_curve))
+        
+        try:
+            strategy_dates_df = pd.DataFrame({'date': dates})
+            merged_df = pd.merge(strategy_dates_df, benchmark_df, on='date', how='left')
+            merged_df['close'] = merged_df['close'].ffill().bfill()
+            first_valid = merged_df['close'].dropna().iloc[0]
+            
+            if first_valid > 0:
+                normalized_curve = (merged_df['close'] / first_valid) * initial_capital
+                benchmark_curve = normalized_curve.fillna(initial_capital).tolist()
+            else:
+                benchmark_curve = [initial_capital] * len(dates)
+        except Exception as e:
+            logger.warning(f"标准化基准数据失败: {e}")
+            benchmark_curve = [initial_capital] * len(dates)
+        
+        return benchmark_curve, dict(zip(dates, benchmark_curve))
+    
+    def _calculate_benchmark_metrics(
+        self, 
+        benchmark_records: List[Dict], 
+        initial_capital: float
+    ) -> Tuple[float, float]:
+        """
+        计算基准指标
+        
+        Args:
+            benchmark_records: 基准记录列表
+            initial_capital: 初始资金
+        
+        Returns:
+            Tuple[benchmark_return, benchmark_volatility]: 基准收益率和波动率
+        """
+        if not benchmark_records:
+            return 0.0, 0.0
+        
+        try:
+            benchmark_df = pd.DataFrame(benchmark_records)
+            values = benchmark_df['total_value'].values
+            
+            if len(values) == 0:
+                return 0.0, 0.0
+            
+            benchmark_return = (values[-1] / initial_capital - 1) * 100
+            
+            if len(values) > 1:
+                series = pd.Series(values)
+                returns = series.pct_change().dropna()
+                benchmark_volatility = returns.std() * np.sqrt(252) * 100 if not returns.empty else 0.0
+            else:
+                benchmark_volatility = 0.0
+            
+            return benchmark_return, benchmark_volatility
+        except Exception as e:
+            logger.warning(f"计算基准指标失败: {e}")
+            return 0.0, 0.0
+    
+    def _calculate_monthly_returns(self, equity_records: List[Dict]) -> List[Dict]:
+        """
+        计算月度收益
+        
+        Args:
+            equity_records: 权益记录列表
+        
+        Returns:
+            月度收益列表，格式：[{year: number, months: (number | null)[]}]
+        """
+        if not equity_records:
+            return []
+        
+        try:
+            df = pd.DataFrame(equity_records)
+            df['date'] = pd.to_datetime(df['date'])
+            df['year'] = df['date'].dt.year
+            df['month'] = df['date'].dt.month
+            
+            monthly_returns = []
+            for year, year_group in df.groupby('year'):
+                year_data = {
+                    'year': int(year),
+                    'months': [None] * 12
+                }
+                
+                for month, month_group in year_group.groupby('month'):
+                    first_equity = month_group['total_value'].iloc[0]
+                    last_equity = month_group['total_value'].iloc[-1]
+                    if first_equity > 0:
+                        monthly_return = (last_equity - first_equity) / first_equity * 100
+                        year_data['months'][int(month) - 1] = float(round(monthly_return, 2))
+                
+                monthly_returns.append(year_data)
+            
+            return monthly_returns
+        except Exception as e:
+            logger.warning(f"计算月度收益失败: {e}")
+            return []
+    
+    def _get_stock_name(self, symbol_code: str) -> str:
+        """获取股票名称，优先从缓存获取"""
+        symbol_name = self.stock_info_map.get(symbol_code)
+        if symbol_name and symbol_name != symbol_code:
+            return symbol_name
+        
+        try:
+            from data_svc.unified_data_query import get_unified_data_adapter
+            adapter = get_unified_data_adapter()
+            name_map = adapter.get_stock_names([symbol_code])
+            return name_map.get(symbol_code, symbol_code)
+        except Exception:
+            return symbol_code
     
     def run_backtest_and_get_data(self, strategy_name: str, start_date: str, end_date: str, params: Optional[Dict[str, Any]] = None) -> Dict:
         """
-        运行回测并获取数据（真实数据，作为备用）
-        CHANGED: 使用流式回测并收集结果
+        运行回测并获取数据（流式回测并收集结果）
         """
         if not self.init_service._initialized:
             self.init_service.ensure_initialized()
 
-        # 为每次回测创建独立的数据查询和回测引擎，避免并发共享同一个 DuckDB 连接导致异常
-        local_data_query = OptimizedStockDataQuery(self.init_service.db_path)
-        local_engine = OptimizedBacktestEngine(local_data_query)
+        local_data_query = OptimizedStockDataQuery(warmup=True)
         
         try:
             creation_kwargs: Dict[str, Any] = params or {}
             strategy = StrategyFactory.create_strategy(strategy_name, use_simple=True, **creation_kwargs)
             
-            # CHANGED: 使用流式回测并收集所有结果
+            # 从策略读取配置，创建引擎配置
+            from core.backtest.unified_engine import BacktestConfig
+            engine_config = BacktestConfig()
+            
+            # 读取策略的仓位配置
+            if hasattr(strategy, 'position_ratio'):
+                engine_config.position_ratio = strategy.position_ratio
+            if hasattr(strategy, 'max_positions'):
+                engine_config.max_positions = strategy.max_positions
+            if hasattr(strategy, 'max_stocks_per_day'):
+                engine_config.max_stocks_per_day = strategy.max_stocks_per_day
+            
+            # 读取策略的止损止盈配置
+            if hasattr(strategy, 'config'):
+                strategy_config = strategy.config
+                if hasattr(strategy_config, 'stop_loss_pct'):
+                    engine_config.stop_loss = strategy_config.stop_loss_pct
+                if hasattr(strategy_config, 'take_profit_pct'):
+                    engine_config.take_profit = strategy_config.take_profit_pct
+                if hasattr(strategy_config, 'max_hold_days'):
+                    engine_config.max_holding_days = strategy_config.max_hold_days
+            
+            local_engine = UnifiedBacktestEngine(local_data_query, engine_config)
+            
             results_list = []
             trades_log = []
             final_metrics = None
             
-            # 运行流式回测并收集数据（使用本地引擎，线程隔离）
             for update in local_engine.run_backtest_streaming(start_date, end_date, strategy):
                 update_type = update.get('type')
                 data = update.get('data', {})
@@ -59,9 +241,7 @@ class BacktestService:
                         'date': data.get('date'),
                         'total_value': data.get('strategyReturn', 0)
                     })
-                elif update_type == 'new_trade' or update_type == 'new_trade_engine':
-                    # CHANGED: 监听正确的事件类型，同时兼容两种事件名
-                    # CHANGED: 收集完整的交易记录，包括所有字段
+                elif update_type in ('new_trade', 'new_trade_engine'):
                     trade = {
                         'date': data.get('date'),
                         'symbol': data.get('symbol') or data.get('symbol_code', ''),
@@ -80,36 +260,21 @@ class BacktestService:
                 elif update_type == 'final_metrics':
                     final_metrics = data
                 elif update_type == 'error':
-                    error_msg = data.get('message', '回测发生错误')
-                    return {"error": error_msg}
+                    return {"error": data.get('message', '回测发生错误')}
             
-            # 转换为 DataFrame
             if not results_list:
-                error_msg = (
-                    f"回测没有产生任何结果。\n\n"
-                    f"请检查数据库 '{self.init_service.db_path}' 中 "
-                    f"是否存在 {start_date} 到 {end_date} 期间的股票数据。"
-                )
-                return {"error": error_msg}
+                return {
+                    "error": f"回测没有产生任何结果。请检查数据库 '{self.init_service.db_path}' 中 "
+                             f"是否存在 {start_date} 到 {end_date} 期间的股票数据。"
+                }
             
             results_df = pd.DataFrame(results_list)
             results_df['date'] = pd.to_datetime(results_df['date'])
             results_df = results_df.sort_values('date')
             
-            # 使用收集到的指标或计算指标
-            if final_metrics:
-                metrics = final_metrics
-            else:
-                metrics = self.metrics_service.calculate_metrics_from_df(results_df, trades_log)
-            
-            # 调用转换函数
-            return self.convert_backtest_results(
-                results_df, trades_log, strategy_name, start_date, end_date
-            )
+            return self.convert_backtest_results(results_df, trades_log, strategy_name, start_date, end_date)
         except Exception as e:
-            print(f"运行回测错误: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"运行回测错误: {e}", exc_info=True)
             return {"error": str(e)}
         finally:
             try:
@@ -119,16 +284,11 @@ class BacktestService:
     
     def convert_backtest_results(self, results_df: pd.DataFrame, trades_log: List[Dict], 
                                  strategy_name: str, start_date: str, end_date: str) -> Dict:
-        """
-        (此函数保持不变, 作为备用)
-        转换回测结果
-        """
-        
+        """转换回测结果为前端格式"""
         metrics = self.metrics_service.calculate_metrics_from_df(results_df, trades_log)
         equity_curve = self.metrics_service.extract_equity_curve_from_df(results_df, self.stock_data_service)
         risk_data = self.metrics_service.calculate_risk_from_df(results_df)
         
-        # (格式化交易记录)
         formatted_trades = []
         positions = {}
         cumulative_pnl = 0
@@ -156,13 +316,11 @@ class BacktestService:
             trade['cumulativePnL'] = cumulative_pnl
 
         trades_log.reverse()
-        # CHANGED: 返回所有交易记录，而不是只返回前10条
         for trade in trades_log:
              raw_symbol_code = normalize_symbol_code(trade.get('symbol') or trade.get('symbol_code', ''))
              entry_date = trade.get('entry_date')
              exit_date = trade.get('exit_date')
              
-             # CHANGED: 计算持有周期（天数）
              holding_days = None
              if entry_date and exit_date:
                  try:
@@ -179,30 +337,26 @@ class BacktestService:
                  except:
                      pass
              
-             # CHANGED: 手续费为万分之五，不足五元按五元算
              commission_base = trade.get('commission', trade['price'] * trade['quantity'] * 0.0005)
              commission = max(commission_base, 5.0) if commission_base > 0 else 5.0
              
-             # CHANGED: 提取 FIFO 匹配的结果（如果存在）
-             # 优先使用回测引擎计算好的精确值，防止前端再次计算出错
              entry_price = trade.get('entry_price')
              exit_price = trade.get('exit_price')
              profit_loss = trade.get('profit_loss')
              roi = trade.get('roi')
              holding_days_from_engine = trade.get('holding_days')
              
-             # 如果引擎提供了持有周期，优先使用
              if holding_days_from_engine is not None:
                  holding_days = holding_days_from_engine
              
              formatted_trades.append({
                 "id": f"trade-{trade['date']}-{raw_symbol_code}-{trade['action']}",
                 "date": trade['date'],
-                "symbol": self.stock_info_map.get(raw_symbol_code, raw_symbol_code), # <-- 修复了股票名称
-                "symbolCode": raw_symbol_code,  # <--- Add this
-                "symbol_code": raw_symbol_code, # <--- Add this for safety
+                "symbol": self.stock_info_map.get(raw_symbol_code, raw_symbol_code),
+                "symbolCode": raw_symbol_code,
+                "symbol_code": raw_symbol_code,
                 "action": trade['action'],
-                "price": trade['price'],  # 前复权价格（来自回测引擎）
+                "price": trade['price'],
                 "quantity": trade['quantity'],
                 "value": trade.get('price', 0) * trade.get('quantity', 0),
                 "commission": commission,
@@ -210,12 +364,12 @@ class BacktestService:
                 "cumulativePnL": trade.get('cumulativePnL', 0),
                 "entryDate": entry_date,
                 "exitDate": exit_date,
-                "entry_price": entry_price,  # CHANGED: FIFO 匹配的开仓价
-                "exit_price": exit_price,  # CHANGED: FIFO 匹配的平仓价
-                "profit_loss": profit_loss,  # CHANGED: FIFO 计算的盈亏
-                "roi": roi,  # CHANGED: FIFO 计算的收益率
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "profit_loss": profit_loss,
+                "roi": roi,
                 "positionId": trade.get('position_id'),
-                "holdingDays": holding_days  # CHANGED: 持有周期（天数）
+                "holdingDays": holding_days
             })
 
         trade_records_data = {
@@ -270,105 +424,47 @@ class BacktestService:
         backtest_config: Optional[Dict[str, Any]] = None,
     ) -> Generator[Dict[str, Any], None, None]:
         """
-        CHANGED: 流式 API 层（支持懒加载初始化）
+        流式回测 API
         
-        1. 首次调用时初始化数据库连接
-        2. 发送初始化状态事件给前端
-        3. 调用流式引擎
-        4. 包装引擎数据，添加基准和实时指标
+        1. 懒加载初始化数据库连接
+        2. 调用流式引擎
+        3. 包装引擎数据，添加基准和实时指标
         """
-        # CHANGED: 确保数据库已初始化（懒加载）
         if not self.init_service._initialized:
-            # 发送初始化开始事件
-            yield {
-                "type": "initializing",
-                "data": {
-                    "message": "正在初始化数据库连接...",
-                    "progress": 0
-                }
-            }
-            
+            yield {"type": "initializing", "data": {"message": "正在初始化数据库连接...", "progress": 0}}
             try:
                 self.init_service.ensure_initialized()
-                # 发送初始化完成事件
-                yield {
-                    "type": "initialized",
-                    "data": {
-                        "message": "数据库连接初始化完成",
-                        "progress": 100
-                    }
-                }
+                yield {"type": "initialized", "data": {"message": "数据库连接初始化完成", "progress": 100}}
             except Exception as e:
-                # 发送初始化失败事件
-                yield {
-                    "type": "error",
-                    "data": {
-                        "message": f"数据库连接初始化失败: {e}"
-                    }
-                }
+                yield {"type": "error", "data": {"message": f"数据库连接初始化失败: {e}"}}
                 return
         
-        # 应用回测配置（初始资金、佣金、滑点）
+        engine = self.init_service.backtest_engine
         if backtest_config:
-            initial_capital = backtest_config.get('initial_capital')
-            commission = backtest_config.get('commission')
-            slippage = backtest_config.get('slippage')
-            
-            engine = self.init_service.backtest_engine
-            
-            if initial_capital is not None:
-                engine.initial_capital = initial_capital
-                print(f"[BacktestService] 设置初始资金: {initial_capital}")
-            if commission is not None:
-                engine.commission_rate = commission
-                print(f"[BacktestService] 设置佣金率: {commission}")
-            if slippage is not None and hasattr(engine, 'slippage'):
-                engine.slippage = slippage
-                print(f"[BacktestService] 设置滑点: {slippage}")
-            elif slippage is not None:
-                print(f"[BacktestService] 警告: 引擎不支持滑点设置")
-        
-        initial_capital = self.init_service.backtest_engine.initial_capital
-        
-        # 1. (准备基准数据 - 这仍然是一次性加载)
-        import time
-        dates = self.init_service.data_query.get_trading_dates(start_date, end_date)
-        
-        benchmark_curve = []
-        if benchmark_code:
-            benchmark_df = self.stock_data_service.get_benchmark_data_from_db(benchmark_code, start_date, end_date)
-        else:
-            benchmark_df = pd.DataFrame() 
-
-        if benchmark_code and not benchmark_df.empty:
-            try:
-                strategy_dates_df = pd.DataFrame({'date': dates})
-                merged_df = pd.merge(strategy_dates_df, benchmark_df, on='date', how='left')
-                merged_df['close'] = merged_df['close'].ffill().bfill()
-                first_valid_benchmark = merged_df['close'].dropna().iloc[0]
-                if first_valid_benchmark > 0:
-                    normalized_curve = (merged_df['close'] / first_valid_benchmark) * initial_capital
-                    benchmark_curve = normalized_curve.fillna(initial_capital).tolist()
+            if backtest_config.get('initial_capital') is not None:
+                engine.initial_capital = backtest_config['initial_capital']
+                logger.info(f"设置初始资金: {backtest_config['initial_capital']}")
+            if backtest_config.get('commission') is not None:
+                engine.commission_rate = backtest_config['commission']
+                logger.info(f"设置佣金率: {backtest_config['commission']}")
+            if backtest_config.get('slippage') is not None:
+                if hasattr(engine, 'slippage'):
+                    engine.slippage = backtest_config['slippage']
+                    logger.info(f"设置滑点: {backtest_config['slippage']}")
                 else:
-                    benchmark_curve = [initial_capital] * len(dates)
-            except Exception as e:
-                print(f"标准化基准时出错: {e}")
-                benchmark_curve = [initial_capital] * len(dates)
+                    logger.warning("引擎不支持滑点设置")
         
-        if not benchmark_curve:
-            benchmark_curve = [initial_capital] * len(dates)
-            
-        # (将基准数据转换为 日期 -> 值 的映射，以便快速查找)
-        benchmark_map = dict(zip(dates, benchmark_curve))
-
-        # (用于计算实时回撤)
+        initial_capital = engine.initial_capital
+        dates = self.init_service.data_query.get_trading_dates(start_date, end_date)
+        benchmark_curve, benchmark_map = self._prepare_benchmark_data(
+            benchmark_code, start_date, end_date, dates, initial_capital
+        )
+        
         cummax_equity = initial_capital
-        
-        # 收集权益曲线，用于最后计算风险指标
         equity_records = []
+        benchmark_records = []
         
         try:
-            # 调用流式引擎
             creation_kwargs: Dict[str, Any] = params or {}
             strategy = StrategyFactory.create_strategy(strategy_name, use_simple=True, **creation_kwargs)
             
@@ -376,124 +472,149 @@ class BacktestService:
                 start_date, end_date, strategy, stop_event=stop_event
             )
 
-            # 3. 循环遍历引擎的【产出】
-            update_count = 0
             for update in engine_generator:
-                update_count += 1
                 if stop_event and stop_event.is_set():
-                    yield {
-                        "type": "cancelled",
-                        "data": {"message": "回测已取消"}
-                    }
+                    yield {"type": "cancelled", "data": {"message": "回测已取消"}}
                     break
                 
-                # A. 如果是交易或错误，直接转发
-                if update['type'] == 'new_trade_engine':
+                update_type = update['type']
+                
+                if update_type == 'new_trade_engine':
+                    yield from self._process_trade_event(update['data'])
                     
-                    trade_data = update['data']
-                    symbol_code = normalize_symbol_code(trade_data.get('symbol') or trade_data.get('symbol_code'))
-                    if not symbol_code:
-                        continue
-                    position_id = trade_data.get('position_id') or f"{symbol_code}_{trade_data['date']}"
-                    symbol_name = self.stock_info_map.get(symbol_code, symbol_code)
-
-                    # 简化：直接转发引擎数据，引擎已提供所有必要信息
-                    yield {
-                        "type": "new_trade",
-                        "data": {
-                            "id": f"trade-{trade_data['date']}-{symbol_code}",
-                            "date": trade_data['date'],
-                            "symbol": symbol_name,
-                            "symbolCode": symbol_code,
-                            "symbol_code": symbol_code,
-                            "action": trade_data['action'],
-                            "price": trade_data['price'],
-                            "quantity": trade_data['quantity'],
-                            "profitLoss": trade_data.get('profit_loss', 0),
-                            "cumulativePnL": trade_data.get('cumulative_pnl', 0),
-                            "positionId": position_id,
-                            "entryDate": trade_data.get('entry_date'),
-                            "exitDate": trade_data.get('exit_date'),
-                            # CHANGED: 添加 FIFO 匹配的结果
-                            "entry_price": trade_data.get('entry_price'),
-                            "exit_price": trade_data.get('exit_price'),
-                            "profit_loss": trade_data.get('profit_loss'),
-                            "roi": trade_data.get('roi'),
-                            "holding_days": trade_data.get('holding_days')
-                        }
-                    }
-                # 修改后: 添加 initializing 和 initialized
-                elif update['type'] in [
-                    'initializing',   # 新增: 通知前端开始加载数据
-                    'initialized',    # 新增: 通知前端数据加载完成
-                    'backtest_start', 
-                    'daily_update', 
-                    'order_update', 
-                    'backtest_end',
-                    'error',           # 建议: 确保错误事件也能透传
-                    'final_metrics',
-                    'stream_complete',
-                    'progress'
-                ]:
-                    if update['type'] == 'stream_complete':
-                        # 回测结束，计算最终风险指标
-                        if equity_records:
-                            try:
-                                results_df = pd.DataFrame(equity_records)
-                                risk_data = self.metrics_service.calculate_risk_from_df(results_df)
-                                yield {
-                                    "type": "risk_data",
-                                    "data": risk_data
-                                }
-                            except Exception as e:
-                                print(f"计算风险数据失败: {e}")
-                        yield update
-                        return
-                    else:
-                        yield update
-                elif update['type'] == 'daily_equity_engine':
-                    engine_data = update['data']
-                    current_date = engine_data['date']
-                    equity = engine_data['strategyReturn']
+                elif update_type == 'stream_complete':
+                    yield from self._process_stream_complete(
+                        update, equity_records, benchmark_records, initial_capital
+                    )
+                    return
                     
+                elif update_type in ('initializing', 'initialized', 'backtest_start', 'daily_update', 
+                                     'order_update', 'backtest_end', 'error', 'final_metrics', 'progress'):
+                    yield update
                     
-                    # (计算实时指标)
-                    current_total_return = (equity / initial_capital - 1) * 100
-                    if equity > cummax_equity:
-                        cummax_equity = equity
-                    current_drawdown = ((equity - cummax_equity) / cummax_equity) * 100
-                    
-                    # (添加基准)
-                    benchmark_val = benchmark_map.get(current_date, initial_capital)
-                    
-                    # 收集权益数据用于后续计算风险指标
-                    equity_records.append({
-                        'date': current_date,
-                        'total_value': equity
-                    })
-                    
-                    # (打包成前端需要的 'daily_update' 格式)
-                    yield {
-                        "type": "daily_equity", # (这是 app.py 认识的名字)
-                        "data": {
-                            "date": current_date,
-                            "strategyReturn": equity,
-                            "benchmarkReturn": benchmark_val,
-                            "totalReturn": current_total_return, 
-                            "currentDrawdown": current_drawdown  
-                        }
-                    }
+                elif update_type == 'daily_equity_engine':
+                    yield from self._process_daily_equity(
+                        update['data'], benchmark_map, initial_capital, 
+                        cummax_equity, equity_records, benchmark_records
+                    )
+                    cummax_equity = max(cummax_equity, update['data'].get('strategyReturn', initial_capital))
 
                 if stop_event and stop_event.is_set():
-                    yield {
-                        "type": "cancelled",
-                        "data": {"message": "回测已取消"}
-                    }
+                    yield {"type": "cancelled", "data": {"message": "回测已取消"}}
                     break
 
         except Exception as e:
-            yield {
-                "type": "error",
-                "data": {"message": str(e)}
+            yield {"type": "error", "data": {"message": str(e)}}
+    
+    def _process_trade_event(self, trade_data: Dict) -> Generator[Dict[str, Any], None, None]:
+        """处理交易事件"""
+        symbol_code = normalize_symbol_code(trade_data.get('symbol') or trade_data.get('symbol_code'))
+        if not symbol_code:
+            return
+        
+        position_id = trade_data.get('position_id') or f"{symbol_code}_{trade_data['date']}"
+        symbol_name = self._get_stock_name(symbol_code)
+        
+        yield {
+            "type": "new_trade",
+            "data": {
+                "id": f"trade-{trade_data['date']}-{symbol_code}",
+                "date": trade_data['date'],
+                "symbol": symbol_name,
+                "symbolCode": symbol_code,
+                "symbol_code": symbol_code,
+                "action": trade_data['action'],
+                "price": trade_data['price'],
+                "quantity": trade_data['quantity'],
+                "profitLoss": trade_data.get('profit_loss', 0),
+                "cumulativePnL": trade_data.get('cumulative_pnl', 0),
+                "positionId": position_id,
+                "entryDate": trade_data.get('entry_date'),
+                "exitDate": trade_data.get('exit_date'),
+                "entry_price": trade_data.get('entry_price'),
+                "exit_price": trade_data.get('exit_price'),
+                "profit_loss": trade_data.get('profit_loss'),
+                "roi": trade_data.get('roi'),
+                "holding_days": trade_data.get('holding_days')
             }
+        }
+    
+    def _process_daily_equity(
+        self, 
+        engine_data: Dict, 
+        benchmark_map: Dict[str, float],
+        initial_capital: float,
+        cummax_equity: float,
+        equity_records: List[Dict],
+        benchmark_records: List[Dict]
+    ) -> Generator[Dict[str, Any], None, None]:
+        """处理每日权益事件"""
+        current_date = engine_data['date']
+        equity = engine_data['strategyReturn']
+        
+        current_total_return = (equity / initial_capital - 1) * 100
+        if equity > cummax_equity:
+            cummax_equity = equity
+        current_drawdown = ((equity - cummax_equity) / cummax_equity) * 100
+        
+        benchmark_val = benchmark_map.get(current_date, initial_capital)
+        
+        equity_records.append({'date': current_date, 'total_value': equity})
+        benchmark_records.append({'date': current_date, 'total_value': benchmark_val})
+        
+        yield {
+            "type": "daily_equity",
+            "data": {
+                "date": current_date,
+                "strategyReturn": equity,
+                "benchmarkReturn": benchmark_val,
+                "totalReturn": current_total_return,
+                "currentDrawdown": current_drawdown
+            }
+        }
+    
+    def _process_stream_complete(
+        self,
+        update: Dict,
+        equity_records: List[Dict],
+        benchmark_records: List[Dict],
+        initial_capital: float
+    ) -> Generator[Dict[str, Any], None, None]:
+        """处理回测完成事件"""
+        if equity_records:
+            try:
+                results_df = pd.DataFrame(equity_records)
+                risk_data = self.metrics_service.calculate_risk_from_df(results_df)
+                yield {"type": "risk_data", "data": risk_data}
+            except Exception as e:
+                logger.warning(f"计算风险数据失败: {e}")
+        
+        benchmark_return, benchmark_volatility = self._calculate_benchmark_metrics(
+            benchmark_records, initial_capital
+        )
+        
+        strategy_return = update['data'].get('totalReturn', 0)
+        excess_return = strategy_return - benchmark_return
+        
+        engine_data = update['data']
+        engine_data['benchmarkReturn'] = round(benchmark_return, 2)
+        engine_data['excessReturn'] = round(excess_return, 2)
+        engine_data['benchmarkVolatility'] = round(benchmark_volatility, 2)
+        
+        if not engine_data.get('equityCurve') and equity_records:
+            engine_data['equityCurve'] = [
+                {"date": r['date'], "equity": round(r['total_value'], 2)}
+                for r in equity_records
+            ]
+        
+        if benchmark_records:
+            engine_data['benchmarkCurve'] = [
+                {"date": r['date'], "equity": round(r['total_value'], 2)}
+                for r in benchmark_records
+            ]
+        
+        if not engine_data.get('monthlyReturns') and equity_records:
+            engine_data['monthlyReturns'] = self._calculate_monthly_returns(equity_records)
+        
+        yield update
 

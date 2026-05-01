@@ -305,6 +305,22 @@ const strategyParams = computed<StrategyParam[]>(() => {
 // 格式化参数标签
 function formatParamLabel(key: string): string {
   const labelMap: Record<string, string> = {
+    // 均线策略参数
+    fast_period: '快线周期',
+    slow_period: '慢线周期',
+    fast_ma: '快线周期',
+    slow_ma: '慢线周期',
+    signal_period: '信号周期',
+    // MACD策略参数
+    fast_period_macd: '快线周期',
+    slow_period_macd: '慢线周期',
+    signal_period_macd: '信号周期',
+    // 布林带参数
+    bb_period: '布林带周期',
+    bb_std: '标准差倍数',
+    period: '周期',
+    std_dev: '标准差',
+    // 通用参数
     market_cap_min: '最小市值',
     market_cap_max: '最大市值',
     pe_ratio_min: '最小PE',
@@ -316,7 +332,15 @@ function formatParamLabel(key: string): string {
     stop_loss: '止损比例',
     take_profit: '止盈比例',
     position_size: '仓位比例',
-    max_positions: '最大持仓数'
+    max_positions: '最大持仓数',
+    // RSI参数
+    rsi_period: 'RSI周期',
+    rsi_overbought: '超买阈值',
+    rsi_oversold: '超卖阈值',
+    // KDJ参数
+    k_period: 'K周期',
+    d_period: 'D周期',
+    j_period: 'J周期'
   };
   return labelMap[key] || key;
 }
@@ -374,7 +398,7 @@ watch(config, (newConfig) => {
 
 <style scoped>
 .strategy-config-panel {
-  background: #131722;
+  background: #0A0A0A;
 }
 
 /* 自定义滑块样式 */

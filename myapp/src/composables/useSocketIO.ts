@@ -1,6 +1,7 @@
 import { ref, onUnmounted, getCurrentInstance } from 'vue'
 import { io, Socket } from 'socket.io-client'
 import { useTimingLogger, formatDuration } from './useTimingLogger'
+import { isMockSocketEnabled, getMockSocket } from '../api/mockSocketIO'
 
 // Socket.IO 实例 (我们使用单例模式，让整个应用共享一个连接)
 let socket: Socket | null = null
@@ -20,8 +21,14 @@ interface PendingEvent {
 }
 const pendingEvents: PendingEvent[] = []
 
+// Mock Socket 实例
+let mockSocketInstance: ReturnType<typeof getMockSocket> | null = null
+
 export function useSocketIO() {
   const { start: startTiming, end: endTiming } = useTimingLogger()
+
+  // 检查是否在 Mock 模式
+  const isMockMode = isMockSocketEnabled()
 
   // --- 核心功能 ---
 
@@ -30,22 +37,32 @@ export function useSocketIO() {
    * @param url 服务器地址 (e.g., 'http://localhost:5000')
    */
   const connect = (url: string) => {
+    // Mock 模式下使用 Mock Socket
+    if (isMockMode) {
+      console.log('[Socket.IO] Mock 模式：使用 Mock Socket')
+      if (!mockSocketInstance) {
+        mockSocketInstance = getMockSocket()
+      }
+      status.value = 'OPEN'
+      return
+    }
+
     // 如果 URL 改变，需要断开旧连接并重新连接
     if (connectionUrl.value && connectionUrl.value !== url) {
       console.log(`Socket.IO URL 改变: ${connectionUrl.value} -> ${url}，重新连接`)
       disconnect()
     }
-    
+
     if (socket && (socket.connected || status.value === 'CONNECTING')) {
       console.log('Socket.IO 已经连接或正在连接中')
       return // 已经连接或正在连接，无需重复操作
     }
-    
+
     connectionUrl.value = url
     reconnectAttempt = 0
-    
+
     startTiming('socket_connect', { url })
-    
+
     try {
       // 配置选项
       const options = {
@@ -55,14 +72,14 @@ export function useSocketIO() {
         reconnectionDelay: RECONNECT_DELAY,
         reconnectionDelayMax: 5000,
         timeout: 20000, // 增加连接超时时间
-        // 注意：Flask-SocketIO 在未使用 eventlet/gevent 等异步服务器时，不支持原生 WebSocket，
-        // 强制 websocket 可能会报 "websocket error"，这里改为仅使用轮询，保证稳定连接。
+        // ASGI 模式（Granian + python-socketio AsyncServer）
+        // Vite 代理 WebSocket 存在兼容性问题，暂时只用 polling
         transports: ['polling'],
         withCredentials: false, // 不使用凭证
         autoConnect: true, // 自动连接
         forceNew: true, // 强制使用新连接
       }
-      
+
       socket = io(url, options)
       status.value = 'CONNECTING'
 
@@ -72,7 +89,7 @@ export function useSocketIO() {
         console.log(`Socket.IO 已连接: ${socket?.id || '未知ID'} (${duration ? formatDuration(duration) : '未知时间'})`)
         status.value = 'OPEN'
         reconnectAttempt = 0
-        
+
         // 处理连接成功后的待发送事件
         if (pendingEvents.length > 0) {
           console.log(`处理 ${pendingEvents.length} 个待发送事件`)
@@ -88,7 +105,7 @@ export function useSocketIO() {
       socket.on('disconnect', (reason) => {
         console.log('Socket.IO 已断开:', reason)
         status.value = 'CLOSED'
-        
+
         // 如果是异常断开，尝试重连
         if (reason !== 'io client disconnect') {
           attemptReconnect()
@@ -98,9 +115,12 @@ export function useSocketIO() {
       })
 
       socket.on('connect_error', (err) => {
+        // Mock 模式下不显示连接错误
+        if (isMockMode) return
+
         console.error('Socket.IO 连接错误:', err.message || err)
         status.value = 'ERROR'
-        
+
         // 添加更详细的错误日志
         if (err.description) {
           console.error('错误描述:', err.description)
@@ -108,18 +128,22 @@ export function useSocketIO() {
         if (err.context) {
           console.error('错误上下文:', err.context)
         }
-        
+
         // 增加指数退避的重连策略
         attemptReconnect()
       })
-      
+
       // 添加对错误事件的监听
       socket.on('error', (err) => {
+        // Mock 模式下不显示错误
+        if (isMockMode) return
         console.error('Socket.IO 发生错误:', err)
       })
-      
+
       // 添加对重连失败的监听
       socket.on('reconnect_failed', () => {
+        // Mock 模式下不显示重连失败
+        if (isMockMode) return
         console.error('Socket.IO 重连失败，停止重试')
         status.value = 'ERROR'
       })
@@ -133,18 +157,21 @@ export function useSocketIO() {
    * 尝试重新连接
    */
   const attemptReconnect = () => {
+    // Mock 模式下不重连
+    if (isMockMode) return
+
     if (reconnectAttempt >= RECONNECT_ATTEMPTS) {
       console.error(`已达到最大重连次数 (${RECONNECT_ATTEMPTS})，停止重连`)
       return
     }
-    
+
     reconnectAttempt++
     console.log(`尝试第 ${reconnectAttempt} 次重连...`)
-    
+
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
     }
-    
+
     reconnectTimer = setTimeout(() => {
       if (connectionUrl.value) {
         console.log(`正在重连到 ${connectionUrl.value}...`)
@@ -179,7 +206,14 @@ export function useSocketIO() {
    */
   const emitEvent = (eventName: string, data: any) => {
     startTiming(`emit_${eventName}`, { eventName, data })
-    
+
+    // Mock 模式下使用 Mock Socket
+    if (isMockMode && mockSocketInstance) {
+      mockSocketInstance.emit(eventName, data)
+      endTiming(`emit_${eventName}`)
+      return
+    }
+
     if (socket && socket.connected) {
       socket.emit(eventName, data)
       const duration = endTiming(`emit_${eventName}`)
@@ -188,7 +222,7 @@ export function useSocketIO() {
       // 如果没有连接或连接未建立，将事件加入队列
       console.warn(`Socket 未连接，将事件 '${eventName}' 加入待发送队列`)
       pendingEvents.push({ eventName, data })
-      
+
       // 如果尚未连接，尝试连接
       if (connectionUrl.value && (!socket || !socket.connected)) {
         connect(connectionUrl.value)
@@ -202,14 +236,46 @@ export function useSocketIO() {
    * @param callback 收到事件时的回调函数
    */
   const onEvent = (eventName: string, callback: (data: any) => void) => {
+    // Mock 模式下使用 Mock Socket
+    if (isMockMode) {
+      if (!mockSocketInstance) {
+        mockSocketInstance = getMockSocket()
+      }
+
+      // 包装回调函数以添加计时
+      const timedCallback = (data: any) => {
+        startTiming(`on_${eventName}`, { eventName })
+        try {
+          callback(data)
+          const duration = endTiming(`on_${eventName}`)
+          if (duration && duration > 100) {
+            console.log(`[⏱️ Mock事件处理] ${eventName}: ${formatDuration(duration)}`)
+          }
+        } catch (error) {
+          endTiming(`on_${eventName}`)
+          console.error(`[❌ Mock事件处理错误] ${eventName}:`, error)
+          throw error
+        }
+      }
+
+      // 注册监听
+      mockSocketInstance.on(eventName, timedCallback)
+
+      // 返回一个 "取消监听" 的函数
+      return () => {
+        mockSocketInstance?.off(eventName, timedCallback)
+      }
+    }
+
     if (!socket) {
       console.warn(`Socket 未初始化，无法监听事件 '${eventName}'`)
       // 返回一个空函数，防止在 onUnmounted 中调用时出错
       return () => {}
     }
-    
+
     // 包装回调函数以添加计时
     const timedCallback = (data: any) => {
+      console.log(`[SocketIO] 收到事件 '${eventName}', 数据:`, data);
       startTiming(`on_${eventName}`, { eventName })
       try {
         callback(data)
@@ -223,17 +289,22 @@ export function useSocketIO() {
         throw error
       }
     }
-    
+
     // 注册监听
     socket.on(eventName, timedCallback)
-    
+
     // 返回一个 "取消监听" 的函数
     return () => {
       socket?.off(eventName, timedCallback)
     }
   }
 
-  const getId = () => socket?.id ?? null
+  const getId = () => {
+    if (isMockMode && mockSocketInstance) {
+      return mockSocketInstance.id
+    }
+    return socket?.id ?? null
+  }
 
   // 清理资源
   // CHANGED: 只在组件上下文中注册 onUnmounted
@@ -256,6 +327,11 @@ export function useSocketIO() {
     emitEvent,  // 发送事件方法
     onEvent,    // 监听事件方法
     getId,      // 获取当前 socket id
-    isConnected: () => socket?.connected || false // 连接状态检查函数
+    isConnected: () => {
+      if (isMockMode && mockSocketInstance) {
+        return mockSocketInstance.connected
+      }
+      return socket?.connected || false
+    } // 连接状态检查函数
   }
 }

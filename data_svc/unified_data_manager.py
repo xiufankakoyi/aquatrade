@@ -1,369 +1,563 @@
 """
-Unified Data Manager
-====================
-Transparent data access layer routing queries to QuestDB (Hot) or Parquet (Cold).
+统一数据管理器 (LanceDB 版)
+==========================
 
-Usage:
-    from data_svc.unified_data_manager import UnifiedDataManager
-    
-    udm = UnifiedDataManager()
-    
-    # Auto-routes to QuestDB, Parquet, or Both based on date range
-    df = udm.get_price(["000001.SZ"], "2019-01-01", "2023-01-01")
+替代 ArcticDB 版本，使用 LanceDB 作为底层存储。
+
+架构:
+┌─────────────────────────────────────────────────────────────────┐
+│                    生产级数据架构（LanceDB）                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  【单一存储：LanceDB】                                            │
+│  Tushare → Polars → Arrow Table → LanceDB                       │
+│                                  ↓                              │
+│                        支持增量写入、向量检索                      │
+│                                                                 │
+│  【读取加速：内存缓存】（核心优化点）                              │
+│  服务启动: LanceDB → Arrow → Polars → 内存字典                  │
+│  回测执行: 内存字典 → 零拷贝查询（无磁盘IO）                       │
+│                                                                 │
+│  【灾难恢复】（按需导出，非实时双写）                              │
+│  定期: LanceDB → 导出Parquet → 异地备份                         │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+关键特性:
+- LanceDB 原生支持 Arrow，零拷贝读写
+- 支持增量写入、向量检索、多模态存储
+- 使用 scanner(columns=...) 指定列读取，性能优于 Parquet
 """
-
 import os
+import time
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict, Any, Union, Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+import pandas as pd
 import polars as pl
-from typing import List, Optional, Union
-from datetime import datetime
-from data_svc.database.questdb_manager import get_questdb_manager, QuestDBManager
-from config.config import Config
+import pyarrow as pa
+from loguru import logger
+
+from data_svc.storage.lancedb_manager import get_lancedb_manager
+from data_svc.storage.lancedb_reader import get_lancedb_reader
+
+
+@dataclass
+class WriteResult:
+    """写入结果"""
+    success: bool
+    symbol: str
+    rows: int = 0
+    version: Optional[int] = None
+    error: Optional[str] = None
+    elapsed_ms: float = 0.0
+
 
 class UnifiedDataManager:
-    SPLIT_DATE = "2020-01-01"
+    """
+    统一数据管理器 (LanceDB 版)
     
-    def __init__(self):
-        self.questdb: QuestDBManager = get_questdb_manager()
-        self.parquet_dir = Config.PARQUET_DIR if hasattr(Config, 'PARQUET_DIR') else r"d:\aquatrade\data\parquet_data"
+    单一存储: LanceDB (Arrow 原生支持)
+    读取加速: 内存缓存
+    
+    使用示例:
+        >>> manager = UnifiedDataManager()
+        >>> 
+        >>> # 写入数据
+        >>> df_pl = pl.DataFrame({...})
+        >>> result = manager.write('daily', 'daily_2024-01-15', df_pl)
+        >>> 
+        >>> # 预加载到内存
+        >>> manager.preload_to_memory(years=2)
+        >>> 
+        >>> # 读取数据 (优先内存缓存)
+        >>> df = manager.read('daily', start_date='2024-01-01', end_date='2024-03-31')
+    """
+    
+    LIBRARIES = {
+        'daily': '股票日线数据',
+        'stock_info': '股票基本信息',
+        'benchmark_daily': '指数日线数据',
+        'limit_status': '涨跌停状态',
+        'factor': '因子数据',
+    }
+    
+    HOT_DATA_YEARS = 2
+    
+    def __init__(
+        self,
+        db_path: Optional[str] = None,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None
+    ):
+        """
+        初始化
         
-        # Cold Data Paths
-        self.cold_files = {
-            "base_daily": os.path.join(self.parquet_dir, "base_daily_archive.parquet"),
-            "factors_momentum": os.path.join(self.parquet_dir, "factors_momentum_archive.parquet"),
-            "factors_valuation": os.path.join(self.parquet_dir, "factors_valuation_archive.parquet")
+        Args:
+            db_path: LanceDB 数据库路径 (默认: data/lancedb)
+            progress_callback: 进度回调函数
+        """
+        self._manager = get_lancedb_manager(db_path)
+        self._reader = get_lancedb_reader(db_path)
+        self.progress_callback = progress_callback
+        
+        self._memory_cache: Dict[str, Dict[str, pl.DataFrame]] = {
+            lib: {} for lib in self.LIBRARIES
         }
+        self._cache_loaded = False
+        self._preloaded_date_range: Optional[tuple] = None
         
-    def get_price(self, 
-                  codes: Optional[List[str]] = None, 
-                  start_date: Optional[str] = None, 
-                  end_date: Optional[str] = None,
-                  frequency: str = '1d', 
-                  fields: Optional[List[str]] = None) -> pl.DataFrame:
+        logger.info(f"[UnifiedDataManager] 已连接 LanceDB: {self._manager.db_path}")
+    
+    def _emit_progress(self, stage: str, progress: float, message: str):
+        """发送进度更新"""
+        if self.progress_callback:
+            self.progress_callback({
+                "stage": stage,
+                "progress": progress,
+                "message": message,
+                "timestamp": time.time()
+            })
+    
+    def preprocess_dataframe(self, df: pl.DataFrame) -> pl.DataFrame:
         """
-        Get Price Data (OHLCV + Adj)
+        预处理 DataFrame
         
-        Args:
-            codes: List of stock codes (None for all)
-            start_date: Start date YYYY-MM-DD
-            end_date: End date YYYY-MM-DD
-            frequency: '1d' only for now
-            fields: List of fields to select (e.g. ['open', 'close'])
-            
-        Returns:
-            polars.DataFrame sorted by (ts, code)
+        1. 字符串清理
+        2. 类型优化
         """
-        return self._route_query("base_daily", codes, start_date, end_date, fields)
-
-    def get_factors(self, 
-                    codes: Optional[List[str]] = None, 
-                    factors: Optional[List[str]] = None, 
-                    start_date: Optional[str] = None, 
-                    end_date: Optional[str] = None) -> pl.DataFrame:
-        """
-        Get Factor Data (Momentum & Valuation)
-        
-        Args:
-            codes: List of stock codes
-            factors: List of factor names (e.g. ['rsi_14', 'pe_ttm'])
-            start_date: Start date
-            end_date: End date
-            
-        Returns:
-            polars.DataFrame with 'ts', 'code' and requested factors
-        """
-        # Determine which tables contain the requested factors
-        # This is a simplified implementation assuming caller knows what they want
-        # For a full implementation, we'd need a registry mapping factor -> table
-        
-        # For now, let's implement a simple direct table query if requested
-        # Or we can scan both tables if factors are mixed.
-        # To keep iteration 1 simple, let's allow querying specific tables via _route_query
-        # or implement logic to join tables.
-        
-        # Strategy:
-        # 1. Identify needed tables based on factor names
-        # 2. Query each table for the date range
-        # 3. Join results on (ts, code)
-        
-        # Simplified for Phase 1: Support querying specific tables via separate methods or generic query
-        # Let's provide table-specific wrappers first for clarity
-        pass
-
-    def get_momentum_factors(self, 
-                           codes: Optional[List[str]] = None, 
-                           start_date: Optional[str] = None, 
-                           end_date: Optional[str] = None) -> pl.DataFrame:
-        return self._route_query("factors_momentum", codes, start_date, end_date)
-
-    def get_valuation_factors(self, 
-                            codes: Optional[List[str]] = None, 
-                            start_date: Optional[str] = None, 
-                            end_date: Optional[str] = None) -> pl.DataFrame:
-        return self._route_query("factors_valuation", codes, start_date, end_date)
-
-    # --- Internal Routing Logic ---
-
-    def _route_query(self, 
-                     table_name: str, 
-                     codes: Optional[List[str]], 
-                     start_date: str, 
-                     end_date: str,
-                     columns: Optional[List[str]] = None) -> pl.DataFrame:
-        """
-        Core routing logic: Hot vs Cold vs Hybrid
-        """
-        # 1. Normalize dates
-        start = start_date or "1990-01-01"
-        end = end_date or datetime.now().strftime("%Y-%m-%d")
-        
-        # 2. Determine Route
-        if start >= self.SPLIT_DATE:
-            # Case A: Hot Only
-            return self._query_hot(table_name, codes, start, end, columns)
-        
-        elif end < self.SPLIT_DATE:
-            # Case B: Cold Only
-            return self._query_cold(table_name, codes, start, end, columns)
-            
-        else:
-            # Case C: Hybrid
-            # Split Range: [start, 2019-12-31] + [2020-01-01, end]
-            df_cold = self._query_cold(table_name, codes, start, "2019-12-31", columns)
-            df_hot = self._query_hot(table_name, codes, self.SPLIT_DATE, end, columns)
-            
-            # Combine
-            if df_cold.is_empty(): return df_hot
-            if df_hot.is_empty(): return df_cold
-            
-            # Align columns for concatenation
-            # 1. Intersection of columns
-            common_cols = [c for c in df_cold.columns if c in df_hot.columns]
-            
-            # 2. Reorder both to match
-            if not common_cols:
-                return pl.DataFrame() # Or raise error?
-                
-            df_cold = df_cold.select(common_cols)
-            df_hot = df_hot.select(common_cols)
-            
-            return pl.concat([df_cold, df_hot]).sort(["ts", "code"])
-
-    def _normalize_code_for_cold(self, code: str) -> str:
-        """
-        Normalize code for cold storage (e.g. '000001.SZ' -> '1')
-        Removes suffix and leading zeros.
-        """
-        if not code: return code
-        # Remove suffix
-        c = code.split('.')[0]
-        # Remove leading zeros by converting to int then str
-        try:
-            return str(int(c))
-        except:
-            return c
-
-    @property
-    def _benchmark_file(self):
-        return os.path.join(self.parquet_dir, "benchmark_daily.parquet")
-
-    def get_trading_dates(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[str]:
-        """Get list of trading dates (poly-filled from Hot and Cold sources)"""
-        # Cache key could be implemented, but Polars is fast enough for now if we use LazyFrame
-        # Ideally we cache the FULL list once.
-        
-        full_dates = self._get_cached_all_dates()
-        
-        # Filter
-        start = start_date or "1990-01-01"
-        end = end_date or datetime.now().strftime("%Y-%m-%d")
-        
-        return [d for d in full_dates if start <= d <= end]
-
-    def get_prev_trade_date(self, date: str) -> Optional[str]:
-        dates = self.get_trading_dates(end_date=date)
-        # Filter out the date itself if present
-        dates = [d for d in dates if d < date]
-        if dates: return dates[-1]
-        return None
-
-    def get_next_trade_date(self, date: str) -> Optional[str]:
-        dates = self.get_trading_dates(start_date=date)
-        # Filter out the date itself if present
-        dates = [d for d in dates if d > date]
-        if dates: return dates[0]
-        return None
-
-    def _get_cached_all_dates(self) -> List[str]:
-        """Fetch and cache all trading dates from cold (benchmark) and hot (base_daily)"""
-        if hasattr(self, "_cached_dates") and self._cached_dates:
-            return self._cached_dates
-            
-        dates = set()
-        
-        # 1. Cold Dates from benchmark_daily.parquet
-        try:
-            if os.path.exists(self._benchmark_file):
-                df = pl.read_parquet(self._benchmark_file, columns=["date"])
-                cold_dates = df["date"].to_list()
-                dates.update([d.split(' ')[0] for d in str(cold_dates) if isinstance(d, str)] if cold_dates else [])
-                # Handle varying formats if necessary, assuming YYYY-MM-DD string or date object
-                # Polars likely returns str or date.
-                dates.update([str(d) for d in cold_dates])
-        except Exception as e:
-            print(f"Error reading cold dates: {e}")
-            
-        # 2. Hot Dates from QuestDB
-        # We query DISTINCT timestamp from base_daily.
-        try:
-            sql = "SELECT DISTINCT timestamp FROM base_daily"
-            df_hot = self.questdb.query(sql)
-            if not df_hot.is_empty():
-                hot_dates = df_hot["timestamp"].to_list()
-                
-                for t in hot_dates:
-                    if isinstance(t, str):
-                        dates.add(t[:10]) # First 10 chars: YYYY-MM-DD
-                        
-        except Exception as e:
-            print(f"Error reading hot dates: {e}")
-            
-        sorted_dates = sorted(list(dates))
-        self._cached_dates = sorted_dates
-        return sorted_dates
-
-    def _normalize_code_for_hot(self, code: str) -> str:
-        """
-        Normalize code for hot storage (e.g. '000001.SZ' -> '000001')
-        Removes suffix but keeps 6-digit (or original length) format.
-        """
-        if not code: return code
-        return code.split('.')[0]
-
-    def _query_hot(self,
-                   table_name: str, 
-                   codes: Optional[List[str]], 
-                   start: str, 
-                   end: str,
-                   columns: Optional[List[str]] = None) -> pl.DataFrame:
-        """Query QuestDB"""
-        # QuestDB Schema: timestamp (partition), stock_code (symbol) - Verified via probe
-        ts_col = "timestamp"
-        code_col = "stock_code"
-        
-        # Build SQL
-        where_clauses = [f"{ts_col} BETWEEN '{start}' AND '{end}'"]
-        if codes:
-            # Normalize codes for QuestDB: 000001.SZ -> 000001
-            norm_codes = [self._normalize_code_for_hot(c) for c in codes]
-            code_list = ",".join([f"'{c}'" for c in norm_codes])
-            where_clauses.append(f"{code_col} IN ({code_list})")
-            
-        where_sql = " AND ".join(where_clauses)
-        
-        select_cols = "*"
-        if columns:
-            # Map unified names back to DB names if needed
-            # For now, select * is safer to ensure we get everything, then filter/rename
-            # But for performance with many columns, we should select specific ones.
-            # Assuming columns passed are unified names (ts, code, open, close...)
-            
-            db_cols = []
-            for col in columns:
-                if col == 'ts': db_cols.append(ts_col)
-                elif col == 'code': db_cols.append(code_col)
-                else: db_cols.append(col)
-            
-            # Ensure mandatory cols
-            if ts_col not in db_cols: db_cols.append(ts_col)
-            if code_col not in db_cols: db_cols.append(code_col)
-            
-            select_cols = ",".join(db_cols)
-            
-        sql = f"SELECT {select_cols} FROM {table_name} WHERE {where_sql} ORDER BY {ts_col}, {code_col}"
-        
-        try:
-            df = self.questdb.query(sql)
-            if not df.is_empty():
-                # Rename to unified schema
-                rename_map = {}
-                if ts_col in df.columns: rename_map[ts_col] = 'ts'
-                if code_col in df.columns: rename_map[code_col] = 'code'
-                df = df.rename(rename_map)
+        if df.is_empty():
             return df
-        except Exception as e:
-            # print(f"Error querying QuestDB ({table_name}): {e}") # Reduce noise
-            return pl.DataFrame()
-
-    def _query_cold(self,
-                    table_name: str, 
-                    codes: Optional[List[str]], 
-                    start: str, 
-                    end: str,
-                    columns: Optional[List[str]] = None) -> pl.DataFrame:
-        """Query Parquet Archive"""
-        file_path = self.cold_files.get(table_name)
-        if not file_path or not os.path.exists(file_path):
-            print(f"Cold data file not found: {file_path}")
-            return pl.DataFrame()
+        
+        for col in df.columns:
+            dtype = df[col].dtype
             
+            if dtype == pl.Utf8:
+                df = df.with_columns(
+                    pl.col(col).str.strip_chars().alias(col)
+                )
+            elif dtype == pl.Int64:
+                if df[col].null_count() == 0:
+                    min_val, max_val = df[col].min(), df[col].max()
+                    if min_val >= -2147483648 and max_val <= 2147483647:
+                        df = df.with_columns(pl.col(col).cast(pl.Int32))
+        
+        return df
+    
+    def write(
+        self,
+        library: str,
+        symbol: str,
+        df: pl.DataFrame,
+        metadata: Optional[Dict] = None
+    ) -> WriteResult:
+        """
+        写入数据 (零拷贝)
+        
+        Args:
+            library: 库名 (daily, stock_info, etc.)
+            symbol: 数据符号
+            df: Polars DataFrame
+            metadata: 元数据
+            
+        Returns:
+            WriteResult
+        """
+        t0 = time.perf_counter()
+        
         try:
-            # Lazy Scan
-            lz = pl.scan_parquet(file_path)
-            schema = lz.collect_schema()
+            df = self.preprocess_dataframe(df)
+            rows = len(df)
             
-            # Detect Column Names
-            ts_col = 'trade_date' if 'trade_date' in schema.names() else 'ts'
-            code_col = 'stock_code' if 'stock_code' in schema.names() else 'code'
+            if library not in self.LIBRARIES:
+                raise ValueError(f"Unknown library: {library}")
             
-            # Filter Time
-            lz = lz.filter(
-                (pl.col(ts_col) >= start) & 
-                (pl.col(ts_col) <= end)
+            rows_written = self._manager.write_daily_data(df, mode="upsert")
+            
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            
+            logger.debug(f"[LanceDB] 写入 {library}/{symbol}: {rows} 行, 耗时 {elapsed_ms:.2f}ms")
+            
+            return WriteResult(
+                success=True,
+                symbol=symbol,
+                rows=rows_written,
+                elapsed_ms=elapsed_ms
             )
             
-            # Filter Codes (Normalized)
-            if codes:
-                norm_codes = [self._normalize_code_for_cold(c) for c in codes]
-                lz = lz.filter(pl.col(code_col).is_in(norm_codes))
+        except Exception as e:
+            logger.error(f"[UnifiedDataManager] 写入失败: {e}")
+            return WriteResult(
+                success=False,
+                symbol=symbol,
+                error=str(e),
+                elapsed_ms=(time.perf_counter() - t0) * 1000
+            )
+    
+    def append(
+        self,
+        library: str,
+        symbol: str,
+        df: pl.DataFrame
+    ) -> WriteResult:
+        """
+        追加数据
+        
+        Args:
+            library: 库名
+            symbol: 数据符号
+            df: Polars DataFrame
             
-            # Select Columns
-            if columns:
-                mapped_cols = []
-                for c in columns:
-                    if c == 'ts': mapped_cols.append(ts_col)
-                    elif c == 'code': mapped_cols.append(code_col)
-                    elif c in schema.names(): mapped_cols.append(c)
-                
-                # Ensure keys exist
-                if ts_col not in mapped_cols: mapped_cols.append(ts_col)
-                if code_col not in mapped_cols: mapped_cols.append(code_col)
-                
-                lz = lz.select(mapped_cols)
+        Returns:
+            WriteResult
+        """
+        t0 = time.perf_counter()
+        
+        try:
+            df = self.preprocess_dataframe(df)
+            rows = len(df)
             
-            # Rename to standard
-            rename_map = {}
-            if ts_col != 'ts': rename_map[ts_col] = 'ts'
-            if code_col != 'code': rename_map[code_col] = 'code'
+            rows_written = self._manager.write_daily_data(df, mode="append")
             
-            if rename_map:
-                lz = lz.rename(rename_map)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
             
-            # Normalize codes back to standard format in result?
-            # Ideally yes, but that's expensive. The user asked for specific codes, they know.
-            # But "1" -> "000001.SZ" mapping is hard without a map.
-            # For now, return what is in the file.
-                
-            return lz.collect().sort(["ts", "code"])
+            logger.debug(f"[LanceDB] 追加 {library}/{symbol}: {rows} 行")
+            
+            return WriteResult(
+                success=True,
+                symbol=symbol,
+                rows=rows_written,
+                elapsed_ms=elapsed_ms
+            )
             
         except Exception as e:
-            print(f"Error querying Cold Data ({table_name}): {e}")
+            logger.error(f"[UnifiedDataManager] 追加失败: {e}")
+            return WriteResult(
+                success=False,
+                symbol=symbol,
+                error=str(e),
+                elapsed_ms=(time.perf_counter() - t0) * 1000
+            )
+    
+    def read(
+        self,
+        library: str,
+        symbol: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        use_cache: bool = True,
+        fields: Optional[List[str]] = None
+    ) -> pl.DataFrame:
+        """
+        读取数据 (零拷贝)
+        
+        Args:
+            library: 库名
+            symbol: 数据符号 (可选，LanceDB 中忽略此参数)
+            start_date: 开始日期
+            end_date: 结束日期
+            use_cache: 是否使用内存缓存
+            fields: 要读取的列列表 (可选，默认使用最小列集合)
+            
+        Returns:
+            Polars DataFrame
+        """
+        if library not in self.LIBRARIES:
+            raise ValueError(f"Unknown library: {library}")
+        
+        if use_cache and self._cache_loaded:
+            cache_key = f"{library}_{start_date}_{end_date}"
+            if cache_key in self._memory_cache.get(library, {}):
+                logger.debug(f"[UnifiedDataManager] 内存缓存命中: {cache_key}")
+                return self._memory_cache[library][cache_key].clone()
+        
+        try:
+            df = self._reader.read_all(start_date, end_date, fields=fields)
+            
+            if use_cache:
+                cache_key = f"{library}_{start_date}_{end_date}"
+                if library not in self._memory_cache:
+                    self._memory_cache[library] = {}
+                self._memory_cache[library][cache_key] = df.clone()
+            
+            return df
+            
+        except Exception as e:
+            logger.warning(f"[UnifiedDataManager] 读取失败: {e}")
             return pl.DataFrame()
+    
+    def preload_to_memory(
+        self,
+        years: int = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        fields: Optional[List[str]] = None
+    ) -> Dict[str, pl.DataFrame]:
+        """
+        预加载数据到内存
+        
+        服务启动时调用，将热数据加载到内存缓存
+        
+        Args:
+            years: 预加载年数 (默认: HOT_DATA_YEARS)
+            start_date: 开始日期 (可选)
+            end_date: 结束日期 (可选)
+            fields: 要加载的列列表 (可选，默认使用最小列集合)
+            
+        Returns:
+            Dict[str, pl.DataFrame] 预加载的数据
+        """
+        years = years or self.HOT_DATA_YEARS
+        
+        if start_date is None:
+            start_date = (datetime.now() - timedelta(days=years*365)).strftime('%Y-%m-%d')
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+        
+        logger.info(f"[UnifiedDataManager] 预加载数据到内存: {start_date} ~ {end_date}, fields={fields}")
+        t0 = time.perf_counter()
+        
+        result = {}
+        
+        df = self._reader.read_all(start_date, end_date, fields=fields)
+        
+        if not df.is_empty():
+            result['daily'] = df
+            
+            cache_key = f"daily_{start_date}_{end_date}"
+            self._memory_cache['daily'][cache_key] = df.clone()
+            
+            logger.debug(f"[UnifiedDataManager] 预加载 daily: {len(df)} 行")
+        
+        self._preloaded_date_range = (start_date, end_date)
+        self._cache_loaded = True
+        
+        elapsed = time.perf_counter() - t0
+        total_rows = sum(len(df) for df in result.values())
+        logger.info(f"[UnifiedDataManager] 预加载完成: {total_rows} 行, 耗时 {elapsed:.2f}s")
+        
+        return result
+    
+    def get_preloaded_data(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> Dict[str, pl.DataFrame]:
+        """
+        获取预加载的数据（从内存缓存）
+        
+        Args:
+            start_date: 开始日期 (可选)
+            end_date: 结束日期 (可选)
+            
+        Returns:
+            Dict[str, pl.DataFrame] 各库的预加载数据
+        """
+        result = {}
+        
+        for library in ['daily']:
+            if library in self._memory_cache:
+                for cache_key, df in self._memory_cache[library].items():
+                    if not df.is_empty():
+                        if start_date and end_date:
+                            date_col = 'trade_date' if 'trade_date' in df.columns else 'date'
+                            if date_col in df.columns:
+                                date_dtype = df.schema[date_col]
+                                if date_dtype in [pl.Date, pl.Datetime]:
+                                    df = df.filter(
+                                        (pl.col(date_col) >= pl.lit(start_date).str.to_date()) &
+                                        (pl.col(date_col) <= pl.lit(end_date).str.to_date())
+                                    )
+                                else:
+                                    df = df.filter(
+                                        (pl.col(date_col) >= start_date) &
+                                        (pl.col(date_col) <= end_date)
+                                    )
+                        
+                        if library not in result:
+                            result[library] = df
+        
+        return result
+    
+    def export_to_parquet(
+        self,
+        library: str,
+        output_path: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> bool:
+        """
+        导出为 Parquet (用于异地备份)
+        
+        Args:
+            library: 库名
+            output_path: 输出路径
+            start_date: 开始日期 (可选)
+            end_date: 结束日期 (可选)
+            
+        Returns:
+            bool 是否成功
+        """
+        try:
+            df = self.read(library, start_date=start_date, end_date=end_date, use_cache=False)
+            if df.is_empty():
+                logger.warning(f"[UnifiedDataManager] 无数据可导出: {library}")
+                return False
+            
+            df.write_parquet(output_path)
+            logger.info(f"[UnifiedDataManager] 导出 {library} 到 {output_path}: {len(df)} 行")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[UnifiedDataManager] 导出失败: {e}")
+            return False
+    
+    def clear_memory_cache(self):
+        """清除内存缓存"""
+        self._memory_cache = {lib: {} for lib in self.LIBRARIES}
+        self._cache_loaded = False
+        self._preloaded_date_range = None
+        self._reader.clear_cache()
+        logger.info("[UnifiedDataManager] 内存缓存已清除")
+    
+    def get_trading_dates(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> List[str]:
+        """
+        获取交易日列表
 
-# Singleton
-_instance: Optional[UnifiedDataManager] = None
+        Args:
+            start_date: 开始日期 (可选，格式: YYYY-MM-DD)
+            end_date: 结束日期 (可选，格式: YYYY-MM-DD)
 
-def get_unified_data_manager() -> UnifiedDataManager:
-    global _instance
-    if _instance is None:
-        _instance = UnifiedDataManager()
-    return _instance
+        Returns:
+            日期字符串列表 (格式: YYYY-MM-DD)，按升序排列
+        """
+        try:
+            dates = self._reader.list_dates()
+            
+            if start_date or end_date:
+                dates = [
+                    d for d in dates
+                    if (not start_date or d >= start_date) and
+                       (not end_date or d <= end_date)
+                ]
+            
+            return dates
+            
+        except Exception as e:
+            logger.warning(f"[UnifiedDataManager] 获取交易日失败: {e}")
+            return []
+    
+    def get_stock_pool(
+        self,
+        date_str: str,
+        filters: Optional[Dict[str, Any]] = None
+    ) -> pl.DataFrame:
+        """
+        获取某日的股票池 (Polars 格式)
+
+        Args:
+            date_str: 日期 (YYYY-MM-DD)
+            filters: 可选的过滤条件
+
+        Returns:
+            Polars DataFrame
+        """
+        try:
+            df = self._reader.read_all(date_str, date_str)
+            
+            if filters and not df.is_empty():
+                df = self._apply_filters(df, filters)
+            
+            return df
+
+        except Exception as e:
+            logger.warning(f"[UnifiedDataManager] 获取股票池失败 {date_str}: {e}")
+            return pl.DataFrame()
+    
+    def get_stock_pool_at_time(
+        self,
+        timestamp: Union[str, datetime, pd.Timestamp]
+    ) -> pd.DataFrame:
+        """
+        获取某时间点的股票池 (Pandas 格式，兼容旧接口)
+
+        Args:
+            timestamp: 时间戳
+
+        Returns:
+            Pandas DataFrame
+        """
+        if isinstance(timestamp, (datetime, pd.Timestamp)):
+            date_str = timestamp.strftime('%Y-%m-%d')
+        else:
+            date_str = str(timestamp)[:10]
+
+        df = self.get_stock_pool(date_str)
+        return df.to_pandas() if not df.is_empty() else pd.DataFrame()
+    
+    def _apply_filters(
+        self,
+        df: pl.DataFrame,
+        filters: Dict[str, Any]
+    ) -> pl.DataFrame:
+        """应用过滤条件"""
+        for col, condition in filters.items():
+            if col in df.columns:
+                if isinstance(condition, tuple):
+                    min_val, max_val = condition
+                    df = df.filter(
+                        (pl.col(col) >= min_val) & (pl.col(col) <= max_val)
+                    )
+                elif isinstance(condition, list):
+                    df = df.filter(pl.col(col).is_in(condition))
+                else:
+                    df = df.filter(pl.col(col) == condition)
+        return df
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        reader_stats = self._reader.get_stats()
+        manager_stats = self._manager.get_stats()
+        
+        return {
+            **reader_stats,
+            **manager_stats,
+            'cache_loaded': self._cache_loaded,
+            'preloaded_date_range': self._preloaded_date_range,
+        }
+
+
+_global_manager: Optional[UnifiedDataManager] = None
+
+
+def get_unified_manager(**kwargs) -> UnifiedDataManager:
+    """获取全局 UnifiedDataManager 实例"""
+    global _global_manager
+    if _global_manager is None:
+        _global_manager = UnifiedDataManager(**kwargs)
+        logger.info(f"[UnifiedDataManager] 创建全局实例, cache_loaded={_global_manager._cache_loaded}")
+    else:
+        logger.info(f"[UnifiedDataManager] 复用全局实例, cache_loaded={_global_manager._cache_loaded}, range={_global_manager._preloaded_date_range}")
+    return _global_manager
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("统一数据管理器测试 (LanceDB 版)")
+    print("=" * 60)
+    
+    manager = UnifiedDataManager()
+    
+    print("\n读取测试...")
+    df = manager.read('daily', start_date='2024-01-01', end_date='2024-01-31')
+    print(f"读取: {len(df)} 行")
+    
+    print("\n预加载测试...")
+    manager.preload_to_memory(years=1)
+    
+    print("\n测试完成!")

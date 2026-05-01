@@ -100,9 +100,9 @@ class MAComparisonStrategy(StrategyBase):
             if len(history_t) < 11:
                 return {}
                 
-            # 计算指标 (使用 _adj 后的平滑价格)
-            history_t['ma5'] = history_t['close_adj'].rolling(window=5).mean()
-            history_t['ma10'] = history_t['close_adj'].rolling(window=10).mean()
+            # 计算指标 (使用收盘价)
+            history_t['ma5'] = history_t['close'].rolling(window=5).mean()
+            history_t['ma10'] = history_t['close'].rolling(window=10).mean()
             
             # 获取 T 日和 T-1 日的指标值
             t_row = history_t.iloc[-1]

@@ -84,7 +84,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue';
-import axios from 'axios';
+import axios from '../../api/index';
 import { useSocketIO } from '../../composables/useSocketIO';
 
 const props = defineProps<{
@@ -160,8 +160,9 @@ const handleProgressUpdate = (data: any) => {
 };
 
 onMounted(() => {
-  // 通过 Vite 代理连接，避免 CORS
-  connect(window.location.origin);
+  // 使用相对路径 ''，让 Socket.IO 自动使用当前域名
+  // 这样 Vite 代理可以正确代理 /socket.io 请求到后端
+  connect('');
   // 使用 onEvent 方法监听事件，它返回一个取消监听的函数
   unsubscribeProgress = onEvent('db_update_progress', handleProgressUpdate);
 });

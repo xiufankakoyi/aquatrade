@@ -17,9 +17,9 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 try:
-    import duckdb  # type: ignore[import]
-except Exception:  # noqa: BLE001
-    duckdb = None
+    import polars as pl
+except Exception:
+    pl = None
 
 from server.visualization_api import BacktestVisualizationAPI
 from core.profiles.profile_repository import (
@@ -203,7 +203,7 @@ def run_backtest():
         profile_id = data.get('profile_id')
         override_params = data.get('override_params') or {}
 
-        # 如果提供了 profile_id，则从 DuckDB 中加载对应的参数预设
+        # 如果提供了 profile_id，则从 ArcticDB 中加载对应的参数预设
         if profile_id is not None:
             from profiles.profile_repository import get_profile as load_profile
 
@@ -293,7 +293,7 @@ def get_latest_price():
 
 @app.route('/api/stock_sentiment', methods=['GET'])
 def get_stock_sentiment():
-    """基于股吧爬虫数据的股票舆情汇总，优先使用 Parquet+DuckDB，加速查询。"""
+    """基于股吧爬虫数据的股票舆情汇总，优先使用 Parquet+Polars，加速查询。"""
     try:
         base_dir = Path(__file__).parent
 
@@ -303,59 +303,45 @@ def get_stock_sentiment():
         except (TypeError, ValueError):
             limit = 50
 
-        # 1. 优先尝试使用 Parquet + DuckDB（由 scripts/build_guba_posts_parquet.py 预生成）
+        # 1. 优先尝试使用 Parquet + Polars
         parquet_path = base_dir / 'parquet_data' / 'guba_posts.parquet'
-        if duckdb is not None and parquet_path.exists():
+        if pl is not None and parquet_path.exists():
             try:
-                parquet_str = str(parquet_path).replace('\\', '/')
-                # DuckDB 直接在 Parquet 上聚合，避免逐文件读取 CSV
-                sql = f'''
-                    SELECT
-                        symbol,
-                        COALESCE(stockbar_code, RIGHT(symbol, 6)) AS stockCode,
-                        COALESCE(stockbar_name, '') AS stockName,
-                        COUNT(*) AS totalPosts,
-                        SUM(COALESCE(TRY_CAST(post_click_count AS BIGINT), 0)) AS totalClicks,
-                        SUM(COALESCE(TRY_CAST(post_comment_count AS BIGINT), 0)) AS totalComments,
-                        SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) > 0 THEN 1 ELSE 0 END) AS bullishCount,
-                        SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) < 0 THEN 1 ELSE 0 END) AS bearishCount,
-                        SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) = 0 THEN 1 ELSE 0 END) AS neutralCount,
-                        COALESCE(AVG(TRY_CAST(bullish_bearish AS DOUBLE)), 0.0) AS sentimentScore,
-                        MAX(TRY_CAST(post_publish_time AS TIMESTAMP)) AS lastPostTime,
-                        COUNT(DISTINCT CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE)) AS activeDays
-                    FROM read_parquet('{parquet_str}')
-                    GROUP BY symbol, stockbar_code, stockbar_name
-                    ORDER BY totalComments DESC, totalPosts DESC
-                    LIMIT ?
-                '''
-
+                df_pl = pl.read_parquet(str(parquet_path))
+                
+                df_agg = df_pl.group_by(['symbol', 'stockbar_code', 'stockbar_name']).agg([
+                    pl.len().alias('totalPosts'),
+                    pl.col('post_click_count').cast(pl.Int64).fill_null(0).sum().alias('totalClicks'),
+                    pl.col('post_comment_count').cast(pl.Int64).fill_null(0).sum().alias('totalComments'),
+                    (pl.col('bullish_bearish').cast(pl.Float64) > 0).sum().alias('bullishCount'),
+                    (pl.col('bullish_bearish').cast(pl.Float64) < 0).sum().alias('bearishCount'),
+                    (pl.col('bullish_bearish').cast(pl.Float64) == 0).sum().alias('neutralCount'),
+                    pl.col('bullish_bearish').cast(pl.Float64).mean().fill_null(0.0).alias('sentimentScore'),
+                    pl.col('post_publish_time').cast(pl.Datetime).max().alias('lastPostTime'),
+                    pl.col('post_publish_time').cast(pl.Datetime).dt.date().n_unique().alias('activeDays'),
+                ]).sort(['totalComments', 'totalPosts'], descending=[True, True])
+                
                 effective_limit = limit if limit and limit > 0 else 1000
-                con = duckdb.connect()
-                try:
-                    df = con.execute(sql, [effective_limit]).df()
-                finally:
-                    con.close()
-
-                # 转换为前端期望的字段格式
+                df_agg = df_agg.head(effective_limit)
+                
                 results = []
-                for _, row in df.iterrows():
+                for row in df_agg.iter_rows(named=True):
                     last_ts = row.get('lastPostTime')
-                    if pd.isna(last_ts):
-                        last_str = None
-                    else:
-                        # DuckDB 返回 Timestamp 时直接格式化为字符串
-                        last_str = str(last_ts)
-
+                    last_str = str(last_ts) if last_ts is not None else None
+                    
                     active_days = row.get('activeDays')
                     try:
                         active_days_int = int(active_days) if active_days is not None else None
                     except (TypeError, ValueError):
                         active_days_int = None
-
+                    
+                    stockbar_code = row.get('stockbar_code') or ''
+                    stock_code = stockbar_code if stockbar_code else (row.get('symbol', '')[-6:] if row.get('symbol') else '')
+                    
                     results.append({
                         "symbol": row.get('symbol') or '',
-                        "stockCode": row.get('stockCode') or '',
-                        "stockName": row.get('stockName') or '',
+                        "stockCode": stock_code,
+                        "stockName": row.get('stockbar_name') or '',
                         "totalPosts": int(row.get('totalPosts') or 0),
                         "totalClicks": int(row.get('totalClicks') or 0),
                         "totalComments": int(row.get('totalComments') or 0),
@@ -366,10 +352,9 @@ def get_stock_sentiment():
                         "lastPostTime": last_str,
                         "activeDays": active_days_int,
                     })
-
+                
                 return jsonify({"success": True, "data": results})
             except Exception:
-                # DuckDB / Parquet 出错则回退到原始 CSV 方案
                 pass
 
         # 2. 回退：沿用原来的逐 CSV 读取逻辑，保证兼容性
@@ -476,26 +461,12 @@ def get_stock_sentiment_words():
         parquet_path = base_dir / 'parquet_data' / 'guba_posts.parquet'
         df = None
 
-        # 优先从 Parquet + DuckDB 读取该股票的帖子
-        if duckdb is not None and parquet_path.exists():
+        # 优先从 Parquet + Polars 读取该股票的帖子
+        if pl is not None and parquet_path.exists():
             try:
-                parquet_str = str(parquet_path).replace('\\', '/')
-                sql = f"""
-                    SELECT
-                        symbol,
-                        stockbar_code,
-                        stockbar_name,
-                        post_title,
-                        post_click_count,
-                        post_comment_count
-                    FROM read_parquet('{parquet_str}')
-                    WHERE symbol = ?
-                """
-                con = duckdb.connect()
-                try:
-                    df = con.execute(sql, [symbol]).df()
-                finally:
-                    con.close()
+                df_pl = pl.read_parquet(str(parquet_path)).filter(pl.col('symbol') == symbol)
+                if not df_pl.is_empty():
+                    df = df_pl.to_pandas()
             except Exception:
                 df = None
 

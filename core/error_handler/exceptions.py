@@ -1,3 +1,3 @@
 class NoBackendError(RuntimeError):
-    """Raised when no database backend (QuestDB or DuckDB) is available."""
+    """Raised when no database backend (ArcticDB or Parquet) is available."""
     pass

@@ -9,7 +9,7 @@ import os
 # 将项目根目录添加到Python路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.backtest.optimized_backtest_engine import OptimizedBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
 from core.strategies.strategy_factory import StrategyFactory
 
@@ -20,7 +20,7 @@ def test_data_persistence():
     try:
         # 创建数据查询和回测引擎
         data_query = OptimizedStockDataQuery()
-        engine = OptimizedBacktestEngine(data_query)
+        engine = UnifiedBacktestEngine(data_query)
         
         # 创建一个简单的策略
         strategy = StrategyFactory.create_strategy("simple_volume_v3", use_simple=True)

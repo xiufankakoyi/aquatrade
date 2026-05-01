@@ -54,7 +54,7 @@
       </div>
 
       <!-- Instruction C: Concentration Heatmap -->
-      <div v-if="backtestStore.dailyConcentration.length > 0" class="h-1.5 w-full bg-[#131722] rounded-full overflow-hidden flex gap-[1px]">
+      <div v-if="backtestStore.dailyConcentration.length > 0" class="h-1.5 w-full bg-[#0A0A0A] rounded-full overflow-hidden flex gap-[1px]">
         <div 
           v-for="(day, idx) in backtestStore.dailyConcentration" 
           :key="idx"

@@ -67,11 +67,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 TARGET_SITE_URL = "https://stock.quicktiny.cn/"
 
-# 默认配置
+# 默认配置（非敏感信息）
 DEFAULT_CONFIG = {
-    "TOKEN": "", 
-    "USERNAME": "",  # 新增：账号
-    "PASSWORD": "",  # 新增：密码
     "HEADERS": {
         "accept": "application/json, text/plain, */*",
         "accept-language": "zh-CN,zh;q=0.9",
@@ -85,27 +82,103 @@ DEFAULT_CONFIG = {
     "DATA_DIR": os.path.join(BASE_DIR, "data_lake")
 }
 
+def _load_secrets_from_aquatrade():
+    """
+    从 AquaTrade 统一配置加载敏感信息
+    
+    优先级：config/secrets.py > 环境变量 > quant/config.json
+    
+    Returns:
+        dict: 敏感配置字典
+    """
+    secrets = {
+        "TOKEN": "",
+        "USERNAME": "",
+        "PASSWORD": ""
+    }
+    
+    try:
+        project_root = os.path.dirname(BASE_DIR)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        
+        from config.setting import Setting
+        
+        token = Setting.QUICKTINY_TOKEN
+        username = Setting.QUICKTINY_USERNAME
+        password = Setting.QUICKTINY_PASSWORD
+        
+        if token:
+            secrets["TOKEN"] = token
+        if username:
+            secrets["USERNAME"] = username
+        if password:
+            secrets["PASSWORD"] = password
+            
+        if token or username:
+            print(f"✅ 从 AquaTrade 统一配置加载凭证成功")
+            
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"⚠️ 从 AquaTrade 配置加载失败: {e}")
+    
+    return secrets
+
 def load_config():
-    """加载配置"""
+    """
+    加载配置（统一配置优先）
+    
+    加载顺序：
+    1. AquaTrade 统一配置 (config/secrets.py)
+    2. 本地 config.json（仅作为回退）
+    """
     config = DEFAULT_CONFIG.copy()
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                ext_config = json.load(f)
-                config.update(ext_config)
-        except Exception as e:
-            print(f"⚠️ 配置文件读取失败: {e}")
+    
+    secrets = _load_secrets_from_aquatrade()
+    config.update(secrets)
+    
+    if not config["TOKEN"] or not config["USERNAME"]:
+        if os.path.exists(CONFIG_PATH):
+            try:
+                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                    ext_config = json.load(f)
+                    if not config["TOKEN"] and ext_config.get("TOKEN"):
+                        config["TOKEN"] = ext_config["TOKEN"]
+                    if not config["USERNAME"] and ext_config.get("USERNAME"):
+                        config["USERNAME"] = ext_config["USERNAME"]
+                    if not config["PASSWORD"] and ext_config.get("PASSWORD"):
+                        config["PASSWORD"] = ext_config["PASSWORD"]
+            except Exception as e:
+                print(f"⚠️ 本地配置文件读取失败: {e}")
+    
     return config
 
 def save_token_to_config(new_token):
-    """保存新 Token 到 config.json"""
+    """
+    保存新 Token（同时更新本地 config.json）
+    
+    注意：敏感信息应存储在 config/secrets.py 中，
+    此处仅更新本地 config.json 作为缓存。
+    """
     clean_token = new_token.replace("Bearer ", "").strip()
-    current_conf = load_config()
+    
+    current_conf = {}
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                current_conf = json.load(f)
+        except Exception:
+            pass
+    
     current_conf["TOKEN"] = clean_token
     
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         json.dump(current_conf, f, ensure_ascii=False, indent=2)
-    print(f"💾 新 Token 已保存到配置文件")
+    
+    print(f"💾 新 Token 已保存到本地配置文件")
+    print(f"⚠️ 建议：请将 Token 同步更新到 config/secrets.py 中的 QUICKTINY_TOKEN")
+    
     return clean_token
 
 # ==========================================

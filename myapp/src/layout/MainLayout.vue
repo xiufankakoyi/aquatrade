@@ -1,14 +1,10 @@
 <template>
-  <div class="main-layout" :class="{ 'workbench-mode': isWorkbenchMode }">
-    <Sidebar v-if="!isWorkbenchMode" />
+  <div class="main-layout">
+    <Sidebar />
     <div class="main-content-wrapper">
-      <TopBar v-if="!isWorkbenchMode" />
-      <main class="main-content-area" :class="{ 'fullscreen': isWorkbenchMode }">
-        <RouterView v-slot="{ Component, route }">
-          <KeepAlive :include="['DashboardOverview']">
-            <component :is="Component" :key="route.fullPath" />
-          </KeepAlive>
-        </RouterView>
+      <TopBar />
+      <main class="main-content-area" :class="{ 'no-padding': isWorkbench }">
+        <RouterView />
       </main>
     </div>
   </div>
@@ -22,8 +18,8 @@ import TopBar from '../components/layout/TopBar.vue';
 
 const route = useRoute();
 
-// 判断是否为工作台模式（全屏，隐藏侧边栏和顶部栏）
-const isWorkbenchMode = computed(() => {
+// 判断是否为工作台页面
+const isWorkbench = computed(() => {
   return route.name === 'StrategyEditor';
 });
 </script>
@@ -32,13 +28,8 @@ const isWorkbenchMode = computed(() => {
 .main-layout {
   display: flex;
   min-height: 100vh;
-  background: var(--bg-primary, #131722);
+  background: var(--bg-primary, #0A0A0A);
   color: var(--text-primary, #d1d4dc);
-}
-
-.main-layout.workbench-mode {
-  height: 100vh;
-  overflow: hidden;
 }
 
 .main-content-wrapper {
@@ -54,11 +45,13 @@ const isWorkbenchMode = computed(() => {
   overflow-y: auto;
   overflow-x: hidden;
   min-height: 0;
+  /* 统一内边距，避免内容紧贴Sidebar */
+  padding: 12px;
 }
 
-.main-content-area.fullscreen {
+.main-content-area.no-padding {
+  padding: 0;
   overflow: hidden;
-  height: 100vh;
 }
 
 /* 响应式适配 */

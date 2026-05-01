@@ -1,9 +1,10 @@
 # strategies/strategy_factory.py
-"""策略工厂 - 自动发现并注册所有继承自 StrategyBase 的策略类。
+"""策略工厂 - 自动发现并注册所有策略类。
 
 特性：
 - 自动扫描 strategies 目录（优先 *_strategy.py）
 - 自动注册声明了 strategy_id / strategy_name 的策略类
+- 支持配置化策略（YAML/JSON）
 - 向后兼容 create_strategy / get_available_strategies / list_strategies 等旧接口
 """
 
@@ -12,9 +13,15 @@ import importlib
 import os
 import pkgutil
 import sys
-from typing import Any, Dict, List, Optional, Type
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Type, Union
 
 from core.strategies.strategy_framework import StrategyBase
+from core.strategies.configurable import (
+    ConfigurableStrategy,
+    StrategyConfigLoader,
+    StrategyConfig,
+)
 
 
 class StrategyFactory:
@@ -32,11 +39,16 @@ class StrategyFactory:
         # 【关键优化】不在初始化时扫描策略，而是延迟到第一次使用
         # 这避免了导入 core.strategies 模块时就加载所有策略类
         self._initialized = False
+        
+        # 配置化策略相关
+        self._config_loader: Optional[StrategyConfigLoader] = None
+        self._config_registry: Dict[str, StrategyConfig] = {}  # config_id -> StrategyConfig
     
     def _ensure_initialized(self) -> None:
         """确保策略已扫描（延迟初始化）"""
         if not self._initialized:
             self._discover_strategies(force_reload=False)
+            self._discover_config_strategies()
             self._initialized = True
 
     
@@ -81,12 +93,18 @@ class StrategyFactory:
             logger.debug(f"找到 {len(modules)} 个模块候选")
 
         for loader, module_name, is_pkg in modules:
-            if is_pkg or module_name.startswith("_"):
+            if module_name.startswith("_"):
                 if debug_mode:
-                    logger.debug(f"跳过: {module_name} (是包或以下划线开头)")
+                    logger.debug(f"跳过: {module_name} (以下划线开头)")
                 continue
 
             module_full_name = f"core.strategies.{module_name}"
+
+            if is_pkg:
+                if debug_mode:
+                    logger.debug(f"扫描子包: {module_name}")
+                self._scan_subpackage(module_full_name, current_strategy_base, force_reload, debug_mode)
+                continue
 
             try:
                 if force_reload and module_full_name in sys.modules:
@@ -125,6 +143,105 @@ class StrategyFactory:
                     f"({self._id_to_name.get(sid, sid)}) -> {cls.__module__}.{cls.__name__}"
                 )
         self._strategies_mtime = self._get_latest_mtime()
+
+    def _scan_subpackage(
+        self, 
+        package_name: str, 
+        strategy_base: Type,
+        force_reload: bool,
+        debug_mode: bool
+    ) -> None:
+        """递归扫描子包中的策略类"""
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        
+        try:
+            package = importlib.import_module(package_name)
+        except Exception as e:
+            logger.warning(f"导入子包 {package_name} 失败: {e}")
+            return
+        
+        package_path = getattr(package, '__path__', None)
+        if not package_path:
+            return
+        
+        for loader, module_name, is_pkg in pkgutil.iter_modules(package_path):
+            if module_name.startswith("_"):
+                continue
+            
+            full_name = f"{package_name}.{module_name}"
+            
+            if is_pkg:
+                self._scan_subpackage(full_name, strategy_base, force_reload, debug_mode)
+                continue
+            
+            try:
+                if force_reload and full_name in sys.modules:
+                    module = importlib.reload(sys.modules[full_name])
+                else:
+                    module = importlib.import_module(full_name)
+            except Exception as e:
+                logger.warning(f"导入模块 {full_name} 失败: {e}")
+                continue
+            
+            classes = list(inspect.getmembers(module, inspect.isclass))
+            if debug_mode:
+                logger.debug(f"在子模块 {full_name} 中找到 {len(classes)} 个类")
+            
+            for name, obj in classes:
+                if getattr(obj, '__module__', None) != module.__name__:
+                    continue
+                
+                try:
+                    is_subclass = (obj is not strategy_base 
+                                   and issubclass(obj, strategy_base))
+                except (TypeError, AttributeError):
+                    continue
+                
+                if is_subclass:
+                    self._register_strategy_instance(obj)
+
+    def _discover_config_strategies(self) -> None:
+        """发现并注册配置化策略"""
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        
+        # 初始化配置加载器
+        configs_path = Path(self._strategies_path) / "configs"
+        if not configs_path.exists():
+            logger.debug(f"配置目录不存在: {configs_path}")
+            return
+        
+        self._config_loader = StrategyConfigLoader(str(configs_path))
+        
+        # 扫描所有配置文件
+        config_files = list(configs_path.glob("*.yaml")) + list(configs_path.glob("*.yml")) + list(configs_path.glob("*.json"))
+        
+        debug_mode = os.getenv('LOG_LEVEL', '').upper() == 'DEBUG'
+        if debug_mode:
+            logger.debug(f"扫描配置化策略目录: {configs_path}, 找到 {len(config_files)} 个配置文件")
+        
+        for config_file in config_files:
+            try:
+                config = self._config_loader.load(config_file)
+                
+                # 注册到配置注册表
+                self._config_registry[config.strategy_id] = config
+                
+                # 同时注册到主注册表（使用 ConfigurableStrategy 包装）
+                # 创建一个工厂函数来生成 ConfigurableStrategy 实例
+                def make_strategy(config=config):
+                    return ConfigurableStrategy(config)
+                
+                # 将配置ID映射到工厂函数
+                self._id_to_name[config.strategy_id] = config.name
+                self._name_to_id[config.name] = config.strategy_id
+                
+                if debug_mode:
+                    logger.debug(f"注册配置化策略: {config.strategy_id} -> {config.name}")
+                    
+            except Exception as e:
+                logger.warning(f"加载配置文件失败 {config_file}: {e}")
 
     def _register_strategy_instance(self, strategy_class: Type[StrategyBase]) -> None:
         """根据 strategy_id / strategy_name 规则注册单个策略类。"""
@@ -190,14 +307,21 @@ class StrategyFactory:
         use_simple: bool = True,
         *args,
         **kwargs,
-    ) -> StrategyBase:
-        """创建策略实例（支持 strategy_id / strategy_name / 旧 ID）。"""
+    ) -> Union[StrategyBase, ConfigurableStrategy]:
+        """创建策略实例（支持 strategy_id / strategy_name / 旧 ID / 配置化策略）。"""
         sid = self._resolve_identifier_to_id(strategy_identifier)
         if not sid:
             available = ", ".join(sorted(self.registry.keys()))
             raise ValueError(
                 f"未找到策略：'{strategy_identifier}'。\n可用策略 ID：{available}"
             )
+
+        # 检查是否是配置化策略
+        if sid in self._config_registry:
+            config = self._config_registry[sid]
+            # 如果传入了参数，覆盖默认参数
+            params = kwargs.get('parameters', {})
+            return ConfigurableStrategy(config, parameters=params)
 
         strategy_class = self.registry.get(sid)
         if strategy_class is None:
@@ -289,6 +413,8 @@ class StrategyFactory:
         self._ensure_initialized()  # 延迟初始化
         self._auto_refresh_registry()
         result: List[Dict[str, Any]] = []
+        
+        # 添加代码策略
         for sid, cls in sorted(self.registry.items()):
             result.append(
                 {
@@ -296,10 +422,45 @@ class StrategyFactory:
                     "name": self._id_to_name.get(sid, sid),
                     "class_name": cls.__name__,
                     "module": cls.__module__,
+                    "type": "code",
                 }
             )
+        
+        # 添加配置化策略
+        for sid, config in sorted(self._config_registry.items()):
+            result.append(
+                {
+                    "id": sid,
+                    "name": config.name,
+                    "class_name": "ConfigurableStrategy",
+                    "module": "core.strategies.configurable",
+                    "type": "config",
+                    "version": config.version,
+                    "tags": config.tags,
+                }
+            )
+        
         print(f"[DEBUG] list_strategies 返回 {len(result)} 个策略信息")
         return result
+    
+    def get_config_strategy(self, strategy_id: str) -> Optional[StrategyConfig]:
+        """获取配置化策略的配置对象"""
+        self._ensure_initialized()
+        return self._config_registry.get(strategy_id)
+    
+    def list_config_strategies(self) -> List[Dict[str, Any]]:
+        """列出所有配置化策略"""
+        self._ensure_initialized()
+        return [
+            {
+                "id": config.strategy_id,
+                "name": config.name,
+                "version": config.version,
+                "description": config.description,
+                "tags": config.tags,
+            }
+            for config in sorted(self._config_registry.values(), key=lambda x: x.strategy_id)
+        ]
 
     # 保留实例方法接口，便于直接调用
     def create_strategy(self, strategy_name: str, use_simple: bool = True, *args, **kwargs) -> StrategyBase:

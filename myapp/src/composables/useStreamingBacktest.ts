@@ -2,7 +2,7 @@ import { ref, onUnmounted } from 'vue';
 import { useSocketIO } from './useSocketIO';
 import { subscribe } from '../api/backtestApi';
 import type { BacktestEvent } from '../types/api';
-import type { Trade } from '../types/backtest';
+import type { Trade, HoldingPeriod } from '../types/backtest';
 import { useBacktestStore } from '../store/backtestStore';
 import { useErrorStore } from '../store/errorStore';
 import { useErrorService } from '../services/errorService';
@@ -14,99 +14,6 @@ export interface StreamingBacktestOptions {
   onComplete?: () => void;
   onError?: (error: Error) => void;
   onCancel?: () => void;
-}
-
-let chunkedDataBuffers: Map<string, { chunks: any[], totalChunks: number, otherData: any }> = new Map();
-
-async function _decompressData(data: any): Promise<any> {
-  if (data._compressed && data._data) {
-    try {
-      const compressed = Uint8Array.from(atob(data._data), c => c.charCodeAt(0));
-
-      if ('DecompressionStream' in window) {
-        const stream = new DecompressionStream('gzip');
-        const writer = stream.writable.getWriter();
-        writer.write(compressed);
-        writer.close();
-
-        const reader = stream.readable.getReader();
-        const chunks: Uint8Array[] = [];
-        let done = false;
-
-        while (!done) {
-          const { value, done: readerDone } = await reader.read();
-          done = readerDone;
-          if (value) {
-            chunks.push(value);
-          }
-        }
-
-        const decompressed = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
-        let offset = 0;
-        for (const chunk of chunks) {
-          decompressed.set(chunk, offset);
-          offset += chunk.length;
-        }
-
-        const text = new TextDecoder().decode(decompressed);
-        return JSON.parse(text);
-      }
-
-      // @ts-ignore
-      if (typeof window !== 'undefined' && window.pako) {
-        // @ts-ignore
-        const pako = window.pako;
-        const text = pako.inflate(compressed, { to: 'string' });
-        return JSON.parse(text);
-      }
-
-      console.warn('浏览器不支持gzip解压缩，使用原始数据');
-      return data;
-    } catch (e) {
-      console.error('解压缩失败:', e);
-      return data;
-    }
-  }
-  return data;
-}
-
-function _decompressDataSync(data: any): any {
-  if (data._compressed && data._data) {
-    console.warn('同步解压缩不可用，使用原始数据');
-    return data;
-  }
-  return data;
-}
-
-function _handleChunkedData(data: any, key: string): any {
-  if (data._chunked) {
-    const chunkKey = `${key}_${data._key || 'default'}`;
-
-    if (!chunkedDataBuffers.has(chunkKey)) {
-      chunkedDataBuffers.set(chunkKey, {
-        chunks: [],
-        totalChunks: data._total_chunks || 1,
-        otherData: data._other_data || {}
-      });
-    }
-
-    const buffer = chunkedDataBuffers.get(chunkKey)!;
-    buffer.chunks[data._chunk_index] = data._data;
-
-    if (buffer.chunks.length === buffer.totalChunks &&
-      buffer.chunks.every(chunk => chunk !== undefined)) {
-      const result = { ...buffer.otherData };
-      result[data._key] = buffer.chunks.flat();
-
-      chunkedDataBuffers.delete(chunkKey);
-
-      return result;
-    }
-
-    return null;
-  }
-
-  return _decompressDataSync(data);
 }
 
 export function useStreamingBacktest() {
@@ -124,32 +31,12 @@ export function useStreamingBacktest() {
   const isRunning = ref(false);
   const progress = ref(0);
   const error = ref<Error | null>(null);
-  const currentParams = ref<{
-    strategy_name: string;
-    start_date: string;
-    end_date: string;
-    benchmark_code?: string | null;
-    initial_capital?: number;
-    commission?: number;
-    slippage?: number;
-  } | null>(null);
+  const currentParams = ref<any>(null);
 
   let unsubscribe: (() => void) | null = null;
   let hasCompleted = false;
-  let hasReceivedFirstDailyUpdate = false;
 
-  const eventBuffer = ref<Map<string, any[]>>(new Map());
-  let updateInterval: NodeJS.Timeout | null = null;
-
-  function start(params: {
-    strategy_name: string;
-    start_date: string;
-    end_date: string;
-    benchmark_code?: string | null;
-    initial_capital?: number;
-    commission?: number;
-    slippage?: number;
-  }, options: StreamingBacktestOptions = {}) {
+  function start(params: any, options: StreamingBacktestOptions = {}) {
     if (isRunning.value) {
       const validationError = createError(
         ERROR_CODES.FRONTEND_INVALID_PARAMS,
@@ -181,24 +68,11 @@ export function useStreamingBacktest() {
 
     currentParams.value = params;
 
-    const backendUrl = 'http://localhost:5000';
-    connect(backendUrl);
-
-    setTimeout(() => {
-      if (socketStatus.value !== 'OPEN') {
-        const socketError = createSocketError({
-          strategyName: params.strategy_name,
-          startDate: params.start_date,
-          endDate: params.end_date
-        });
-        errorStore.setError(socketError);
-        options.onError?.(new Error(socketError.message));
-        return;
-      }
-    }, 5000);
+    // 使用相对路径 ''，让 Socket.IO 自动使用当前域名
+    // 这样 Vite 代理可以正确代理 /socket.io 请求到后端
+    connect('');
 
     hasCompleted = false;
-    hasReceivedFirstDailyUpdate = false;
     error.value = null;
     isRunning.value = true;
     progress.value = 0;
@@ -214,257 +88,154 @@ export function useStreamingBacktest() {
       benchmarkCode: params.benchmark_code || undefined
     });
 
-    const now = new Date();
-    backtestStore.setLastUpdated(now.toLocaleTimeString('zh-CN', { hour12: false }));
-
-    updateInterval = setInterval(() => {
-      processEventBuffer();
-    }, 100);
-
     unsubscribe = subscribe((event: BacktestEvent) => {
-      try {
-        handleEvent(event, options);
-      } catch (err) {
-        const errorObj = err instanceof Error ? err : new Error(String(err));
-        error.value = errorObj;
-        
-        const backtestError = parseBackendError(
-          errorObj.message,
-          {
-            strategyName: params.strategy_name,
-            startDate: params.start_date,
-            endDate: params.end_date
-          },
-          err
-        );
-        errorStore.setError(backtestError);
-        
-        options.onError?.(errorObj);
-        stop();
-      }
+      handleEvent(event, options);
     });
 
     emitEvent('run_streaming_backtest', params);
+    console.log('[useStreamingBacktest] 已发送 run_streaming_backtest:', params);
     options.onStart?.();
   }
 
-  function processEventBuffer() {
-    if (eventBuffer.value.size === 0) return;
-
-    for (const [eventType, events] of eventBuffer.value) {
-      if (events.length === 0) continue;
-
-      switch (eventType) {
-        case 'daily_equity':
-          const equityPoints: Array<{ date: string; equity: number }> = [];
-          const benchmarkPoints: Array<{ date: string; equity: number }> = [];
-
-          for (const data of events) {
-            if (!hasReceivedFirstDailyUpdate) {
-              hasReceivedFirstDailyUpdate = true;
-              if (!backtestStore.running) {
-                backtestStore.setRunning(true);
-              }
-            }
-            const equity = data.strategyReturn ?? data.equity;
-            const benchmarkEquity = data.benchmarkReturn ?? data.benchmark_equity;
-            if (data.date && equity !== undefined && equity !== null) {
-              equityPoints.push({ date: data.date, equity });
-            }
-            if (data.date && benchmarkEquity !== undefined && benchmarkEquity !== null) {
-              benchmarkPoints.push({ date: data.date, equity: benchmarkEquity });
-            }
-          }
-
-          if (equityPoints.length > 0) {
-            backtestStore.addEquityPoints(equityPoints);
-          }
-          if (benchmarkPoints.length > 0) {
-            backtestStore.addBenchmarkPoints(benchmarkPoints);
-          }
-
-          if (events.length > 0) {
-            const updateTime = new Date();
-            backtestStore.setLastUpdated(updateTime.toLocaleTimeString('zh-CN', { hour12: false }));
-          }
-          break;
-
-        case 'new_trade':
-          const tradesToAdd: Trade[] = [];
-          for (const tradeData of events) {
-            if (tradeData && tradeData.date) {
-              const trade: Trade = {
-                id: tradeData.id || `${tradeData.date}-${tradeData.symbolCode || tradeData.symbol_code || tradeData.symbol}-${tradeData.action}`,
-                symbol: tradeData.symbol || '',
-                symbolCode: tradeData.symbolCode || tradeData.symbol_code || tradeData.symbol || '',
-                date: tradeData.date,
-                action: tradeData.action === 'buy' ? 'buy' : 'sell',
-                price: tradeData.price || 0,
-                quantity: tradeData.quantity || 0,
-                value: (tradeData.price || 0) * (tradeData.quantity || 0),
-                profitLoss: tradeData.profitLoss ?? tradeData.profit_loss ?? 0,
-                profit_loss: tradeData.profit_loss ?? tradeData.profitLoss ?? undefined,
-                cumulativePnL: tradeData.cumulativePnL ?? tradeData.cumulative_pnl ?? 0,
-                positionId: tradeData.positionId || tradeData.position_id,
-                entryDate: tradeData.entryDate || tradeData.entry_date,
-                exitDate: tradeData.exitDate || tradeData.exit_date,
-                holdingDays: tradeData.holdingDays ?? tradeData.holding_days ?? undefined,
-                holding_days: tradeData.holding_days ?? tradeData.holdingDays ?? undefined,
-                entry_price: tradeData.entry_price ?? undefined,
-                exit_price: tradeData.exit_price ?? undefined,
-                roi: tradeData.roi ?? undefined,
-                profitRatio: (tradeData.roi ?? 0) / 100
-              };
-              tradesToAdd.push(trade);
-            }
-          }
-          if (tradesToAdd.length > 0) {
-            backtestStore.addTrades(tradesToAdd);
-          }
-          break;
-
-        case 'risk_data':
-        case 'risk_update':
-          for (const data of events) {
-            const processedData = _handleChunkedData(data, 'risk_data');
-            if (processedData) {
-              if (processedData.monthlyReturns && Array.isArray(processedData.monthlyReturns)) {
-                backtestStore.setMonthlyReturns(processedData.monthlyReturns);
-              } else if (processedData.monthly_returns && Array.isArray(processedData.monthly_returns)) {
-                backtestStore.setMonthlyReturns(processedData.monthly_returns);
-              }
-              if (processedData.holdingPeriods && Array.isArray(processedData.holdingPeriods)) {
-                backtestStore.setHoldingPeriods(processedData.holdingPeriods);
-              }
-            }
-          }
-          break;
-      }
-    }
-
-    eventBuffer.value.clear();
-  }
-
   function handleEvent(event: BacktestEvent, options: StreamingBacktestOptions) {
+    console.log('[useStreamingBacktest] 收到事件:', event.type, event.data ? '有数据' : '无数据', typeof event.data);
+    
     switch (event.type) {
-      case 'initializing':
-        backtestStore.setInitializing(true);
-        break;
-
-      case 'initialized':
-        backtestStore.setInitializing(false);
-        break;
-
       case 'backtest_start':
-        backtestStore.setInitializing(false);
-        hasReceivedFirstDailyUpdate = false;
-        hasCompleted = false;
+        backtestStore.clearBacktestData();
         backtestStore.setRunning(true);
         backtestStore.setProgress(0);
-        backtestStore.clearBacktestData();
-        const now = new Date();
-        backtestStore.setLastUpdated(now.toLocaleTimeString('zh-CN', { hour12: false }));
         break;
 
       case 'daily_equity':
-        // 【修复】直接实时更新权益曲线，不经过缓冲区
         if (event.data) {
-          if (!hasReceivedFirstDailyUpdate) {
-            hasReceivedFirstDailyUpdate = true;
-            if (!backtestStore.running) {
-              backtestStore.setRunning(true);
-            }
+          console.log('[daily_equity] 原始数据:', JSON.stringify(event.data).substring(0, 200));
+          // 处理 MsgPack 格式数据
+          let data = event.data;
+          if (data._msgpack && data._data) {
+            console.log('[daily_equity] 检测到 MsgPack 数据，需要解包');
+            // 数据已经在 backtestApi.ts 中解包了，这里直接使用
+            data = data._data;
           }
-          const equity = event.data.strategyReturn ?? event.data.equity;
-          const benchmarkEquity = event.data.benchmarkReturn ?? event.data.benchmark_equity;
-          if (event.data.date && equity !== undefined && equity !== null) {
-            backtestStore.addEquityPoints([{ date: event.data.date, equity }]);
+          // 兼容多种字段名: equity 或 strategyReturn
+          const equity = data.equity ?? data.strategyReturn;
+          const benchmarkEquity = data.benchmark_equity ?? data.benchmarkReturn;
+          console.log('[daily_equity] 解析后:', { date: data.date, equity, benchmarkEquity });
+          if (data.date && equity !== undefined) {
+            backtestStore.addEquityPoints([{ date: data.date, equity }]);
           }
-          if (event.data.date && benchmarkEquity !== undefined && benchmarkEquity !== null) {
-            backtestStore.addBenchmarkPoints([{ date: event.data.date, equity: benchmarkEquity }]);
+          if (data.date && benchmarkEquity !== undefined) {
+            backtestStore.addBenchmarkPoints([{ date: data.date, equity: benchmarkEquity }]);
           }
-          // 更新时间戳
-          backtestStore.setLastUpdated(new Date().toLocaleTimeString('zh-CN', { hour12: false }));
         }
         break;
 
       case 'new_trade':
-        if (!eventBuffer.value.has('new_trade')) {
-          eventBuffer.value.set('new_trade', []);
-        }
-        eventBuffer.value.get('new_trade')?.push(event.data);
-        break;
-
-      case 'metrics_update':
-      case 'final_metrics':
-        if (!hasCompleted && event.data) {
-          _decompressData(event.data).then((data) => {
-            if (data) {
-              const metrics = {
-                totalReturn: data.totalReturn ?? data.total_return ?? 0,
-                annualizedReturn: data.annualizedReturn ?? data.annualized_return ?? 0,
-                maxDrawdown: data.maxDrawdown ?? data.max_drawdown ?? 0,
-                sharpeRatio: data.sharpeRatio ?? data.sharpe_ratio ?? 0,
-                sortinoRatio: data.sortinoRatio ?? data.sortino_ratio ?? 0,
-                volatility: data.volatility ?? 0,
-                winRate: data.winRate ?? data.win_rate ?? 0,
-                profitFactor: data.profitFactor ?? data.profit_factor ?? 0,
-                tradesCount: data.tradesCount ?? data.trades_count ?? 0,
-                avgTradeReturn: data.avgTradeReturn ?? data.avg_trade_return ?? 0,
-                maxWinningStreak: data.maxWinningStreak ?? data.max_winning_streak ?? 0,
-                maxLosingStreak: data.maxLosingStreak ?? data.max_losing_streak ?? 0
-              };
-              backtestStore.setMetrics(metrics);
-            }
-          }).catch((err) => {
-            console.error('解压缩metrics数据失败:', err);
-            const data = _decompressDataSync(event.data);
-            if (data && !data._compressed) {
-              const metrics = {
-                totalReturn: data.totalReturn ?? data.total_return ?? 0,
-                annualizedReturn: data.annualizedReturn ?? data.annualized_return ?? 0,
-                maxDrawdown: data.maxDrawdown ?? data.max_drawdown ?? 0,
-                sharpeRatio: data.sharpeRatio ?? data.sharpe_ratio ?? 0,
-                sortinoRatio: data.sortinoRatio ?? data.sortino_ratio ?? 0,
-                volatility: data.volatility ?? 0,
-                winRate: data.winRate ?? data.win_rate ?? 0,
-                profitFactor: data.profitFactor ?? data.profit_factor ?? 0,
-                tradesCount: data.tradesCount ?? data.trades_count ?? 0,
-                avgTradeReturn: data.avgTradeReturn ?? data.avg_trade_return ?? 0,
-                maxWinningStreak: data.maxWinningStreak ?? data.max_winning_streak ?? 0,
-                maxLosingStreak: data.maxLosingStreak ?? data.max_losing_streak ?? 0
-              };
-              backtestStore.setMetrics(metrics);
-            }
-          });
-        }
-        break;
-
-      case 'risk_data':
-      case 'risk_update':
         if (event.data) {
-          const type = event.type;
-          if (!eventBuffer.value.has(type)) {
-            eventBuffer.value.set(type, []);
-          }
-          eventBuffer.value.get(type)?.push(event.data);
+          console.log('[new_trade] 数据:', event.data);
+          const trade: Trade = {
+            id: event.data.id || `${event.data.date}-${event.data.symbol}-${event.data.action}`,
+            symbol: event.data.symbol || '',
+            symbolCode: event.data.symbolCode || event.data.symbol || '',
+            date: event.data.date,
+            action: event.data.action === 'buy' ? 'buy' : 'sell',
+            price: event.data.price || 0,
+            quantity: event.data.quantity || 0,
+            value: (event.data.price || 0) * (event.data.quantity || 0),
+            profitLoss: event.data.profitLoss ?? event.data.profit_loss ?? 0,
+          };
+          backtestStore.addTrades([trade]);
+        }
+        break;
+
+      case 'final_metrics':
+        if (event.data && !hasCompleted) {
+          console.log('[final_metrics] 数据:', event.data);
+          const metrics = {
+            totalReturn: event.data.totalReturn ?? 0,
+            annualizedReturn: event.data.annualizedReturn ?? 0,
+            annualReturn: event.data.annualizedReturn ?? 0,
+            maxDrawdown: event.data.maxDrawdown ?? 0,
+            sharpeRatio: event.data.sharpeRatio ?? 0,
+            sortinoRatio: event.data.sortinoRatio ?? 0,
+            volatility: event.data.volatility ?? 0,
+            winRate: event.data.winRate ?? 0,
+            profitFactor: event.data.profitFactor ?? 0,
+            profitLossRatio: event.data.profitFactor ?? 0,
+            tradesCount: event.data.tradesCount ?? 0,
+            totalTrades: event.data.tradesCount ?? 0,
+            avgHoldingDays: event.data.avgHoldingDays ?? 0,
+            calmarRatio: event.data.calmarRatio ?? 0,
+            benchmarkReturn: event.data.benchmarkReturn ?? 0,
+          };
+          backtestStore.setMetrics(metrics);
         }
         break;
 
       case 'stream_complete':
         if (!hasCompleted) {
-          processEventBuffer();
-
-          if (event.data && Array.isArray(event.data.trades) && event.data.trades.length > 0) {
-            console.log(`[useStreamingBacktest] 从 stream_complete 接收到 ${event.data.trades.length} 条最终交易记录`);
-            backtestStore.setTrades(event.data.trades);
-          }
-
+          console.log('[stream_complete] 数据:', event.data);
           hasCompleted = true;
+          
+          if (event.data) {
+            // 处理权益曲线
+            if (event.data.equityCurve && Array.isArray(event.data.equityCurve)) {
+              console.log('[stream_complete] 权益曲线点数:', event.data.equityCurve.length);
+              backtestStore.addEquityPoints(event.data.equityCurve);
+            }
+            
+            // 【新增】处理基准曲线
+            if (event.data.benchmarkCurve && Array.isArray(event.data.benchmarkCurve)) {
+              console.log('[stream_complete] 基准曲线点数:', event.data.benchmarkCurve.length);
+              backtestStore.addBenchmarkPoints(event.data.benchmarkCurve);
+            }
+            
+            // 【新增】处理月度收益
+            if (event.data.monthlyReturns && Array.isArray(event.data.monthlyReturns)) {
+              console.log('[stream_complete] 月度收益数:', event.data.monthlyReturns.length);
+              backtestStore.setMonthlyReturns(event.data.monthlyReturns);
+            }
+            
+            // 处理交易记录
+            if (event.data.trades && Array.isArray(event.data.trades)) {
+              console.log('[stream_complete] 交易记录数:', event.data.trades.length);
+              const trades: Trade[] = event.data.trades.map((t: any) => ({
+                id: t.id || `${t.date}-${t.symbol || t.code}-${t.action}`,
+                symbol: t.symbol || t.code || '',
+                symbolCode: t.symbolCode || t.symbol || t.code || '',
+                date: t.date,
+                action: t.action === 'buy' ? 'buy' : 'sell',
+                price: t.price || 0,
+                quantity: t.quantity || t.shares || 0,
+                value: (t.price || 0) * (t.quantity || t.shares || 0),
+                profitLoss: t.profitLoss ?? t.profit_loss ?? 0,
+              }));
+              backtestStore.addTrades(trades);
+            }
+            
+            // 处理指标
+            const metrics = {
+              totalReturn: event.data.totalReturn ?? 0,
+              annualizedReturn: event.data.annualizedReturn ?? 0,
+              annualReturn: event.data.annualizedReturn ?? 0,
+              maxDrawdown: event.data.maxDrawdown ?? 0,
+              sharpeRatio: event.data.sharpeRatio ?? 0,
+              sortinoRatio: event.data.sortinoRatio ?? 0,
+              volatility: event.data.volatility ?? 0,
+              winRate: event.data.winRate ?? 0,
+              profitFactor: event.data.profitFactor ?? 0,
+              profitLossRatio: event.data.profitFactor ?? 0,
+              tradesCount: event.data.totalTrades ?? event.data.tradesCount ?? 0,
+              totalTrades: event.data.totalTrades ?? event.data.tradesCount ?? 0,
+              avgHoldingDays: event.data.avgHoldingDays ?? 0,
+              calmarRatio: event.data.calmarRatio ?? 0,
+              benchmarkReturn: event.data.benchmarkReturn ?? 0,
+            };
+            backtestStore.setMetrics(metrics);
+          }
+          
           backtestStore.setRunning(false);
           backtestStore.setProgress(100);
-          const completeTime = new Date();
-          backtestStore.setLastUpdated(completeTime.toLocaleTimeString('zh-CN', { hour12: false }));
           backtestStore.persistToStorage();
           isRunning.value = false;
           progress.value = 100;
@@ -481,94 +252,23 @@ export function useStreamingBacktest() {
         break;
 
       case 'error':
-        processEventBuffer();
-
         const errorMsg = event.data?.message || '回测发生错误';
-        const errorObj = new Error(errorMsg);
-        error.value = errorObj;
-        
-        const backtestError = parseBackendError(
-          errorMsg,
-          {
-            strategyName: currentParams.value?.strategy_name,
-            startDate: currentParams.value?.start_date,
-            endDate: currentParams.value?.end_date,
-            benchmarkCode: currentParams.value?.benchmark_code || undefined
-          },
-          event.data
-        );
-        errorStore.setError(backtestError);
-        
+        error.value = new Error(errorMsg);
         backtestStore.setRunning(false);
-        backtestStore.setProgress(0);
         isRunning.value = false;
-        options.onError?.(errorObj);
-        break;
-
-      case 'cancelled':
-        processEventBuffer();
-
-        backtestStore.setRunning(false);
-        backtestStore.setProgress(0);
-        isRunning.value = false;
-        options.onCancel?.();
-        break;
-
-      case 'backtest_error':
-        processEventBuffer();
-
-        const backendErrorMsg = event.data?.message || event.data?.error || '后端回测错误';
-        const backendError = parseBackendError(
-          backendErrorMsg,
-          {
-            strategyName: currentParams.value?.strategy_name,
-            startDate: currentParams.value?.start_date,
-            endDate: currentParams.value?.end_date
-          },
-          event.data
-        );
-        errorStore.setError(backendError);
-        error.value = new Error(backendErrorMsg);
-        
-        backtestStore.setRunning(false);
-        backtestStore.setProgress(0);
-        isRunning.value = false;
-        options.onError?.(error.value);
+        options.onError?.(new Error(errorMsg));
         break;
     }
-  }
-
-  function cancel() {
-    if (!isRunning.value) {
-      return;
-    }
-
-    const { emitEvent } = useSocketIO();
-    emitEvent('cancel_streaming_backtest', {});
   }
 
   function stop() {
-    if (updateInterval) {
-      clearInterval(updateInterval);
-      updateInterval = null;
-    }
-
-    processEventBuffer();
-
     if (unsubscribe) {
       unsubscribe();
       unsubscribe = null;
     }
-
     isRunning.value = false;
     progress.value = 0;
-  }
-
-  function retry() {
-    if (currentParams.value) {
-      errorStore.clearError();
-      start(currentParams.value);
-    }
+    backtestStore.setRunning(false);
   }
 
   onUnmounted(() => {
@@ -576,12 +276,10 @@ export function useStreamingBacktest() {
   });
 
   return {
+    start,
+    stop,
     isRunning,
     progress,
-    error,
-    start,
-    cancel,
-    stop,
-    retry
+    error
   };
 }

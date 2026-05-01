@@ -1,6 +1,6 @@
 import time
 import pandas as pd
-from core.backtest.flexible_backtest_engine import FlexibleBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
 from config.logger import get_logger
 
@@ -28,7 +28,7 @@ def run_performance_test():
             return {}
             
     strategy = SimpleStrategy()
-    engine = FlexibleBacktestEngine(data_query=data_query)
+    engine = UnifiedBacktestEngine(data_query=data_query)
     
     # 设置测试日期范围
     start_date = '2024-01-01'

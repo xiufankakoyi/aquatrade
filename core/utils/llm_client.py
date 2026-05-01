@@ -204,6 +204,21 @@ class AquaLLM:
             flags=re.DOTALL | re.IGNORECASE
         )
         
+        # 2.1 去除中文思考标签
+        clean = re.sub(
+            r'思索过程.*?实际代码',
+            '实际代码',
+            clean,
+            flags=re.DOTALL
+        )
+        
+        clean = re.sub(
+            r'推理过程.*?实际代码',
+            '实际代码',
+            clean,
+            flags=re.DOTALL
+        )
+        
         # 3. 去除 Markdown 代码块标记
         clean = clean.strip()
         if clean.startswith("```"):

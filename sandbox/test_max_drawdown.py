@@ -10,7 +10,7 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from core.backtest.optimized_backtest_engine import OptimizedBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from core.strategies.strategy_factory import StrategyFactory
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
 
@@ -21,7 +21,7 @@ def test_max_drawdown_value():
     # 创建数据查询和回测引擎
     db_path = "data/stock_data.db"
     data_query = OptimizedStockDataQuery(db_path)
-    backtest_engine = OptimizedBacktestEngine(data_query)
+    backtest_engine = UnifiedBacktestEngine(data_query)
     
     try:
         # 使用简单测试策略

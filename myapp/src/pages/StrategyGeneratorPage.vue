@@ -1,11 +1,21 @@
 <template>
-  <div class="strategy-generator-page">
-    <div class="page-header">
-      <h1>AI 策略生成器</h1>
-      <p class="subtitle">使用自然语言描述，让 AI 为您生成量化交易策略代码</p>
+  <div class="h-screen flex flex-col bg-[#0A0A0A] text-[#d1d4dc] overflow-hidden">
+    <!-- 顶部工具栏 -->
+    <div class="h-10 flex items-center bg-[#0A0A0A] border-b border-[#2a2e39] px-4 space-x-6 overflow-hidden select-none flex-shrink-0">
+      <!-- 左侧：标题 -->
+      <div class="flex items-center space-x-2 border-r border-[#2a2e39] pr-6 h-full">
+        <i class="fas fa-robot text-[#2962ff] text-sm"></i>
+        <span class="text-[10px] font-bold text-[#d1d4dc] uppercase tracking-wider">AI 策略生成器</span>
+      </div>
+      
+      <!-- 中间：描述 -->
+      <div class="flex-1 overflow-hidden">
+        <span class="text-[9px] text-[#787b86]">使用自然语言描述，让 AI 为您生成量化交易策略代码</span>
+      </div>
     </div>
 
-    <div class="generator-container">
+    <!-- 主内容区 -->
+    <div class="flex-1 overflow-auto p-4">
       <!-- 输入区域 -->
       <div class="input-section">
         <div class="form-group">

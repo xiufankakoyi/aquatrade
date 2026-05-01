@@ -6,7 +6,7 @@
         <div 
           v-for="(val, idx) in yearData.months" 
           :key="idx"
-          class="h-10 flex flex-col items-center justify-center bg-[#131722] transition-colors hover:bg-[#1e222d] cursor-pointer"
+          class="h-10 flex flex-col items-center justify-center bg-[#0A0A0A] transition-colors hover:bg-[#1e222d] cursor-pointer"
           @click="emit('monthSelect', { year: yearData.year, month: idx })"
         >
           <span class="text-[9px] text-[#787b86] leading-none mb-1 uppercase">{{ monthsShort[idx] }}</span>

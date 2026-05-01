@@ -36,8 +36,19 @@ def register_handlers(sio):
     """
     print(f"\n{'='*80}\n[SOCKET.IO] Registering event handlers...\n{'='*80}\n")
     
+    import asyncio
     from config.logger import get_logger
     logger = get_logger(__name__)
+    
+    # 设置全局 Socket.IO 实例和事件循环
+    try:
+        from server.socketio_manager import set_global_socketio, set_global_loop
+        set_global_socketio(sio)
+        loop = asyncio.get_event_loop()
+        set_global_loop(loop)
+        logger.info("[SocketIO Manager] 全局 Socket.IO 和事件循环已设置")
+    except Exception as e:
+        logger.warning(f"[SocketIO Manager] 无法设置全局实例: {e}")
     
     active_backtests: Dict[str, Any] = {}
     
@@ -137,11 +148,17 @@ def register_handlers(sio):
             
             def run_backtest():
                 import time
+                import sys
                 try:
                     logger.info(f"开始流式回测: {strategy_name} | {start_date}~{end_date} | 基准: {benchmark_code}")
+                    sys.stderr.write(f"[DEBUG asgi_socketio_handlers] 创建 BacktestVisualizationAPI\n")
+                    sys.stderr.flush()
                     
                     api = BacktestVisualizationAPI()
                     api._ensure_initialized()
+                    
+                    sys.stderr.write(f"[DEBUG asgi_socketio_handlers] 调用 api.stream_backtest\n")
+                    sys.stderr.flush()
                     
                     update_count = 0
                     last_flush_time = time.time()
@@ -218,14 +235,11 @@ def register_handlers(sio):
                             emit_and_wait('risk_update', update_data)
                         elif t == 'stream_complete':
                             logger.info("[STREAM] 发送 stream_complete 事件")
-                            simple_data = {
-                                "message": "回测完成",
-                                "finalEquity": update_data.get("finalEquity") if update_data else 1000000.0,
-                                "totalReturn": update_data.get("totalReturn") if update_data else 0.0,
-                                "totalTrades": update_data.get("totalTrades") if update_data else 0
-                            }
-                            emit_and_wait('stream_complete', simple_data)
+                            emit_and_wait('stream_complete', update_data, wait=True)
                         elif t == 'daily_equity':
+                            # 【调试】记录发送的 daily_equity 事件
+                            if update_count % 50 == 0 or update_count <= 3:
+                                logger.info(f"[STREAM] 发送 daily_equity: date={update_data.get('date')}, equity={update_data.get('strategyReturn')}")
                             emit_and_wait('daily_equity', update_data, wait=True)
                         elif t == 'daily_equity_engine':
                             emit_and_wait('daily_equity', update_data, wait=True)
@@ -318,14 +332,23 @@ def register_handlers(sio):
     @sio.event
     async def request_kline(sid, data):
         """
-        请求 K 线数据（异步版本）
+        请求 K 线数据（异步版本）- 带性能监控
         """
+        import time
+        
         symbol_code = data.get('symbol_code')
         start_date = data.get('start_date')
         end_date = data.get('end_date')
         request_id = data.get('request_id')
+        
+        total_start = time.perf_counter()
+
+        print(f"\n{'='*80}\n[SOCKET] 收到 request_kline 请求\n{'='*80}")
+        print(f"[SOCKET] symbol_code: {symbol_code}, start_date: {start_date}, end_date: {end_date}")
+        print(f"[SOCKET] request_id: {request_id}")
 
         if not symbol_code:
+            print(f"[SOCKET] 错误: 缺少 symbol_code")
             await sio.emit('kline_data', {"error": "缺少 symbol_code", "request_id": request_id}, room=sid)
             return
 
@@ -335,22 +358,49 @@ def register_handlers(sio):
             from server.visualization_api import BacktestVisualizationAPI
             
             def fetch_kline():
+                print(f"[SOCKET] 开始获取 K 线数据...")
+                t0 = time.perf_counter()
                 api_instance = BacktestVisualizationAPI()
+                t1 = time.perf_counter()
                 history = api_instance.get_symbol_kline(symbol_code, start_date, end_date)
+                t2 = time.perf_counter()
                 symbol_name = api_instance.stock_info_map.get(api_instance._normalize_symbol_code(symbol_code), symbol_code)
-                return history, symbol_name
+                
+                # 性能日志
+                init_time = (t1 - t0) * 1000
+                query_time = (t2 - t1) * 1000
+                total_time = (t2 - t0) * 1000
+                
+                print(f"[PERF] API初始化: {init_time:.2f}ms")
+                print(f"[PERF] 数据查询: {query_time:.2f}ms")
+                print(f"[PERF] 总耗时: {total_time:.2f}ms")
+                print(f"[SOCKET] 获取到 {len(history)} 条 K 线数据")
+                
+                return history, symbol_name, query_time
 
             loop = asyncio.get_event_loop()
-            history, symbol_name = await loop.run_in_executor(None, fetch_kline)
+            history, symbol_name, query_ms = await loop.run_in_executor(None, fetch_kline)
 
+            total_ms = (time.perf_counter() - total_start) * 1000
+            print(f"[PERF] 请求总耗时: {total_ms:.2f}ms (查询: {query_ms:.2f}ms)")
+            print(f"[SOCKET] 发送 kline_data 响应, 数据条数: {len(history)}")
+            
             await sio.emit('kline_data', {
                 "request_id": request_id,
                 "symbol_code": symbol_code,
                 "symbolCode": symbol_code,
                 "symbol_name": symbol_name,
-                "data": history
+                "data": history,
+                "perf": {
+                    "total_ms": round(total_ms, 2),
+                    "query_ms": round(query_ms, 2)
+                }
             }, room=sid)
+            print(f"[SOCKET] 响应已发送\n{'='*80}\n")
         except Exception as e:
+            print(f"[SOCKET] 处理 request_kline 失败: {e}")
+            import traceback
+            traceback.print_exc()
             logger.error(f"处理 request_kline 失败: {e}", exc_info=True)
             await sio.emit('kline_data', {
                 "error": str(e),

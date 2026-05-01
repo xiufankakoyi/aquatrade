@@ -3,7 +3,7 @@
 """
 import pandas as pd
 import numpy as np
-from core.backtest.flexible_backtest_engine import FlexibleBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
 
 print("=" * 60)
@@ -16,10 +16,8 @@ data_query = OptimizedStockDataQuery()
 
 # 初始化回测引擎
 print("[2] 初始化回测引擎...")
-engine = FlexibleBacktestEngine(
+engine = UnifiedBacktestEngine(
     data_query=data_query,
-    initial_capital=100000,
-    time_granularity='daily'
 )
 
 # 创建一个简单的测试策略

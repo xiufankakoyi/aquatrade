@@ -24,7 +24,7 @@ def generate():
             f.write(f"## 数据表: `{table}`\n")
             columns = db._get_table_columns(table)
             if not columns:
-                f.write("> [!WARNING]\n> 该表在当前后端（LanceDB/DuckDB）中为空或未找到。\n\n")
+                f.write("> [!WARNING]\n> 该表在当前后端（ArcticDB/Parquet）中为空或未找到。\n\n")
                 continue
             
             f.write("| 序号 | 字段名 (Column Name) | 备注 (Notes) |\n")

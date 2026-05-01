@@ -156,7 +156,7 @@ class PreloadService:
             from core.strategies.strategy_factory import get_factory
             factory = get_factory()
             
-            strategy = factory.get_strategy(strategy_name)
+            strategy = factory.create_strategy(strategy_name, use_simple=True)
             if strategy is None:
                 self.logger.warning(f"[Preload] 策略未找到: {strategy_name}")
                 return

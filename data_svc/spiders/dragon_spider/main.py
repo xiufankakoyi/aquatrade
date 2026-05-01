@@ -8,6 +8,12 @@ import argparse
 import sys
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
+
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8')
 
 # --- Selenium 相关库 (新增 Edge 支持) ---
 from selenium import webdriver
@@ -32,12 +38,50 @@ try:
     sys.path.insert(0, str(PROJECT_ROOT))
     from config.config import Config
     EXTERNAL_DATA_DIR = Path(Config.BASE_DIR) / "data" / "spider_data" / "dragon_eye" / "data_lake"
-    # 获取集中配置的凭证
+    TUSHARE_TOKEN = getattr(Config, 'TUSHARE_TOKEN', '')
+except ImportError:
+    EXTERNAL_DATA_DIR = PROJECT_ROOT / "data" / "spider_data" / "dragon_eye" / "data_lake"
+    PROJECT_TOKEN, PROJECT_USER, PROJECT_PASS = "", "", ""
+    TUSHARE_TOKEN = ""
+
+TRADE_CAL_CACHE = {}
+
+def is_trading_day(date_obj: datetime) -> bool:
+    """
+    判断是否为交易日（使用 Tushare 交易日历）
+
+    Args:
+        date_obj: 日期对象
+
+    Returns:
+        bool: 是否为交易日
+    """
+    date_str = date_obj.strftime("%Y%m%d")
+    year = date_obj.year
+
+    if year not in TRADE_CAL_CACHE:
+        try:
+            import tushare as ts
+            pro = ts.pro_api(TUSHARE_TOKEN)
+            start = f"{year}0101"
+            end = f"{year}1231"
+            cal_df = pro.trade_cal(exchange='SSE', start_date=start, end_date=end)
+            TRADE_CAL_CACHE[year] = set(cal_df[cal_df['is_open'] == 1]['cal_date'].tolist())
+        except Exception as e:
+            print(f"⚠️ 获取交易日历失败: {e}，使用简单周末判断")
+            TRADE_CAL_CACHE[year] = None
+
+    if TRADE_CAL_CACHE.get(year) is None:
+        return date_obj.weekday() < 5
+
+    return date_str in TRADE_CAL_CACHE.get(year, set())
+
+# 获取集中配置的凭证
+try:
     PROJECT_TOKEN = getattr(Config, 'DRAGON_TOKEN', '')
     PROJECT_USER = getattr(Config, 'DRAGON_USERNAME', '')
     PROJECT_PASS = getattr(Config, 'DRAGON_PASSWORD', '')
-except ImportError:
-    EXTERNAL_DATA_DIR = PROJECT_ROOT / "data" / "spider_data" / "dragon_eye" / "data_lake"
+except NameError:
     PROJECT_TOKEN, PROJECT_USER, PROJECT_PASS = "", "", ""
 
 # 默认配置
@@ -59,17 +103,16 @@ DEFAULT_CONFIG = {
 }
 
 def load_config():
-    """加载配置：优先使用集中配置，其次是本地 config.json"""
+    """加载配置：优先使用本地 config.json（含最新 Token），其次集中配置"""
     config = DEFAULT_CONFIG.copy()
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
                 ext_config = json.load(f)
-                # 只有当集中配置为空时，才使用 config.json 中的值
+                # 本地 config.json 优先（Token 会动态更新）
                 for key in ["TOKEN", "USERNAME", "PASSWORD"]:
-                    if not config[key] and ext_config.get(key):
+                    if ext_config.get(key):
                         config[key] = ext_config[key]
-                # 其他配置合并
                 if "HEADERS" in ext_config:
                     config["HEADERS"].update(ext_config["HEADERS"])
         except Exception as e:
@@ -137,39 +180,16 @@ def launch_browser_for_token():
     
     try:
         driver.get(TARGET_SITE_URL)
-        
-        # 新增：自动填写账号密码
+        time.sleep(2)
+
         if username and password:
             print(f"\n🔑 检测到账号密码，尝试自动登录...")
-            time.sleep(3)  # 等待页面加载
-            
-            try:
-                # 尝试查找登录相关元素（需要根据实际页面调整）
-                # 注意：这些选择器是示例，需要根据实际页面结构调整
-                # 切换到账号密码登录
-                # driver.find_element(By.XPATH, "//div[contains(text(), '账号密码登录')]").click()
-                # time.sleep(1)
-                
-                # 查找账号输入框
-                username_input = driver.find_element(By.XPATH, "//input[@type='text' or @placeholder='手机号' or @placeholder='账号']")
-                password_input = driver.find_element(By.XPATH, "//input[@type='password' or @placeholder='密码']")
-                login_button = driver.find_element(By.XPATH, "//button[contains(text(), '登录') or contains(text(), 'Login')]")
-                
-                # 填写账号密码
-                username_input.send_keys(username)
-                password_input.send_keys(password)
-                time.sleep(1)
-                login_button.click()
-                print("   ✅ 已提交账号密码登录请求")
-            except Exception as e:
-                print(f"   ⚠️ 自动登录失败（可能是登录页面结构变化）: {e}")
-                print("   👉 请手动扫码或填写账号密码登录")
-        
+            _try_auto_login(driver, username, password)
+
         # 循环检测 Token (180秒)
         for i in range(180):
             time.sleep(1)
-            
-            # 注入 JS 嗅探
+
             token_candidate = driver.execute_script("""
                 let keys = ['token', 'Token', 'Authorization', 'user_token', 'access_token'];
                 for (let key of keys) {
@@ -182,16 +202,16 @@ def launch_browser_for_token():
                 }
                 return null;
             """)
-            
+
             if token_candidate:
                 match = re.search(r'(eyJ[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+\.[a-zA-Z0-9\-_]+)', token_candidate)
                 if match:
                     captured_token = match.group(1)
                     print(f"\n🎉 成功捕获 Token!")
                     break
-            
+
             print(f"⏳ 等待登录... ({i}/180s)", end="\r")
-            
+
     except Exception as e:
         print(f"❌ 浏览器操作异常: {e}")
     finally:
@@ -199,12 +219,96 @@ def launch_browser_for_token():
             driver.quit()
         except:
             pass
-        
+
     if captured_token:
         return save_token_to_config(captured_token)
     else:
         print("\n❌ 获取 Token 失败（超时）。")
         sys.exit(1)
+
+def _try_auto_login(driver, username: str, password: str):
+    """
+    自动登录：先尝试点击'账号密码登录'tab，再填账号密码提交
+    """
+    tried = False
+
+    # 策略1: 查找并点击"账号密码登录" tab/链接
+    tab_selectors = [
+        "//*[contains(text(),'账号密码登录')]",
+        "//*[contains(text(),'密码登录')]",
+        "//*[contains(@class,'login-tab') and contains(text(),'密码')]",
+        "//button[contains(@class,'tab') and contains(text(),'密码')]",
+        "//div[contains(@class,'login')]//*[contains(text(),'账号')]",
+        "//a[contains(text(),'密码')]",
+    ]
+    for xpath in tab_selectors:
+        try:
+            elements = driver.find_elements(By.XPATH, xpath)
+            for el in elements:
+                if el.is_displayed():
+                    el.click()
+                    print(f"   [Tab] 点击: {xpath}")
+                    tried = True
+                    time.sleep(2)
+                    break
+        except Exception:
+            pass
+
+    # 策略2: 依次尝试多种输入框组合
+    input_selectors = [
+        ("//input[@type='text']", "//input[@type='password']"),
+        ("//input[contains(@placeholder,'手机')]", "//input[contains(@placeholder,'密码')]"),
+        ("//input[contains(@placeholder,'账号')]", "//input[contains(@placeholder,'密码')]"),
+        ("//input[@name='username']", "//input[@name='password']"),
+    ]
+
+    login_btn_selectors = [
+        "//button[contains(text(),'登录')]",
+        "//button[contains(text(),'登 录')]",
+        "//button[contains(@type,'submit')]",
+        "//div[contains(@class,'login')]//button",
+    ]
+
+    username_el, password_el, login_btn = None, None, None
+
+    for user_xp, pwd_xp in input_selectors:
+        try:
+            user_el = driver.find_element(By.XPATH, user_xp)
+            pwd_el = driver.find_element(By.XPATH, pwd_xp)
+            if user_el.is_displayed() and pwd_el.is_displayed():
+                username_el = user_el
+                password_el = pwd_el
+                print(f"   [Input] 找到输入框: {user_xp}")
+                break
+        except Exception:
+            continue
+
+    for btn_xp in login_btn_selectors:
+        try:
+            btn = driver.find_element(By.XPATH, btn_xp)
+            if btn.is_displayed():
+                login_btn = btn
+                print(f"   [Button] 找到登录按钮: {btn_xp}")
+                break
+        except Exception:
+            continue
+
+    if username_el and password_el and login_btn:
+        try:
+            username_el.clear()
+            username_el.send_keys(username)
+            time.sleep(0.5)
+            password_el.clear()
+            password_el.send_keys(password)
+            time.sleep(0.5)
+            login_btn.click()
+            print("   ✅ 已提交账号密码登录")
+            return
+        except Exception as e:
+            print(f"   ⚠️ 提交失败: {e}")
+
+    if not tried:
+        print("   ⚠️ 自动登录失败（页面结构变化），请手动登录")
 
 # ==========================================
 # 3. API 接口配置 (不变)
@@ -320,12 +424,21 @@ class StealthCrawler:
     def run_task(self, target_date):
         date_nodash = target_date.strftime("%Y%m%d")
         date_dash = target_date.strftime("%Y-%m-%d")
-        
+
         day_dir = os.path.join(self.config["DATA_DIR"], date_dash)
         if not os.path.exists(day_dir):
             os.makedirs(day_dir)
 
         print(f"\n📅 处理日期: {date_dash}")
+
+        if not is_trading_day(target_date):
+            print(f"   [⏭️ 非交易日] 跳过，写入空标记")
+            for api_key in API_MAP.keys():
+                file_path = os.path.join(day_dir, f"{api_key}.json")
+                if not os.path.exists(file_path):
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump({"success": True, "data": {}, "note": "非交易日"}, f, ensure_ascii=False)
+            return
 
         for api_key, api_conf in API_MAP.items():
             file_path = os.path.join(day_dir, f"{api_key}.json")
@@ -334,27 +447,31 @@ class StealthCrawler:
                 continue
 
             url_final = api_conf["url"].format(
-                date_nodash=date_nodash, 
+                date_nodash=date_nodash,
                 date_dash=date_dash,
                 page="{page}"
             )
 
             try:
                 print(f"   [📡 请求] {api_key} ... ", end="")
-                
+
                 final_data = None
                 if api_conf["type"] == "pagination":
-                    print("") 
+                    print("")
                     final_data = self.fetch_pagination(url_final, api_conf["data_key"])
                 else:
                     final_data = self.fetch_simple(url_final)
-                    
+
                 if final_data:
                     print("成功")
                     with open(file_path, 'w', encoding='utf-8') as f:
                         json.dump(final_data, f, ensure_ascii=False, indent=2)
                     self.random_sleep()
-                    
+                else:
+                    print("无数据，写入空标记")
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump({"success": True, "data": {}, "note": "无数据"}, f, ensure_ascii=False)
+
             except Exception as e:
                 print(f"❌ 异常: {e}")
 

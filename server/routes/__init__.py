@@ -21,6 +21,11 @@ def register_routes(app):
         ('server.routes.optimization_routes', 'optimization_bp'),
         ('server.routes.system_routes', 'system_bp'),
         ('server.routes.dragon_eye_routes', 'dragon_bp'),
+        ('server.routes.portfolio_routes', 'portfolio_bp'),
+        ('server.routes.game_routes', 'game_bp'),
+        ('server.routes.screener_routes', 'screener_bp'),
+        ('server.routes.export_routes', 'export_bp'),
+        ('server.routes.similarity_routes', 'similarity_bp'),
     ]
     
     for module_name, bp_name in route_modules:

@@ -153,7 +153,7 @@ const showConfigPanel = ref(false);
 // 计算属性
 // ============================================
 const progressPercent = computed(() => Math.round(props.progress * 100));
-const canRun = computed(() => !props.isRunning && localStrategyName.value.trim().length > 0);
+const canRun = computed(() => !props.isRunning);
 
 // ============================================
 // 方法
@@ -179,10 +179,13 @@ function formatNumber(value: number): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 44px;
-  padding: 0 12px;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
+  height: 48px;
+  padding: 0 16px;
+  margin: 8px 8px 0;
+  background-color: var(--bg-secondary, #1e222d);
+  border: 1px solid var(--border-color, #2a2e39);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   flex-shrink: 0;
 }
 
@@ -214,7 +217,7 @@ function formatNumber(value: number): string {
   gap: 6px;
   margin-right: 16px;
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-muted, #787b86);
   flex-shrink: 0;
 }
 
@@ -222,21 +225,21 @@ function formatNumber(value: number): string {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: var(--text-secondary);
+  color: var(--text-secondary, #b2b5be);
   text-decoration: none;
   transition: color 0.2s;
 }
 
 .breadcrumb-link:hover {
-  color: var(--text-primary);
+  color: var(--text-primary, #d1d4dc);
 }
 
 .breadcrumb-separator {
-  color: var(--border-hover);
+  color: var(--border-hover, #505053);
 }
 
 .breadcrumb-current {
-  color: var(--text-primary);
+  color: var(--text-primary, #d1d4dc);
   font-weight: 500;
 }
 
@@ -246,22 +249,22 @@ function formatNumber(value: number): string {
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
+  background-color: var(--bg-tertiary, #2a2e39);
+  border: 1px solid var(--border-color, #2a2e39);
   border-radius: 4px;
   min-width: 0;
 }
 
 .strategy-icon {
   font-size: 12px;
-  color: var(--accent-primary);
+  color: var(--accent-primary, #2962ff);
   flex-shrink: 0;
 }
 
 .strategy-name-input {
   background: transparent;
   border: none;
-  color: var(--text-primary);
+  color: var(--text-primary, #d1d4dc);
   font-size: 12px;
   font-weight: 500;
   width: 150px;
@@ -269,11 +272,11 @@ function formatNumber(value: number): string {
 }
 
 .strategy-name-input::placeholder {
-  color: var(--text-muted);
+  color: var(--text-muted, #787b86);
 }
 
 .unsaved-indicator {
-  color: var(--accent-warning);
+  color: var(--accent-warning, #f5a623);
   font-size: 8px;
   flex-shrink: 0;
 }
@@ -284,41 +287,41 @@ function formatNumber(value: number): string {
   align-items: center;
   gap: 8px;
   padding: 4px 12px;
-  background-color: var(--bg-tertiary);
+  background-color: var(--bg-tertiary, #2a2e39);
   border-radius: 4px;
 }
 
 .status-dot {
   width: 6px;
   height: 6px;
-  background-color: var(--color-up);
+  background-color: var(--color-up, #089981);
   border-radius: 50%;
   flex-shrink: 0;
 }
 
 .status-text {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--text-secondary, #b2b5be);
   white-space: nowrap;
 }
 
 .progress-bar {
   width: 100px;
   height: 4px;
-  background-color: var(--border-color);
+  background-color: var(--border-color, #2a2e39);
   border-radius: 2px;
   overflow: hidden;
 }
 
 .progress-fill {
   height: 100%;
-  background-color: var(--accent-primary);
+  background-color: var(--accent-primary, #2962ff);
   transition: width 0.3s ease;
 }
 
 .progress-text {
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--text-muted, #787b86);
   font-family: 'JetBrains Mono', monospace;
   min-width: 28px;
   text-align: right;
@@ -330,7 +333,7 @@ function formatNumber(value: number): string {
   align-items: center;
   gap: 12px;
   padding: 4px 12px;
-  background-color: var(--bg-tertiary);
+  background-color: var(--bg-tertiary, #2a2e39);
   border-radius: 4px;
 }
 
@@ -342,7 +345,7 @@ function formatNumber(value: number): string {
 
 .summary-item .label {
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--text-muted, #787b86);
   text-transform: uppercase;
 }
 
@@ -353,15 +356,15 @@ function formatNumber(value: number): string {
 }
 
 .summary-item .value.positive {
-  color: var(--color-up);
+  color: var(--color-up, #089981);
 }
 
 .summary-item .value.negative {
-  color: var(--color-down);
+  color: var(--color-down, #f23645);
 }
 
 .summary-separator {
-  color: var(--border-hover);
+  color: var(--border-hover, #3e3e42);
   font-size: 10px;
 }
 
@@ -372,10 +375,10 @@ function formatNumber(value: number): string {
   gap: 4px;
   padding: 0 10px;
   height: 28px;
-  background-color: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
+  background-color: var(--bg-tertiary, #2a2e39);
+  border: 1px solid var(--border-color, #2a2e39);
   border-radius: 4px;
-  color: var(--text-secondary);
+  color: var(--text-secondary, #b2b5be);
   font-size: 11px;
   cursor: pointer;
   transition: all 0.2s;
@@ -383,9 +386,9 @@ function formatNumber(value: number): string {
 }
 
 .toolbar-btn:hover:not(:disabled) {
-  background-color: var(--bg-hover);
-  border-color: var(--border-hover);
-  color: var(--text-primary);
+  background-color: var(--bg-hover, #3e3e42);
+  border-color: var(--border-hover, #3e3e42);
+  color: var(--text-primary, #d1d4dc);
 }
 
 .toolbar-btn:disabled {
@@ -394,31 +397,31 @@ function formatNumber(value: number): string {
 }
 
 .toolbar-btn.active {
-  background-color: var(--accent-primary);
-  border-color: var(--accent-primary);
+  background-color: var(--accent-primary, #2962ff);
+  border-color: var(--accent-primary, #2962ff);
   color: white;
 }
 
 .toolbar-btn.primary {
-  background-color: var(--color-up);
-  border-color: var(--color-up);
+  background-color: var(--color-up, #089981);
+  border-color: var(--color-up, #089981);
   color: white;
 }
 
 .toolbar-btn.primary:hover:not(:disabled) {
-  background-color: var(--color-up-light);
-  border-color: var(--color-up-light);
+  background-color: var(--color-up-light, #0db89a);
+  border-color: var(--color-up-light, #0db89a);
 }
 
 .toolbar-btn.danger {
-  background-color: var(--color-down);
-  border-color: var(--color-down);
+  background-color: var(--color-down, #f23645);
+  border-color: var(--color-down, #f23645);
   color: white;
 }
 
 .toolbar-btn.danger:hover {
-  background-color: var(--color-down-light);
-  border-color: var(--color-down-light);
+  background-color: var(--color-down-light, #f55763);
+  border-color: var(--color-down-light, #f55763);
 }
 
 .toolbar-btn i {

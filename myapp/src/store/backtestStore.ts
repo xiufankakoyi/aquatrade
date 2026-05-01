@@ -143,6 +143,12 @@ export const useBacktestStore = defineStore('backtest', () => {
     monthlyReturns.value = [];
     holdingPeriods.value = [];
     trades.value = [];
+    // 【修复】同时清除 localStorage 中的旧数据
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (e) {
+      console.warn('清除 localStorage 失败:', e);
+    }
   }
 
   function addTrade(trade: Trade) {
@@ -234,6 +240,7 @@ export const useBacktestStore = defineStore('backtest', () => {
 
   function addEquityPoints(points: Array<{ date: string; equity: number }>) {
     if (points.length === 0) return;
+    console.log('[backtestStore] addEquityPoints:', points.length, 'points, first:', points[0]?.date);
     const newSeries = [...equitySeries.value];
     points.forEach(p => {
       const existingIndex = newSeries.findIndex(item => item.date === p.date);
@@ -245,7 +252,8 @@ export const useBacktestStore = defineStore('backtest', () => {
     });
     newSeries.sort((a, b) => a.date.localeCompare(b.date));
     equitySeries.value = newSeries;
-    persistToStorage();
+    // 【优化】流式模式下不频繁持久化，只在回测完成时持久化
+    // persistToStorage();
   }
 
   function addBenchmarkPoint(date: string, equity: number) {
@@ -263,6 +271,7 @@ export const useBacktestStore = defineStore('backtest', () => {
 
   function addBenchmarkPoints(points: Array<{ date: string; equity: number }>) {
     if (points.length === 0) return;
+    console.log('[backtestStore] addBenchmarkPoints:', points.length, 'points, first:', points[0]?.date, 'equity:', points[0]?.equity);
     const newSeries = [...benchmarkEquitySeries.value];
     points.forEach(p => {
       const existingIndex = newSeries.findIndex(item => item.date === p.date);
@@ -274,7 +283,8 @@ export const useBacktestStore = defineStore('backtest', () => {
     });
     newSeries.sort((a, b) => a.date.localeCompare(b.date));
     benchmarkEquitySeries.value = newSeries;
-    persistToStorage();
+    // 【优化】流式模式下不频繁持久化
+    // persistToStorage();
   }
 
   const hasData = computed(() => {

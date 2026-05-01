@@ -128,7 +128,6 @@ aquatrade/
 
 ### 7.2 回测验证规程
 - **复权校验**：修改撮合逻辑后，需运行 `tests/test_price_adjustment_fix.py` 确保价格计算逻辑未退化。
-- **数据对齐**：通过 `scripts/check_backtest_data.py` 验证 QuestDB 与逻辑层的数据一致性。
 
 ### 7.3 性能分析
 - 开发者可使用 `scripts/profile_backtest.py` 针对特定策略进行 CPU 性能剖析，记录耗时分布。

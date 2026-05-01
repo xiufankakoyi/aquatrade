@@ -7,6 +7,7 @@ import json
 import time
 import queue
 import threading
+import polars as pl
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 from datetime import datetime
 from config.logger import get_logger
@@ -274,6 +275,20 @@ def get_dragon_stocks():
     
     try:
         df = service.manager.get_historical_dragon(start_date, end_date)
+        
+        # 处理日期格式
+        if not df.is_empty() and 'trade_date' in df.columns:
+            # 检查日期列类型，如果是字符串则不需要转换
+            if df['trade_date'].dtype == pl.Date:
+                df = df.with_columns(
+                    pl.col('trade_date').dt.strftime('%Y-%m-%d').alias('trade_date')
+                )
+            elif df['trade_date'].dtype == pl.Datetime:
+                df = df.with_columns(
+                    pl.col('trade_date').dt.strftime('%Y-%m-%d').alias('trade_date')
+                )
+            # 如果是字符串类型，保持不变
+        
         return jsonify(df.to_dicts())
     except Exception as e:
         logger.error(f"Failed to get stocks: {e}")
@@ -379,3 +394,156 @@ def confirm_and_push():
         - message: 提示信息
     """
     return push_to_feishu()
+
+
+# ==========================================
+# 数据可视化分析接口
+# ==========================================
+
+@dragon_bp.route('/limit-up-trend', methods=['GET'])
+def get_limit_up_trend():
+    """
+    获取涨停趋势数据
+    
+    Query Parameters:
+        - start_date: 开始日期 (YYYY-MM-DD)
+        - end_date: 结束日期 (YYYY-MM-DD)
+        
+    Returns:
+        - dates: 日期列表
+        - limit_up_counts: 涨停数量列表
+        - max_heights: 最高连板数列表
+    """
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    if not start_date or not end_date:
+        return jsonify({"error": "Missing start_date or end_date"}), 400
+    
+    try:
+        df = service.manager.get_market_sentiment(start_date, end_date)
+        
+        if df.is_empty():
+            return jsonify({"dates": [], "limit_up_counts": [], "max_heights": []})
+        
+        # 按日期排序
+        df = df.sort('trade_date')
+        
+        # 转换日期为字符串格式
+        dates = df['trade_date'].dt.strftime('%Y-%m-%d').to_list() if 'trade_date' in df.columns else []
+        
+        result = {
+            "dates": dates,
+            "limit_up_counts": df['limit_up_count'].to_list() if 'limit_up_count' in df.columns else [],
+            "max_heights": df['max_height'].to_list() if 'max_height' in df.columns else [],
+            "broken_ratios": df['broken_ratio'].to_list() if 'broken_ratio' in df.columns else [],
+            "limit_down_counts": df['limit_down_count'].to_list() if 'limit_down_count' in df.columns else []
+        }
+        
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Failed to get limit up trend: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@dragon_bp.route('/bubble-matrix', methods=['GET'])
+def get_bubble_matrix():
+    """
+    获取涨停强度气泡图数据
+    
+    Query Parameters:
+        - date: 日期 (YYYY-MM-DD)
+        
+    Returns:
+        - bubbles: 气泡数据列表
+            - stock_code: 股票代码
+            - stock_name: 股票名称
+            - continue_num: 连板数
+            - market_cap: 市值（亿元）
+            - limit_up_time: 封板时间（分钟数，如 9:30 = 570）
+            - order_amount: 封单额
+            - turnover_rate: 换手率
+            - quadrant: 象限 (1-4)
+            - theme: 题材
+    """
+    target_date = request.args.get('date')
+    
+    if not target_date:
+        return jsonify({"error": "Missing date parameter"}), 400
+    
+    try:
+        # 从原始数据文件读取更完整的信息
+        bubbles = service.get_bubble_matrix_data(target_date)
+        return jsonify(bubbles)
+    except Exception as e:
+        logger.error(f"Failed to get bubble matrix: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@dragon_bp.route('/theme-flow', methods=['GET'])
+def get_theme_flow():
+    """
+    获取题材流向数据
+    
+    Query Parameters:
+        - start_date: 开始日期 (YYYY-MM-DD)
+        - end_date: 结束日期 (YYYY-MM-DD)
+        
+    Returns:
+        - nodes: 节点列表 [{name, date, count, is_main}]
+        - links: 连接列表 [{source, target, value}]
+    """
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    if not start_date or not end_date:
+        return jsonify({"error": "Missing start_date or end_date"}), 400
+    
+    try:
+        flow_data = service.get_theme_flow_data(start_date, end_date)
+        return jsonify(flow_data)
+    except Exception as e:
+        logger.error(f"Failed to get theme flow: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@dragon_bp.route('/latest-date', methods=['GET'])
+def get_latest_date():
+    """
+    获取数据库中最新的数据日期
+    
+    Returns:
+        - latest_date: 最新日期 (YYYY-MM-DD)
+        - has_data: 是否有数据
+    """
+    try:
+        # 获取最近 30 天的数据，找到最新的日期
+        from datetime import datetime, timedelta
+        end = datetime.now()
+        start = end - timedelta(days=30)
+        
+        df = service.manager.get_market_sentiment(
+            start.strftime('%Y-%m-%d'),
+            end.strftime('%Y-%m-%d')
+        )
+        
+        if df.is_empty():
+            return jsonify({
+                "latest_date": None,
+                "has_data": False
+            })
+        
+        # 获取最新日期
+        latest_date = df['trade_date'].max()
+        if hasattr(latest_date, 'strftime'):
+            latest_date = latest_date.strftime('%Y-%m-%d')
+        else:
+            latest_date = str(latest_date)
+        
+        return jsonify({
+            "latest_date": latest_date,
+            "has_data": True
+        })
+    except Exception as e:
+        logger.error(f"Failed to get latest date: {e}")
+        return jsonify({"error": str(e)}), 500

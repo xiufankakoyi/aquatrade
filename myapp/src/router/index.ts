@@ -12,7 +12,7 @@ const routes: RouteRecordRaw[] = [
     children: [
       {
         path: '',
-        redirect: '/dashboard'
+        redirect: '/portfolio'
       },
       {
         path: 'dashboard',
@@ -33,20 +33,21 @@ const routes: RouteRecordRaw[] = [
         props: true
       },
       {
-        path: 'grid-search',
-        name: 'GridSearch',
-        component: () => import('../pages/GridSearchPage.vue'),
+        path: 'param-optimization',
+        name: 'ParamOptimization',
+        component: () => import('../pages/ParamOptimizationPage.vue'),
         meta: {
-          title: '参数网格搜索'
+          title: '参数优化'
         }
+      },
+      // 旧路由重定向到新页面（兼容旧链接）
+      {
+        path: 'grid-search',
+        redirect: '/param-optimization'
       },
       {
         path: 'param-compare',
-        name: 'ParamCompare',
-        component: () => import('../pages/ParamComparePage.vue'),
-        meta: {
-          title: '参数对比调参'
-        }
+        redirect: '/param-optimization'
       },
       {
         path: 'stock-sentiment',
@@ -57,11 +58,11 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
-        path: 'defense',
-        name: 'Defense',
-        component: () => import('../pages/DefenseConfigPage.vue'),
+        path: 'portfolio',
+        name: 'Portfolio',
+        component: () => import('../pages/PortfolioAnalysisPage.vue'),
         meta: {
-          title: '防守仓配置'
+          title: '实盘持仓分析'
         }
       },
       {
@@ -73,19 +74,11 @@ const routes: RouteRecordRaw[] = [
         }
       },
       {
-        path: 'strategy-generator',
-        name: 'StrategyGenerator',
-        component: () => import('../pages/StrategyGeneratorPage.vue'),
+        path: 'strategy-center',
+        name: 'StrategyCenter',
+        component: () => import('../pages/StrategyCenterPage.vue'),
         meta: {
-          title: 'AI 策略生成器'
-        }
-      },
-      {
-        path: 'strategy-editor',
-        name: 'StrategyEditor',
-        component: () => import('../pages/StrategyWorkbench.vue'),
-        meta: {
-          title: '策略开发工作台'
+          title: '策略中心'
         }
       },
       {
@@ -94,6 +87,30 @@ const routes: RouteRecordRaw[] = [
         component: () => import('../pages/DragonEyePage.vue'),
         meta: {
           title: 'DragonEye 龙虎榜'
+        }
+      },
+      {
+        path: 'kline-game',
+        name: 'KlineGame',
+        component: () => import('../pages/KlineGamePage.vue'),
+        meta: {
+          title: 'K线盘感训练'
+        }
+      },
+      {
+        path: 'stock-screener',
+        name: 'StockScreener',
+        component: () => import('../views/StockScreenerPage.vue'),
+        meta: {
+          title: '股票量化筛选器'
+        }
+      },
+      {
+        path: 'similarity',
+        name: 'Similarity',
+        component: () => import('../views/SimilarityPage.vue'),
+        meta: {
+          title: 'K线形态相似度'
         }
       }
     ]

@@ -125,7 +125,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import * as echarts from 'echarts';
 import type { ECharts, EChartsOption } from 'echarts';
 import type { Trade } from '../../types/backtest';
@@ -258,7 +258,7 @@ function getMainChartOption(): EChartsOption {
       axisPointer: { label: { show: true } },
     },
     yAxis: {
-      type: chartScale.value,
+      type: chartScale.value === 'log' ? 'log' : 'value',
       scale: true,
       ...commonAxisConfig,
       splitLine: { show: true, lineStyle: { color: '#1e222d', type: 'dashed' } },
@@ -492,7 +492,14 @@ function getFrequencyChartOption(): EChartsOption {
 // 方法
 // ============================================
 function initCharts() {
-  if (mainChartRef.value) {
+  // 检查 DOM 元素是否有有效尺寸
+  const hasValidSize = (el: HTMLElement | undefined) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+
+  if (mainChartRef.value && hasValidSize(mainChartRef.value)) {
     mainChart = echarts.init(mainChartRef.value);
     mainChart.on('updateAxisPointer', (params: any) => {
       const date = params.axesInfo[0]?.value;
@@ -512,15 +519,15 @@ function initCharts() {
     });
   }
 
-  if (positionChartRef.value) {
+  if (positionChartRef.value && hasValidSize(positionChartRef.value)) {
     positionChart = echarts.init(positionChartRef.value);
   }
 
-  if (drawdownChartRef.value) {
+  if (drawdownChartRef.value && hasValidSize(drawdownChartRef.value)) {
     drawdownChart = echarts.init(drawdownChartRef.value);
   }
 
-  if (frequencyChartRef.value) {
+  if (frequencyChartRef.value && hasValidSize(frequencyChartRef.value)) {
     frequencyChart = echarts.init(frequencyChartRef.value);
   }
 
@@ -637,9 +644,12 @@ watch(() => props.syncDate, (date) => {
 // 生命周期
 // ============================================
 onMounted(() => {
-  initCharts();
-  updateCharts();
-  
+  // 使用 nextTick 确保 DOM 已渲染并且有尺寸
+  nextTick(() => {
+    initCharts();
+    updateCharts();
+  });
+
   window.addEventListener('resize', () => {
     mainChart?.resize();
     positionChart?.resize();

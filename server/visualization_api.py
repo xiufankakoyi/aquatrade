@@ -1,5 +1,6 @@
 import json
 import pandas as pd
+import polars as pl
 try:
     import cupy as np
 except ImportError:
@@ -9,12 +10,19 @@ from typing import Dict, List, Any, Optional, Generator
 from threading import Event
 from functools import lru_cache
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
-from core.backtest.optimized_backtest_engine import OptimizedBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from core.strategies.strategy_factory import StrategyFactory
 import os
 import sys
 from pathlib import Path
 import re
+import pyarrow.parquet as pq
+
+try:
+    from data_svc.storage.lancedb_reader import LanceDBDataReader
+    LANCEDB_READER_AVAILABLE = True
+except ImportError:
+    LANCEDB_READER_AVAILABLE = False
 
 # 添加项目根目录到 Python 路径
 _project_root = Path(__file__).parent.parent
@@ -29,7 +37,7 @@ class BacktestVisualizationAPI:
     def __init__(self, db_path: str = None):
         self.db_path = db_path or Config.DB_PATH
         self.data_query: Optional[OptimizedStockDataQuery] = None
-        self.backtest_engine: Optional[OptimizedBacktestEngine] = None
+        self.backtest_engine: Optional[UnifiedBacktestEngine] = None
         self.stock_info_map: Dict[str, str] = {}
         self._initialized = False
         self.initial_capital = Config.INITIAL_CAPITAL
@@ -63,7 +71,7 @@ class BacktestVisualizationAPI:
             else:
                 self.data_query = OptimizedStockDataQuery(self.db_path)
                 
-            self.backtest_engine = OptimizedBacktestEngine(self.data_query)
+            self.backtest_engine = UnifiedBacktestEngine(self.data_query)
             self.stock_info_map = self._load_stock_info()
             self._initialized = True
         except Exception as e:
@@ -72,14 +80,14 @@ class BacktestVisualizationAPI:
 
     def _load_stock_info(self) -> Dict[str, str]:
         """
-        【核心修复】使用 data_query 方法加载股票信息，支持 DuckDB + Parquet 后端
+        【核心修复】使用 data_query 方法加载股票信息，支持 Polars + Parquet 后端
         """
         from config.logger import get_logger
         try:
             if self.data_query is None:
                 return {}
             
-            # 使用 data_query 的 _query_df 方法，支持 DuckDB 和 SQLite
+            # 使用 data_query 的 _query_df 方法，支持 Polars 和 SQLite
             query = "SELECT stock_code, stock_name FROM stock_info"
             df = self.data_query._query_df(query)
             
@@ -105,7 +113,7 @@ class BacktestVisualizationAPI:
     def _get_global_latest_factor(self, symbol_code: str) -> float:
         """
         【核心修复】获取该股票在数据库中最新（最后一天）的复权因子
-        使用 data_query 方法，支持 DuckDB + Parquet 后端
+        使用 data_query 方法，支持 Polars + Parquet 后端
         """
         from config.logger import get_logger
         try:
@@ -118,7 +126,7 @@ class BacktestVisualizationAPI:
                 factor = row.get('adj_factor', 1.0) if row else 1.0
                 return float(factor) if factor is not None and not pd.isna(factor) else 1.0
 
-            # 使用 data_query 的 _query_df 方法，支持 DuckDB 和 SQLite
+            # 使用 data_query 的 _query_df 方法，支持 Polars 和 SQLite
             query = """
                 SELECT adj_factor 
                 FROM stock_daily 
@@ -145,44 +153,76 @@ class BacktestVisualizationAPI:
         
         使用这段时间内的最新复权因子作为基准，确保价格序列平滑连续
         
-        【性能优化】使用向量化操作替代 groupby().apply()，提升 4-10 倍性能
+        【性能优化】使用 Polars 零拷贝，比 Pandas 快 4-10 倍
         """
         if df is None or df.empty or 'adj_factor' not in df.columns:
             return df
         
-        # 【性能优化】只在需要修改时才 copy
-        need_copy = any(col in df.columns for col in ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20'])
-        if need_copy:
-            df = df.copy()
-        
-        # 【性能优化】向量化：按股票代码分组，取每只股票的最新因子
-        # 使用 sort_values + groupby().last() 替代 groupby().apply()，性能提升 4-10 倍
-        if 'trade_date' in df.columns:
-            # 先排序，然后使用 groupby().last() 获取最新因子（比 apply 快得多）
-            df_sorted = df.sort_values(['stock_code', 'trade_date'])
-            latest_factors = df_sorted.groupby('stock_code')['adj_factor'].last()
-            # 使用 map 映射回原 DataFrame（比 apply 快）
-            df['latest_factor'] = df['stock_code'].map(latest_factors)
-        else:
-            # 如果没有 trade_date，使用每组的最后一个因子（向量化操作）
-            latest_factors = df.groupby('stock_code')['adj_factor'].transform('last')
-            df['latest_factor'] = latest_factors
-        
-        # 计算复权比率 (防止除零) - 向量化操作
-        df['latest_factor'] = df['latest_factor'].replace(0, 1.0)
-        qfq_ratio = df['adj_factor'] / df['latest_factor']
-        
-        # 【性能优化】向量化应用到所有价格列（一次性计算，比循环快）
         price_cols = ['open', 'high', 'low', 'close', 'prev_close', 'ma5', 'ma10', 'ma20']
-        for col in price_cols:
-            if col in df.columns:
-                # 使用向量化操作，一次性计算所有行
+        available_price_cols = [c for c in price_cols if c in df.columns]
+        
+        if not available_price_cols:
+            return df
+        
+        try:
+            df_pl = pl.from_pandas(df)
+            
+            if 'trade_date' in df_pl.columns:
+                latest_factors = (df_pl
+                    .sort('trade_date', descending=True)
+                    .group_by('stock_code')
+                    .agg(pl.col('adj_factor').first().alias('latest_factor'))
+                )
+            else:
+                latest_factors = (df_pl
+                    .group_by('stock_code')
+                    .agg(pl.col('adj_factor').last().alias('latest_factor'))
+                )
+            
+            df_pl = df_pl.join(latest_factors, on='stock_code', how='left')
+            
+            df_pl = df_pl.with_columns([
+                pl.when(pl.col('latest_factor') == 0)
+                  .then(1.0)
+                  .otherwise(pl.col('latest_factor'))
+                  .alias('latest_factor_safe')
+            ])
+            
+            qfq_ratio = pl.col('adj_factor') / pl.col('latest_factor_safe')
+            
+            exprs = [pl.col('latest_factor_safe').alias('qfq_ratio')]
+            for col in available_price_cols:
+                exprs.append((pl.col(col).cast(pl.Float64) * qfq_ratio).alias(col))
+            
+            df_pl = df_pl.with_columns(exprs)
+            df_pl = df_pl.drop(['latest_factor', 'latest_factor_safe', 'qfq_ratio'])
+            
+            return df_pl.to_pandas(use_pyarrow_extension_array=True)
+            
+        except Exception as e:
+            from config.logger import get_logger
+            logger = get_logger(__name__)
+            logger.warning(f"Polars QFQ 计算失败，回退到 Pandas: {e}")
+            
+            df = df.copy()
+            
+            if 'trade_date' in df.columns:
+                df_sorted = df.sort_values(['stock_code', 'trade_date'])
+                latest_factors = df_sorted.groupby('stock_code')['adj_factor'].last()
+                df['latest_factor'] = df['stock_code'].map(latest_factors)
+            else:
+                latest_factors = df.groupby('stock_code')['adj_factor'].transform('last')
+                df['latest_factor'] = latest_factors
+            
+            df['latest_factor'] = df['latest_factor'].replace(0, 1.0)
+            qfq_ratio = df['adj_factor'] / df['latest_factor']
+            
+            for col in available_price_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce') * qfq_ratio
-        
-        # 清理临时列
-        df.drop(columns=['latest_factor'], inplace=True, errors='ignore')
-        
-        return df
+            
+            df.drop(columns=['latest_factor'], inplace=True, errors='ignore')
+            
+            return df
 
     def get_strategy_list(self) -> List[Dict]:
         """获取策略列表（不需要数据库连接）"""
@@ -376,35 +416,43 @@ class BacktestVisualizationAPI:
         return []
     
     def _get_benchmark_data_from_db(self, benchmark_code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """获取基准数据（需要数据库连接）"""
-        if not self._initialized:
-            self._ensure_initialized()
+        """获取基准数据（从 LanceDB 读取指数数据）"""
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        
+        INDEX_MAPPING = {
+            '000300': '000300.SH',
+            '000905': '000905.SH',
+            '000001': '000001.SH',
+            '399001': '399001.SZ',
+            '000016': '000016.SH',
+            '399006': '399006.SZ',
+        }
+        
+        if benchmark_code not in INDEX_MAPPING:
+            logger.warning(f"不支持的基准代码: {benchmark_code}")
+            return pd.DataFrame()
+        
+        ts_code = INDEX_MAPPING[benchmark_code]
         
         try:
-            if self.data_query is None:
-                self._ensure_initialized()
+            from data_svc.storage.lancedb_manager import get_lancedb_manager
             
-            if self.data_query is None:
-                return pd.DataFrame()
-            
-            # 【核心修复】使用 data_query 方法，支持 DuckDB + Parquet 后端
-            query = """
-                SELECT date, close FROM benchmark_data
-                WHERE code = ? AND date >= ? AND date <= ?
-                ORDER BY date ASC
-            """
-            df = self.data_query._query_df(query, [benchmark_code, start_date, end_date])
+            manager = get_lancedb_manager()
+            df = manager.read_data('market_data', ts_code, start_date, end_date)
             
             if df.empty:
-                from config.logger import get_logger
-                logger = get_logger(__name__)
-                logger.warning(f"在数据库中未找到基准数据: code={benchmark_code}, start={start_date}, end={end_date}")
-                
-            return df
+                logger.warning(f"LanceDB 中未找到基准数据: {ts_code}, {start_date} ~ {end_date}")
+                return pd.DataFrame()
+            
+            result_df = pd.DataFrame({
+                'date': df.index.strftime('%Y-%m-%d'),
+                'close': df['close'].values
+            })
+            
+            return result_df
 
         except Exception as e:
-            from config.logger import get_logger
-            logger = get_logger(__name__)
             logger.warning(f"读取基准数据时发生错误: {e}")
             return pd.DataFrame()
 
@@ -412,11 +460,21 @@ class BacktestVisualizationAPI:
     # --- 【【代码还原】】: 还原旧的、阻塞的 API 函数 (作为备用) ---
     def _get_index_kline_from_parquet(self, symbol_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """
-        从 index parquet 文件获取指数K线数据
-        支持：000300(沪深300), 000001(上证指数), 399001(深证成指), 000016(上证50), 399006(创业板), 000905(中证500)
+        获取指数K线数据
+        
+        优先从 LanceDB index_daily 表读取，回退到 Parquet
+        支持：000300(沪深300), 000905(中证500), 000001(上证指数), 399001(深证成指), 000016(上证50), 399006(创业板)
         """
-        # 指数代码映射
-        INDEX_MAPPING = {
+        INDEX_SYMBOL_MAPPING = {
+            '000300': '000300.SH',
+            '000905': '000905.SH',
+            '000001': '000001.SH',
+            '399001': '399001.SZ',
+            '000016': '000016.SH',
+            '399006': '399006.SZ',
+        }
+        
+        INDEX_PARQUET_MAPPING = {
             '000300': 'hs300_daily.parquet',
             '000905': 'zz500_daily.parquet',
             '000001': 'sh_index_daily.parquet',
@@ -425,57 +483,113 @@ class BacktestVisualizationAPI:
             '399006': 'cyb_index_daily.parquet',
         }
         
-        if symbol_code not in INDEX_MAPPING:
+        if symbol_code not in INDEX_SYMBOL_MAPPING:
             return []
         
+        lancedb_symbol = INDEX_SYMBOL_MAPPING[symbol_code]
+        
         try:
-            import duckdb
-            parquet_file = Path('data/parquet_data') / INDEX_MAPPING[symbol_code]
+            import lancedb
+            lancedb_path = Path(__file__).parent.parent / "data" / "lancedb"
+            db = lancedb.connect(str(lancedb_path))
+            
+            result = db.list_tables()
+            tables = result.tables if hasattr(result, 'tables') else list(result)
+            
+            if 'index_daily' in tables:
+                table = db.open_table('index_daily')
+                ds = table.to_lance()
+                
+                if hasattr(ds, 'scanner'):
+                    scanner = ds.scanner(
+                        filter=f"symbol = '{lancedb_symbol}'",
+                        columns=['trade_date', 'open', 'high', 'low', 'close', 'volume']
+                    )
+                    arrow_table = scanner.to_table()
+                else:
+                    arrow_table = table.to_arrow()
+                
+                df = pl.from_arrow(arrow_table)
+                
+                if not df.is_empty():
+                    df = df.rename({'trade_date': 'date'})
+                    
+                    if df['date'].dtype == pl.Datetime:
+                        df = df.with_columns(
+                            pl.col('date').dt.date().alias('date')
+                        )
+                    
+                    start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
+                    end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
+                    
+                    df = df.filter(
+                        (pl.col("date") >= start_dt) & (pl.col("date") <= end_dt)
+                    ).sort("date")
+                    
+                    if not df.is_empty():
+                        records = []
+                        for row in df.iter_rows(named=True):
+                            date_val = row['date']
+                            if hasattr(date_val, 'strftime'):
+                                date_str = date_val.strftime('%Y-%m-%d')
+                            else:
+                                date_str = str(date_val)[:10]
+                            
+                            records.append({
+                                "date": date_str,
+                                "open": float(f"{row['open']:.2f}"),
+                                "high": float(f"{row['high']:.2f}"),
+                                "low": float(f"{row['low']:.2f}"),
+                                "close": float(f"{row['close']:.2f}"),
+                                "volume": float(row['volume']) if row.get('volume') is not None else 0,
+                                "change_pct": None
+                            })
+                        return records
+                    
+        except Exception as e:
+            logger.warning(f"从 LanceDB 读取指数数据失败: {e}")
+        
+        try:
+            parquet_file = Path('data/parquet_data') / INDEX_PARQUET_MAPPING[symbol_code]
             
             if not parquet_file.exists():
                 return []
             
-            con = duckdb.connect()
-            query = """
-                SELECT 
-                    date,
-                    open, high, low, close,
-                    volume,
-                    change_pct
-                FROM read_parquet(?)
-                WHERE date >= ? AND date <= ?
-                ORDER BY date ASC
-            """
-            df = con.execute(query, [str(parquet_file), start_date, end_date]).fetchdf()
-            con.close()
+            df = pl.scan_parquet(str(parquet_file)).filter(
+                (pl.col("date") >= start_date) & (pl.col("date") <= end_date)
+            ).sort("date").collect()
             
-            if df.empty:
+            if df.is_empty():
                 return []
             
-            # 转换为列表格式
             records = []
-            for _, row in df.iterrows():
-                # 处理 change_pct，可能是字符串如 "-1.30%"
+            for row in df.iter_rows(named=True):
                 change_pct = row.get('change_pct')
-                if pd.notna(change_pct):
+                if change_pct is not None:
                     if isinstance(change_pct, str):
                         change_pct = float(change_pct.replace('%', ''))
                     else:
                         change_pct = float(change_pct)
                 
+                date_val = row['date']
+                if hasattr(date_val, 'strftime'):
+                    date_str = date_val.strftime('%Y-%m-%d')
+                else:
+                    date_str = str(date_val)[:10]
+                
                 records.append({
-                    "date": row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])[:10],
+                    "date": date_str,
                     "open": float(f"{row['open']:.2f}"),
                     "high": float(f"{row['high']:.2f}"),
                     "low": float(f"{row['low']:.2f}"),
                     "close": float(f"{row['close']:.2f}"),
-                    "volume": float(row['volume']) if pd.notna(row['volume']) else 0,
+                    "volume": float(row['volume']) if row.get('volume') is not None else 0,
                     "change_pct": change_pct
                 })
             return records
             
         except Exception as e:
-            print(f"从 parquet 读取指数数据失败 {symbol_code}: {e}")
+            logger.warning(f"从 parquet 读取指数数据失败 {symbol_code}: {e}")
             return []
 
     def get_symbol_kline(self, symbol_code: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
@@ -499,47 +613,188 @@ class BacktestVisualizationAPI:
         if index_data:
             return index_data
         
+        # 尝试从 LanceDB 读取股票数据
+        if LANCEDB_READER_AVAILABLE:
+            try:
+                reader = LanceDBDataReader()
+                # 将股票代码转换为 ts_code 格式
+                ts_code = self._convert_to_ts_code(original_symbol_code)
+                
+                df = reader.read(ts_code, start_date, end_date)
+                
+                if not df.is_empty():
+                    records = []
+                    for row in df.iter_rows(named=True):
+                        trade_date = row.get('trade_date')
+                        if hasattr(trade_date, 'strftime'):
+                            date_str = trade_date.strftime('%Y-%m-%d')
+                        else:
+                            date_str = str(trade_date)[:10]
+                        
+                        record = {
+                            "date": date_str,
+                            "open": float(f"{row['open']:.2f}") if row.get('open') is not None else None,
+                            "high": float(f"{row['high']:.2f}") if row.get('high') is not None else None,
+                            "low": float(f"{row['low']:.2f}") if row.get('low') is not None else None,
+                            "close": float(f"{row['close']:.2f}") if row.get('close') is not None else None,
+                            "volume": float(row['volume']) if row.get('volume') is not None else 0,
+                            "ma5": float(f"{row['ma5']:.2f}") if row.get('ma5') is not None else None,
+                            "ma10": float(f"{row['ma10']:.2f}") if row.get('ma10') is not None else None,
+                            "ma20": float(f"{row['ma20']:.2f}") if row.get('ma20') is not None else None,
+                        }
+                        if record['open'] is not None and record['close'] is not None:
+                            records.append(record)
+                    return records
+            except Exception as e:
+                print(f"[K线查询] LanceDB 读取失败: {e}")
+        
         try:
-            # 1. 获取原始数据 (Raw Price + Adj Factor)
-            history_df = self.data_query.get_stock_history(
-                symbol_code, start_date, end_date,
-                columns=["stock_code", "trade_date", "open", "high", "low", "close", "volume", "adj_factor", "ma5", "ma10", "ma20"]
-            )
+            import time
+            t0 = time.perf_counter()
 
-            if history_df is None or history_df.empty:
+            # 1. 获取全局最新因子作为基准
+            base_factor = self._get_global_latest_factor(symbol_code)
+
+            # 2. 直接使用 Polars 读取 Parquet（零拷贝）
+            parquet_dir = os.getenv("PARQUET_DIR", str(Path(__file__).parent.parent / "data" / "parquet"))
+            stock_daily_path = Path(parquet_dir) / "stock_daily.parquet"
+
+            if not stock_daily_path.exists():
+                print(f"[K线查询] Parquet文件不存在: {stock_daily_path}")
                 return []
 
-            # 2. 【核心修复】获取全局最新因子作为基准
-            base_factor = self._get_global_latest_factor(symbol_code)
-            
-            # 3. 计算前复权 (QFQ)
-            # 公式：QFQ = Raw * (Current_Factor / Global_Latest_Factor)
-            # 这样算出来的价格，才是和你现在看到的"现价"一致的价格
-            history_df['qfq_ratio'] = history_df['adj_factor'] / base_factor
-            
-            price_cols = ['open', 'high', 'low', 'close', 'ma5', 'ma10', 'ma20']
-            for col in price_cols:
-                if col in history_df.columns:
-                    history_df[col] = history_df[col] * history_df['qfq_ratio']
+            # 需要读取的列（精确投影）
+            needed_cols = ["stock_code", "trade_date", "open", "high", "low", "close", "volume", "adj_factor", "ma5", "ma10", "ma20"]
 
-            # 4. 格式化输出
+            t1 = time.perf_counter()
+
+            # 使用 Polars Lazy API 进行谓词下推 + 精确投影
+            # 优化: 先过滤 stock_code（最有效），再过滤日期范围
+            lazy_df = (
+                pl.scan_parquet(str(stock_daily_path), schema=needed_cols)
+                .filter(pl.col("stock_code") == symbol_code)
+                .filter(pl.col("trade_date") >= start_date)
+                .filter(pl.col("trade_date") <= end_date)
+                .sort("trade_date")
+            )
+
+            # 性能诊断: 打印执行计划
+            if os.getenv("DEBUG_QUERY", "0") == "1":
+                print(f"[DEBUG] 执行计划:\n{lazy_df.explain()}")
+
+            # Parquet 行组诊断
+            if os.getenv("DEBUG_PARQUET", "0") == "1":
+                pf = pq.ParquetFile(str(stock_daily_path))
+                print(f"[DEBUG] Parquet 元数据:")
+                print(f"  - 行组数: {pf.metadata.num_row_groups}")
+                print(f"  - 总行数: {pf.metadata.num_rows}")
+                print(f"  - 列数: {pf.metadata.num_columns}")
+                rg = pf.metadata.row_group(0)
+                print(f"  - 行组0 列数: {rg.num_columns}, 行数: {rg.num_rows}")
+                # 估算 stock_code 列的统计信息
+                for col_idx in range(min(3, rg.num_columns)):
+                    col = rg.column(col_idx)
+                    print(f"  - 列{col_idx} ({col.path_in_schema}): min={col.statistics.min}, max={col.statistics.max}")
+
+            # 收集为 Polars DataFrame
+            df = lazy_df.collect()
+            t2 = time.perf_counter()
+            print(f"[PERF] Polars查询: {(t2-t1)*1000:.1f}ms, {len(df)}行")
+
+            if df.is_empty():
+                return []
+
+            # 3. 计算前复权 (Polars 向量化操作)
+            qfq_ratio = pl.col("adj_factor") / base_factor
+            price_cols = [c for c in ["open", "high", "low", "close", "ma5", "ma10", "ma20"] if c in df.columns]
+
+            for col in price_cols:
+                df = df.with_columns(
+                    (pl.col(col) * qfq_ratio).round(2).alias(col)
+                )
+
+            # 4. 格式化日期和成交量为最终输出
+            df = df.with_columns(
+                pl.col("trade_date").dt.to_string("%Y-%m-%d").alias("date"),
+                pl.col("volume").cast(pl.Int64).cast(str).alias("volume_str")
+            )
+
+            t3 = time.perf_counter()
+
+            # 5. 直接构建字典列表（Polars to_dicts 是高效的）
             records = []
-            for _, row in history_df.iterrows():
-                records.append({
-                    "date": row['trade_date'],
-                    "open": float(f"{row['open']:.2f}"),
-                    "high": float(f"{row['high']:.2f}"),
-                    "low": float(f"{row['low']:.2f}"),
-                    "close": float(f"{row['close']:.2f}"),
-                    "volume": float(row['volume']),
-                    "ma5": float(f"{row['ma5']:.2f}") if pd.notna(row.get('ma5')) else None,
-                    "ma10": float(f"{row['ma10']:.2f}") if pd.notna(row.get('ma10')) else None,
-                    "ma20": float(f"{row['ma20']:.2f}") if pd.notna(row.get('ma20')) else None
-                })
+            for row in df.iter_rows(named=True):
+                date_val = row.get('date', '')
+                open_val = row.get('open')
+                close_val = row.get('close')
+
+                if open_val is None or close_val is None:
+                    continue
+
+                record = {
+                    "date": date_val,
+                    "open": round(float(open_val), 2),
+                    "high": round(float(row.get('high', 0)), 2),
+                    "low": round(float(row.get('low', 0)), 2),
+                    "close": round(float(close_val), 2),
+                    "volume": int(float(row.get('volume', 0))) if row.get('volume') is not None else 0,
+                }
+
+                # MA 指标（如果存在）
+                for ma in ['ma5', 'ma10', 'ma20']:
+                    if ma in row and row[ma] is not None:
+                        record[ma] = round(float(row[ma]), 2)
+
+                records.append(record)
+
+            t4 = time.perf_counter()
+            print(f"[PERF] Polars处理: {(t3-t2)*1000:.1f}ms, 构建记录: {(t4-t3)*1000:.1f}ms")
+            print(f"[PERF] 总耗时: {(t4-t1)*1000:.1f}ms, {len(records)}条记录")
+
             return records
         except Exception as e:
             print(f"K线获取失败 {symbol_code}: {e}")
+            import traceback
+            traceback.print_exc()
             return []
+    
+    def _convert_to_ts_code(self, symbol_code: str) -> str:
+        """
+        将股票代码转换为 ts_code 格式
+        
+        Args:
+            symbol_code: 股票代码，如 '601398.SH' 或 '601398'
+        
+        Returns:
+            ts_code 格式的股票代码，如 '601398.SH'
+        """
+        if not symbol_code:
+            return ''
+        
+        code = symbol_code.strip().upper()
+        
+        # 如果已经包含后缀，直接返回
+        if '.' in code:
+            return code
+        
+        # 根据代码规则判断市场
+        match = re.search(r'(\d{6})', code)
+        if not match:
+            return code
+        
+        pure_code = match.group(1)
+        
+        # 上海市场：6开头
+        if pure_code.startswith('6'):
+            return f"{pure_code}.SH"
+        # 深圳市场：0、3开头
+        elif pure_code.startswith('0') or pure_code.startswith('3'):
+            return f"{pure_code}.SZ"
+        # 北交所：8、4开头
+        elif pure_code.startswith('8') or pure_code.startswith('4'):
+            return f"{pure_code}.BJ"
+        else:
+            return f"{pure_code}.SZ"  # 默认深圳
 
     def get_latest_prices(self, symbol_codes: List[str], target_date: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         """获取最新价格（强制全局前复权）"""
@@ -644,7 +899,7 @@ class BacktestVisualizationAPI:
         else:
             local_data_query = OptimizedStockDataQuery(self.db_path)
             
-        local_engine = OptimizedBacktestEngine(local_data_query)
+        local_engine = UnifiedBacktestEngine(local_data_query)
         
         try:
             creation_kwargs: Dict[str, Any] = params or {}
@@ -1031,19 +1286,30 @@ class BacktestVisualizationAPI:
         dates = date_series.dt.strftime('%Y-%m-%d').tolist()
         start_date_str = dates[0]
         end_date_str = dates[-1]
+        print(f"[DEBUG _extract_equity_curve] dates: {len(dates)}, {start_date_str} ~ {end_date_str}")
         benchmark_df = self._get_benchmark_data_from_db('000300', start_date_str, end_date_str)
+        print(f"[DEBUG _extract_equity_curve] benchmark_df: {len(benchmark_df)} rows")
         benchmark_curve = []
 
         if not benchmark_df.empty:
              try:
+                print(f"[DEBUG _extract_equity_curve] benchmark_df columns: {benchmark_df.columns.tolist()}")
+                print(f"[DEBUG _extract_equity_curve] benchmark_df date type: {type(benchmark_df['date'].iloc[0])}, sample: {benchmark_df['date'].tolist()[:3]}")
                 strategy_dates_df = pd.DataFrame({'date': dates})
                 merged_df = pd.merge(strategy_dates_df, benchmark_df, on='date', how='left')
+                print(f"[DEBUG _extract_equity_curve] merged_df: {len(merged_df)} rows, close na: {merged_df['close'].isna().sum()}")
                 merged_df['close'] = merged_df['close'].ffill().bfill()
                 first_valid_benchmark = merged_df['close'].dropna().iloc[0]
+                print(f"[DEBUG _extract_equity_curve] first_valid_benchmark: {first_valid_benchmark}")
                 if first_valid_benchmark > 0:
                     normalized_curve = (merged_df['close'] / first_valid_benchmark) * initial_capital
                     benchmark_curve = normalized_curve.fillna(initial_capital).tolist()
-             except: pass # (忽略错误)
+                    print(f"[DEBUG _extract_equity_curve] benchmark_curve: {len(benchmark_curve)}, first 3: {benchmark_curve[:3]}")
+             except Exception as e:
+                 print(f"[DEBUG _extract_equity_curve] error: {e}")
+                 import traceback
+                 traceback.print_exc()
+                 pass # (忽略错误)
         
         if not benchmark_curve:
              benchmark_curve = np.linspace(initial_capital, initial_capital, len(results_df)).tolist() 
@@ -1152,6 +1418,9 @@ class BacktestVisualizationAPI:
         4. 包装引擎数据，添加基准和实时指标
         """
         import time
+        import sys
+        sys.stderr.write(f"[DEBUG] stream_backtest 被调用: {strategy_name}, {start_date}~{end_date}\n")
+        sys.stderr.flush()
         # 性能监控：记录各模块耗时
         perf_timings = {
             'total': 0,
@@ -1226,7 +1495,7 @@ class BacktestVisualizationAPI:
                 if backtest_config.get('commission') is not None:
                     engine_kwargs['commission_rate'] = backtest_config['commission']
             
-            local_engine = OptimizedBacktestEngine(local_data_query, **engine_kwargs)
+            local_engine = UnifiedBacktestEngine(local_data_query, **engine_kwargs)
             initial_capital = local_engine.initial_capital
             logger.debug(f"创建独立的引擎实例完成，初始资金: {initial_capital}")
         except Exception as e:
@@ -1280,6 +1549,7 @@ class BacktestVisualizationAPI:
         
         # 收集权益曲线，用于最后计算风险指标
         equity_records = []
+        benchmark_records = []  # 【修复】添加基准记录收集
         
         try:
             # 调用流式引擎（使用局部引擎实例）
@@ -1360,6 +1630,7 @@ class BacktestVisualizationAPI:
                     if update['type'] == 'stream_complete':
                         # 回测结束，计算最终风险指标
                         t_risk_start = time.perf_counter()
+                        risk_data = {}
                         if equity_records:
                             try:
                                 results_df = pd.DataFrame(equity_records)
@@ -1371,6 +1642,10 @@ class BacktestVisualizationAPI:
                             except Exception as e:
                                 print(f"计算风险数据失败: {e}")
                         perf_timings['risk_calculation'] = (time.perf_counter() - t_risk_start) * 1000  # ms
+                        
+                        # 【修复】将 monthlyReturns 添加到 stream_complete 数据中
+                        if risk_data.get('monthlyReturns'):
+                            update['data']['monthlyReturns'] = risk_data['monthlyReturns']
                         
                         # 计算回测执行总耗时
                         perf_timings['backtest_execution'] = (time.perf_counter() - t_backtest_start) * 1000  # ms
@@ -1405,6 +1680,20 @@ class BacktestVisualizationAPI:
                         sys.stderr.write("="*60 + "\n\n")
                         sys.stderr.flush()
                         
+                        # 【修复】覆盖引擎返回的 benchmarkCurve，确保日期与策略一致
+                        # 引擎返回的 benchmarkCurve 可能包含更多日期，导致与 equityCurve 日期不匹配
+                        sys.stderr.write(f"[DEBUG stream_complete] benchmark_records: {len(benchmark_records)}\n")
+                        sys.stderr.write(f"[DEBUG stream_complete] update['data'] keys: {list(update['data'].keys())}\n")
+                        if 'benchmarkCurve' in update['data']:
+                            sys.stderr.write(f"[DEBUG stream_complete] 原始 benchmarkCurve: {len(update['data']['benchmarkCurve'])}\n")
+                        if benchmark_records:
+                            update['data']['benchmarkCurve'] = [
+                                {"date": r['date'], "equity": round(r['total_value'], 2)}
+                                for r in benchmark_records
+                            ]
+                            sys.stderr.write(f"[DEBUG stream_complete] 覆盖后 benchmarkCurve: {len(update['data']['benchmarkCurve'])}\n")
+                        sys.stderr.flush()
+                        
                         yield update
                         return
                     else:
@@ -1433,6 +1722,12 @@ class BacktestVisualizationAPI:
                     equity_records.append({
                         'date': current_date,
                         'total_value': equity
+                    })
+                    
+                    # 【修复】收集基准数据用于构建 benchmarkCurve
+                    benchmark_records.append({
+                        'date': current_date,
+                        'total_value': benchmark_val
                     })
                     
                     # (打包成前端需要的 'daily_update' 格式)
@@ -1524,7 +1819,7 @@ class BacktestVisualizationAPI:
         stock_info = {}
         
         try:
-            # 【核心修复】使用 data_query 方法，支持 DuckDB + Parquet 后端
+            # 【核心修复】使用 data_query 方法，支持 Polars + Parquet 后端
             if self.data_query is None:
                 return {}
             
@@ -1611,107 +1906,68 @@ class BacktestVisualizationAPI:
         except Exception as e:
             logger.warning(f"从数据库获取股票市值失败，尝试 Parquet: {e}")
             
-            # 回退：尝试从 Parquet 读取
             try:
-                try:
-                    import duckdb
-                except ImportError:
-                    duckdb = None
+                import polars as pl
                 
-                if duckdb is not None:
-                    base_dir = Path(__file__).parent
-                    stock_daily_parquet = base_dir / 'parquet_data' / 'stock_daily.parquet'
-                    stock_info_parquet = base_dir / 'parquet_data' / 'stock_info.parquet'
+                base_dir = Path(__file__).parent
+                stock_daily_parquet = base_dir / 'parquet_data' / 'stock_daily.parquet'
+                stock_info_parquet = base_dir / 'parquet_data' / 'stock_info.parquet'
+                
+                if stock_daily_parquet.exists():
+                    lazy_df = pl.scan_parquet(str(stock_daily_parquet)).filter(
+                        pl.col("total_mv").is_not_null()
+                    )
                     
-                    if stock_daily_parquet.exists():
-                        stock_daily_str = str(stock_daily_parquet).replace('\\', '/')
+                    if needed_symbols:
+                        stock_codes = []
+                        for sym in needed_symbols:
+                            code = sym[2:] if sym.startswith(('sz', 'sh')) else sym
+                            if len(code) >= 6:
+                                stock_codes.append(code[-6:])
+                        if stock_codes:
+                            lazy_df = lazy_df.filter(pl.col("stock_code").is_in(stock_codes))
+                    
+                    if stock_info_parquet.exists():
+                        info_lazy = pl.scan_parquet(str(stock_info_parquet)).select(["stock_code", "stock_name"])
+                        lazy_df = lazy_df.join(info_lazy, on="stock_code", how="left")
+                        lazy_df = lazy_df.with_columns(
+                            pl.col("stock_name").fill_null("")
+                        )
+                    else:
+                        lazy_df = lazy_df.with_columns(pl.lit("").alias("stock_name"))
+                    
+                    df_stock = lazy_df.group_by("stock_code").agg([
+                        pl.col("stock_name").first(),
+                        pl.col("total_mv").max().alias("market_cap")
+                    ]).collect()
+                    
+                    for row in df_stock.iter_rows(named=True):
+                        symbol_code = str(row.get('stock_code')).zfill(6)
+                        stock_name = row.get('stock_name') or ''
+                        market_cap = float(row.get('market_cap') or 0.0) / 10000.0
                         
-                        # CHANGED: 如果指定了需要的股票列表，添加过滤条件
-                        if needed_symbols:
-                            stock_codes = []
-                            for sym in needed_symbols:
-                                code = sym[2:] if sym.startswith(('sz', 'sh')) else sym
-                                if len(code) >= 6:
-                                    stock_codes.append(code[-6:])
-                            
-                            if stock_codes:
-                                codes_str = "', '".join(stock_codes)
-                                code_filter = f"AND d.stock_code IN ('{codes_str}')"
-                            else:
-                                code_filter = ""
+                        if symbol_code.startswith('0'):
+                            full_symbol = f"sz{symbol_code}"
+                        elif symbol_code.startswith('6'):
+                            full_symbol = f"sh{symbol_code}"
                         else:
-                            code_filter = ""
+                            full_symbol = symbol_code
                         
-                        if stock_info_parquet.exists():
-                            stock_info_str = str(stock_info_parquet).replace('\\', '/')
-                            sql = f"""
-                                SELECT
-                                    d.stock_code,
-                                    COALESCE(CAST(i.stock_name AS VARCHAR), '') AS stock_name,
-                                    MAX(d.total_mv) AS market_cap
-                                FROM read_parquet('{stock_daily_str}') d
-                                LEFT JOIN read_parquet('{stock_info_str}') i ON d.stock_code = i.stock_code
-                                WHERE d.total_mv IS NOT NULL
-                                    {code_filter}
-                                GROUP BY d.stock_code, i.stock_name
-                            """
-                        else:
-                            sql = f"""
-                                SELECT
-                                    stock_code,
-                                    '' AS stock_name,
-                                    MAX(total_mv) AS market_cap
-                                FROM read_parquet('{stock_daily_str}')
-                                WHERE total_mv IS NOT NULL
-                                    {code_filter}
-                                GROUP BY stock_code
-                            """
+                        if not stock_name:
+                            stock_name = self.stock_info_map.get(symbol_code, '')
+                            if not stock_name and self.data_query is not None:
+                                try:
+                                    name_df = self.data_query.get_stock_info(symbol_code)
+                                    if not name_df.empty and 'name' in name_df.columns:
+                                        stock_name = str(name_df.iloc[0]['name']) or ''
+                                except Exception:
+                                    pass
                         
-                        con = duckdb.connect()
-                        try:
-                            # CHANGED: 设置 DuckDB 性能参数
-                            try:
-                                con.execute("SET threads TO 4")
-                            except Exception:
-                                pass
-                            try:
-                                con.execute("SET memory_limit='2GB'")
-                            except Exception:
-                                pass
-                            
-                            df_stock = con.execute(sql).df()
-                            for _, row in df_stock.iterrows():
-                                symbol_code = str(row.get('stock_code')).zfill(6)
-                                stock_name = row.get('stock_name') or ''
-                                market_cap = float(row.get('market_cap') or 0.0) / 10000.0
-                                
-                                if symbol_code.startswith('0'):
-                                    full_symbol = f"sz{symbol_code}"
-                                elif symbol_code.startswith('6'):
-                                    full_symbol = f"sh{symbol_code}"
-                                else:
-                                    full_symbol = symbol_code
-                                
-                                # 如果从 Parquet 获取的名称为空，尝试从 stock_info_map 或 data_query 获取
-                                if not stock_name:
-                                    stock_name = self.stock_info_map.get(symbol_code, '')
-                                    # 如果 stock_info_map 也没有，尝试从 data_query 查询
-                                    if not stock_name and self.data_query is not None:
-                                        try:
-                                            name_query = "SELECT stock_name FROM stock_info WHERE stock_code = ?"
-                                            name_df = self.data_query._query_df(name_query, [symbol_code])
-                                            if not name_df.empty and 'stock_name' in name_df.columns:
-                                                stock_name = str(name_df.iloc[0]['stock_name']) or ''
-                                        except Exception:
-                                            pass  # 如果查询失败，保持空名称
-                                
-                                stock_info[full_symbol] = {
-                                    'name': stock_name,
-                                    'market_cap': market_cap,
-                                    'original_code': symbol_code
-                                }
-                        finally:
-                            con.close()
+                        stock_info[full_symbol] = {
+                            'name': stock_name,
+                            'market_cap': market_cap,
+                            'original_code': symbol_code
+                        }
             except Exception as e2:
                 logger.warning(f"从 Parquet 获取股票信息也失败: {e2}")
         
@@ -1749,139 +2005,83 @@ class BacktestVisualizationAPI:
         从 Parquet 文件加载股吧数据（实际实现）
         如果指定 symbol，返回该股票的评论数据（可抽样）
         否则返回所有股票的聚合数据
+        
+        【Polars 实现】直接读取 Parquet 文件
         """
         from config.logger import get_logger
         logger = get_logger(__name__)
         
         try:
-            import duckdb
+            import polars as pl
         except ImportError:
             return pd.DataFrame()
-        
-        base_dir = Path(__file__).parent
-        parquet_path = base_dir / 'parquet_data' / 'guba_posts.parquet'
-        
+
+        from config.config import Config
+        parquet_path = Path(Config.PARQUET_DIR) / 'guba_posts.parquet'
+
         if not parquet_path.exists():
             logger.warning(f"Parquet 文件不存在: {parquet_path}")
             return pd.DataFrame()
         
-        parquet_str = str(parquet_path).replace('\\', '/')
-        
         try:
-            con = duckdb.connect()
-            try:
-                # CHANGED: 设置 DuckDB 性能参数，加速 Parquet 查询
-                try:
-                    con.execute("SET threads TO 4")
-                except Exception:
-                    pass
-                try:
-                    con.execute("SET memory_limit='2GB'")
-                except Exception:
-                    pass
-                try:
-                    # 启用并行扫描
-                    con.execute("SET enable_progress_bar=false")
-                except Exception:
-                    pass
-                
-                if symbol:
-                    # CHANGED: 构建 symbol 匹配条件，处理 Parquet 中可能存储的是纯数字代码的情况
-                    # Parquet 中的 symbol 可能是 "601166" 或 "sh601166"，需要兼容两种格式
-                    symbol_conditions = []
-                    
-                    # 提取6位数字代码
-                    if symbol.startswith('sz') or symbol.startswith('sh'):
-                        code_6 = symbol[2:] if len(symbol) > 2 else symbol
-                        full_symbol = symbol
-                    else:
-                        code_6 = symbol[-6:] if len(symbol) >= 6 else symbol.zfill(6)
-                        full_symbol = symbol
-                    
-                    # 构建多种匹配条件，确保能找到数据
-                    # 1. 完全匹配（如果 Parquet 中存储的是完整格式）
-                    symbol_conditions.append(f"symbol = '{full_symbol}'")
-                    # 2. 匹配6位代码（如果 Parquet 中存储的是纯数字）
-                    symbol_conditions.append(f"symbol = '{code_6}'")
-                    # 3. 使用 RIGHT 函数匹配（处理可能的格式差异）
-                    symbol_conditions.append(f"RIGHT(symbol, 6) = '{code_6}'")
-                    # 4. 使用 stockbar_code 匹配（如果存在）
-                    symbol_conditions.append(f"stockbar_code = '{code_6}'")
-                    # 5. LIKE 匹配（兜底）
-                    symbol_conditions.append(f"symbol LIKE '%{code_6}%'")
-                    
-                    where_clause = ' OR '.join(symbol_conditions)
-                    
-                    # CHANGED: 优化查询条件
-                    # 1. 允许情感值为 0（中性情感）
-                    # 2. 只过滤掉 comment_count 为 NULL 或无效的记录
-                    # 3. 情感值允许为 0，但过滤掉 NULL
-                    sql = f"""
-                        SELECT
-                            symbol,
-                            COALESCE(CAST(stockbar_code AS VARCHAR), CAST(RIGHT(symbol, 6) AS VARCHAR)) AS stockCode,
-                            COALESCE(CAST(stockbar_name AS VARCHAR), '') AS stockName,
-                            COALESCE(TRY_CAST(post_comment_count AS BIGINT), 0) AS commentCount,
-                            COALESCE(TRY_CAST(bullish_bearish AS DOUBLE), 0.0) AS sentiment,
-                            COALESCE(CAST(post_title AS VARCHAR), '') AS postTitle,
-                            TRY_CAST(post_publish_time AS TIMESTAMP) AS postPublishTime
-                        FROM read_parquet('{parquet_str}')
-                        WHERE ({where_clause})
-                            AND TRY_CAST(post_comment_count AS BIGINT) IS NOT NULL
-                            AND TRY_CAST(post_comment_count AS BIGINT) > 0
-                            AND TRY_CAST(bullish_bearish AS DOUBLE) IS NOT NULL
-                    """
-                    
-                    logger.debug(f"查询个股散点图数据: symbol={symbol}, code_6={code_6}, where_clause={where_clause}")
-                    
-                    df = con.execute(sql).df()
-                    logger.info(f"查询返回 {len(df)} 条记录")
-                    
-                    # 随机抽样
-                    if len(df) > sample_size:
-                        df = df.sample(n=sample_size, random_state=42).reset_index(drop=True)
-                        logger.info(f"随机抽样后: {len(df)} 条记录")
+            lazy_df = pl.scan_parquet(str(parquet_path))
+            
+            if symbol:
+                if symbol.startswith('sz') or symbol.startswith('sh'):
+                    code_6 = symbol[2:] if len(symbol) > 2 else symbol
+                    full_symbol = symbol
                 else:
-                    # CHANGED: 优化聚合查询，利用 Parquet 列式存储和 CTE 优化
-                    # 1. 使用 CTE 先过滤无效数据（减少 GROUP BY 的数据量）
-                    # 2. 在过滤阶段就进行类型转换，避免在聚合时重复转换
-                    # 3. 限制返回的股票数量（只取评论数最多的前100只）
-                    sql = f"""
-                        WITH filtered_data AS (
-                            SELECT
-                                symbol,
-                                COALESCE(CAST(stockbar_code AS VARCHAR), CAST(RIGHT(symbol, 6) AS VARCHAR)) AS stockCode,
-                                COALESCE(CAST(stockbar_name AS VARCHAR), '') AS stockName,
-                                TRY_CAST(post_comment_count AS BIGINT) AS commentCount,
-                                TRY_CAST(bullish_bearish AS DOUBLE) AS sentiment
-                            FROM read_parquet('{parquet_str}')
-                            WHERE symbol IS NOT NULL
-                                AND TRY_CAST(post_comment_count AS BIGINT) > 0
-                                -- CHANGED: 移除 bullish_bearish IS NOT NULL 条件，允许中性情绪（0值）
-                                -- 这样可以让更多股票显示在散点图上
-                        ),
-                        aggregated AS (
-                            SELECT
-                                symbol,
-                                stockCode,
-                                stockName,
-                                SUM(commentCount) AS commentCount,
-                                -- CHANGED: 使用 COALESCE 处理 NULL 值，将 NULL 视为 0（中性情绪）
-                                COALESCE(AVG(sentiment), 0.0) AS sentiment
-                            FROM filtered_data
-                            GROUP BY symbol, stockCode, stockName
-                        )
-                        SELECT *
-                        FROM aggregated
-                        ORDER BY commentCount DESC
-                        LIMIT 200
-                    """
-                    df = con.execute(sql).df()
-                    logger.info(f"从 Parquet 查询到 {len(df)} 只股票（按评论数排序的前200只）")
+                    code_6 = symbol[-6:] if len(symbol) >= 6 else symbol.zfill(6)
+                    full_symbol = symbol
                 
-                return df
-            finally:
-                con.close()
+                lazy_df = lazy_df.filter(
+                    (pl.col("symbol") == full_symbol) |
+                    (pl.col("symbol") == code_6) |
+                    (pl.col("symbol").str.ends_with(code_6)) |
+                    (pl.col("stockbar_code") == code_6) |
+                    (pl.col("symbol").str.contains(code_6))
+                )
+                
+                lazy_df = lazy_df.filter(
+                    pl.col("post_comment_count").is_not_null() &
+                    (pl.col("post_comment_count") > 0) &
+                    pl.col("bullish_bearish").is_not_null()
+                )
+                
+                df = lazy_df.select([
+                    pl.col("symbol"),
+                    pl.col("stockbar_code").cast(pl.Utf8).fill_null(pl.col("symbol").str.slice(-6)).alias("stockCode"),
+                    pl.col("stockbar_name").cast(pl.Utf8).fill_null("").alias("stockName"),
+                    pl.col("post_comment_count").cast(pl.Int64).fill_null(0).alias("commentCount"),
+                    pl.col("bullish_bearish").cast(pl.Float64).fill_null(0.0).alias("sentiment"),
+                    pl.col("post_title").cast(pl.Utf8).fill_null("").alias("postTitle"),
+                    pl.col("post_publish_time").cast(pl.Datetime).alias("postPublishTime")
+                ]).collect()
+                
+                logger.info(f"查询返回 {len(df)} 条记录")
+                
+                if len(df) > sample_size:
+                    df = df.sample(n=sample_size, seed=42)
+                    logger.info(f"随机抽样后: {len(df)} 条记录")
+            else:
+                df = lazy_df.filter(
+                    pl.col("symbol").is_not_null() &
+                    (pl.col("post_comment_count").cast(pl.Int64) > 0)
+                ).select([
+                    pl.col("symbol"),
+                    pl.col("stockbar_code").cast(pl.Utf8).fill_null(pl.col("symbol").str.slice(-6)).alias("stockCode"),
+                    pl.col("stockbar_name").cast(pl.Utf8).fill_null("").alias("stockName"),
+                    pl.col("post_comment_count").cast(pl.Int64).alias("commentCount"),
+                    pl.col("bullish_bearish").cast(pl.Float64).alias("sentiment")
+                ]).group_by(["symbol", "stockCode", "stockName"]).agg([
+                    pl.col("commentCount").sum().alias("commentCount"),
+                    pl.col("sentiment").mean().fill_null(0.0).alias("sentiment")
+                ]).sort("commentCount", descending=True).limit(200).collect()
+                
+                logger.info(f"从 Parquet 查询到 {len(df)} 只股票（按评论数排序的前200只）")
+            
+            return df.to_pandas()
+            
         except Exception as e:
             logger.warning(f"从 Parquet 读取股吧数据失败: {e}", exc_info=True)
             return pd.DataFrame()

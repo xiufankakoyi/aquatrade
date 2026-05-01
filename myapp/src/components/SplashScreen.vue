@@ -1,94 +1,83 @@
 <template>
-  <Transition name="splash-fade">
-    <div v-if="visible" class="splash-screen">
-      <div class="splash-background">
-        <div class="wave-container">
-          <div class="wave wave1"></div>
-          <div class="wave wave2"></div>
-          <div class="wave wave3"></div>
+  <!-- 加载界面容器 -->
+  <div v-if="visible || isRevealing" class="splash-container" :class="{ 'is-exiting': isRevealing }">
+    <!-- 动态K线背景 -->
+    <canvas ref="klineCanvas" class="kline-canvas"></canvas>
+    
+    <div class="splash-overlay"></div>
+    <div class="splash-grain"></div>
+    
+    <!-- 内容区（加载完成时向上滑出） -->
+    <div class="splash-content" :class="{ 'content-exit': isRevealing }">
+      <div class="hero-section">
+        <div class="label-line">
+          <span class="line"></span>
+          <span class="label-text">QUANTITATIVE TRADING</span>
         </div>
+        
+        <h1 class="main-title">
+          <span class="title-line">AQUA</span>
+          <span class="title-line accent">TRADER</span>
+        </h1>
+        
+        <p class="subtitle">{{ status.message }}</p>
+      </div>
+
+      <div class="status-panel">
+        <div class="panel-header">
+          <span class="status-label">System Status</span>
+          <span class="status-value" :class="{ 'text-emerald-400': status.ready, 'text-white/60': !status.ready }">
+            {{ status.progress }}%
+          </span>
+        </div>
+        
+        <div class="progress-track">
+          <div 
+            class="progress-fill" 
+            :style="{ width: `${status.progress}%` }"
+            :class="{ 'active': status.progress > 0 && status.progress < 100 }"
+          ></div>
+        </div>
+        
+        <div class="panel-metrics">
+          <div class="metric-item">
+            <span class="metric-label">Phase</span>
+            <span class="metric-value">{{ status.phase || '--' }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">Status</span>
+            <span class="metric-value status-dot-wrapper">
+              <span class="dot" :class="dotClass"></span>
+              {{ statusText }}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div v-if="hasError" class="error-section">
+        <p class="error-code">{{ status.error_code }}</p>
+        <p class="error-message">{{ status.error_message }}</p>
+        <button @click="retryStartup" class="btn-retry">
+          <i class="fas fa-redo"></i> Retry
+        </button>
       </div>
       
-      <div class="splash-content">
-        <div class="logo-section">
-          <div class="logo-wrapper">
-            <div class="logo-glow"></div>
-            <div class="logo-icon">
-              <svg class="w-16 h-16 text-white" viewBox="0 0 24 24" fill="none">
-                <path d="M12 2C12 2 8 6 8 10C8 14 12 18 12 18C12 18 16 14 16 10C16 6 12 2 12 2Z" fill="currentColor" opacity="0.9"/>
-                <path d="M6 8C6 8 3 11 3 14C3 17 6 20 6 20C6 20 9 17 9 14C9 11 6 8 6 8Z" fill="currentColor" opacity="0.6"/>
-                <path d="M18 8C18 8 15 11 15 14C15 17 18 20 18 20C18 20 21 17 21 14C21 11 18 8 18 8Z" fill="currentColor" opacity="0.6"/>
-              </svg>
-            </div>
-          </div>
-          
-          <h1 class="logo-text">AquaTrade</h1>
-          <p class="logo-subtitle">Quantitative Platform</p>
-        </div>
-        
-        <div class="progress-section">
-          <div class="progress-bar">
-            <div class="progress-fill" :style="{ width: `${status.progress}%` }"></div>
-            <div class="progress-glow" :style="{ width: `${status.progress}%` }"></div>
-          </div>
-          <div class="progress-info">
-            <span class="progress-percent">{{ status.progress }}%</span>
-            <span class="progress-message">{{ status.message }}</span>
-          </div>
-        </div>
-        
-        <div class="logs-section">
-          <div class="logs-container" ref="logsContainer">
-            <div 
-              v-for="(log, index) in displayLogs" 
-              :key="index"
-              class="log-entry"
-              :class="`log-${log.level.toLowerCase()}`"
-            >
-              <span class="log-time">{{ log.timestamp }}</span>
-              <span class="log-level">[{{ log.level }}]</span>
-              <span class="log-message">{{ log.message }}</span>
-            </div>
-          </div>
-        </div>
-        
-        <div v-if="hasError" class="error-section">
-          <div class="error-content">
-            <div class="error-icon">⚠️</div>
-            <div class="error-info">
-              <p class="error-code">{{ status.error_code }}</p>
-              <p class="error-message">{{ status.error_message }}</p>
-            </div>
-          </div>
-          <div class="error-actions">
-            <button @click="retryStartup" class="btn-retry">
-              <i class="fas fa-redo"></i> 重试
-            </button>
-            <button @click="openLogs" class="btn-logs">
-              <i class="fas fa-file-alt"></i> 查看日志
-            </button>
-          </div>
-        </div>
-        
-        <div v-if="isTimeout" class="timeout-section">
-          <p class="timeout-message">启动超时，请检查后端服务</p>
-          <button @click="retryStartup" class="btn-retry">
-            <i class="fas fa-redo"></i> 重试
-          </button>
-        </div>
+      <div v-if="isTimeout" class="timeout-section">
+        <p>Connection timeout</p>
+        <button @click="retryStartup" class="btn-retry">
+          <i class="fas fa-redo"></i> Retry
+        </button>
+      </div>
+
+      <div v-if="DEMO_MODE" class="demo-badge">
+        <i class="fas fa-flask"></i> DEMO MODE
       </div>
     </div>
-  </Transition>
+  </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
-
-interface LogEntry {
-  timestamp: string
-  level: string
-  message: string
-}
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 interface StartupStatus {
   phase: string
@@ -98,7 +87,6 @@ interface StartupStatus {
   ready: boolean
   error_code: string | null
   error_message: string | null
-  logs: LogEntry[]
 }
 
 const emit = defineEmits<{
@@ -106,527 +94,764 @@ const emit = defineEmits<{
   (e: 'error', code: string, message: string): void
 }>()
 
+// ==================== DEMO 配置 ====================
+const DEMO_MODE = true
+const DEMO_SPEED = 1.0
+
+interface DemoStep {
+  phase: string
+  step: string
+  message: string
+  progress: number
+  delay: number
+}
+
+const DEMO_SEQUENCE: DemoStep[] = [
+  { phase: 'environment',   step: 'checking_redis',    message: 'Connecting to Redis...',           progress: 15,  delay: 400 },
+  { phase: 'environment',   step: 'checking_db',       message: 'Verifying database permissions...',  progress: 30,  delay: 350 },
+  { phase: 'integrity',     step: 'checking_parquet',  message: 'Validating data files...',         progress: 45,  delay: 500 },
+  { phase: 'integrity',     step: 'updating_data',     message: 'Syncing latest market data...',    progress: 60,  delay: 600 },
+  { phase: 'kernel',        step: 'loading_strategies',message: 'Loading strategy modules...',      progress: 75,  delay: 450 },
+  { phase: 'kernel',        step: 'warming_cache',     message: 'Warming up data cache...',        progress: 90,  delay: 500 },
+  { phase: 'ready',         step: 'complete',          message: 'System ready',                     progress: 100, delay: 400 },
+]
+// =====================================================
+
 const visible = ref(true)
+const isRevealing = ref(false)
+const klineCanvas = ref<HTMLCanvasElement | null>(null)
 const status = ref<StartupStatus>({
   phase: 'idle',
   step: 'initializing',
-  message: '正在唤醒 AquaTrade...',
+  message: 'Initializing AquaTrade...',
   progress: 0,
   ready: false,
   error_code: null,
   error_message: null,
-  logs: []
 })
 
-const logsContainer = ref<HTMLElement | null>(null)
-const eventSource = ref<EventSource | null>(null)
-const timeoutTimer = ref<number | null>(null)
-const startTime = ref(Date.now())
-const TIMEOUT_MS = 60000
+let demoTimer: ReturnType<typeof setTimeout> | null = null
+let animFrameId: ReturnType<typeof requestAnimationFrame> | null = null
+let currentStep = 0
 
-const displayLogs = computed(() => {
-  return status.value.logs.slice(-15)
-})
-
-const hasError = computed(() => {
-  return status.value.error_code !== null
-})
-
-const isTimeout = computed(() => {
-  return !status.value.ready && !hasError.value && Date.now() - startTime.value > TIMEOUT_MS
-})
-
-const scrollToBottom = async () => {
-  await nextTick()
-  if (logsContainer.value) {
-    logsContainer.value.scrollTop = logsContainer.value.scrollHeight
-  }
+// ==================== K线图引擎 ====================
+interface RealCandle {
+  open: number
+  high: number
+  low: number
+  close: number
 }
 
-const connectSSE = () => {
-  const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:5000'
+function generateRealisticCandles(count: number): RealCandle[] {
+  const candles: RealCandle[] = []
+  let currentPrice = 100
+  let trend = 0
   
-  eventSource.value = new EventSource(`${apiBase}/api/startup-logs`)
-  
-  eventSource.value.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      
-      if (data.event === 'close') {
-        eventSource.value?.close()
-        return
-      }
-      
-      status.value = data
-      scrollToBottom()
-      
-      if (data.ready) {
-        onReady()
-      }
-    } catch (e) {
-      console.error('Failed to parse SSE data:', e)
+  for (let i = 0; i < count; i++) {
+    // 每5-10根K线改变一次趋势
+    if (i % (5 + Math.floor(Math.random() * 6)) === 0) {
+      trend = (Math.random() - 0.5) * 0.6
     }
-  }
-  
-  eventSource.value.onerror = () => {
-    eventSource.value?.close()
-    status.value.message = '正在等待后端服务响应...'
-    status.value.phase = 'waiting'
-    setTimeout(() => {
-      connectSSE()
-    }, 1000)
-  }
-}
-
-const pollStatus = async () => {
-  const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:5000'
-  
-  try {
-    const response = await fetch(`${apiBase}/api/startup-status`)
-    const data = await response.json()
-    status.value = data
     
-    if (data.ready) {
-      onReady()
-    } else if (!hasError.value) {
-      setTimeout(pollStatus, 500)
+    // 添加随机噪声
+    const noise = (Math.random() - 0.5) * 0.015
+    const effectiveTrend = Math.max(-0.2, Math.min(0.2, trend + noise))
+    
+    // 随机决定K线类型
+    const type = Math.random()
+    let open: number, close: number, high: number, low: number
+    
+    if (type < 0.4) {
+      // 阳线（40%）
+      open = currentPrice * (1 + (Math.random() - 0.5) * 0.02)
+      const changePct = 0.005 + Math.random() * 0.025
+      close = open * (1 + changePct)
+      
+      const shadowType = Math.random()
+      let upperPct = 0.05, lowerPct = 0.05
+      if (shadowType < 0.3) {
+        upperPct = lowerPct = 0.01
+      } else if (shadowType < 0.6) {
+        upperPct = 0.3 + Math.random() * 0.4
+      } else {
+        lowerPct = 0.3 + Math.random() * 0.4
+      }
+      
+      const bodyPct = 0.5 + Math.random() * 0.4
+      const totalRange = Math.abs(close - open) / bodyPct
+      high = Math.max(open, close) + totalRange * upperPct
+      low = Math.min(open, close) - totalRange * lowerPct
+      
+    } else if (type < 0.75) {
+      // 阴线（35%）
+      open = currentPrice * (1 + (Math.random() - 0.5) * 0.02)
+      const changePct = 0.005 + Math.random() * 0.03
+      close = open * (1 - changePct)
+      
+      const shadowType = Math.random()
+      let upperPct = 0.05, lowerPct = 0.05
+      if (shadowType < 0.3) {
+        upperPct = lowerPct = 0.01
+      } else if (shadowType < 0.6) {
+        upperPct = 0.3 + Math.random() * 0.4
+      } else {
+        lowerPct = 0.3 + Math.random() * 0.4
+      }
+      
+      const bodyPct = 0.5 + Math.random() * 0.4
+      const totalRange = Math.abs(close - open) / bodyPct
+      high = Math.max(open, close) + totalRange * upperPct
+      low = Math.min(open, close) - totalRange * lowerPct
+      
+    } else {
+      // 十字星/纺锤线（25%）
+      open = currentPrice * (1 + (Math.random() - 0.5) * 0.01)
+      const smallChange = 0.001 + Math.random() * 0.008
+      close = open * (Math.random() > 0.5 ? 1 + smallChange : 1 - smallChange)
+      
+      const upperPct = 0.4 + Math.random() * 0.5
+      const lowerPct = 0.4 + Math.random() * 0.5
+      const bodyPct = 0.1 + Math.random() * 0.2
+      
+      const totalRange = Math.abs(close - open) / bodyPct
+      high = Math.max(open, close) + totalRange * upperPct
+      low = Math.min(open, close) - totalRange * lowerPct
     }
-  } catch (e) {
-    status.value.message = '正在等待后端服务响应...'
-    status.value.phase = 'waiting'
-    if (!hasError.value) {
-      setTimeout(pollStatus, 1000)
-    }
+    
+    candles.push({ open, high, low, close })
+    currentPrice = close
   }
+  
+  return candles
+}
+
+class LightweightCandleScroller {
+  private canvas: HTMLCanvasElement
+  private ctx: CanvasRenderingContext2D
+  private frames: ImageBitmap[] = []
+  private currentFrame = 0
+  private frameCount = 30  // 减少到30帧，降低速度
+  private width = 0
+  private height = 0
+  private isReady = false
+  private candles: RealCandle[] = []
+  private frameDelay = 4  // 每4帧渲染一次，大幅降低速度
+  private frameTick = 0
+
+  constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas
+    this.ctx = canvas.getContext('2d')!
+    this.candles = generateRealisticCandles(300)  // 生成更多K线避免边界问题
+    this.resize()
+    this.preRenderFrames()
+  }
+
+  resize() {
+    const dpr = window.devicePixelRatio || 1
+    this.width = window.innerWidth
+    this.height = window.innerHeight
+    this.canvas.width = this.width * dpr
+    this.canvas.height = this.height * dpr
+    this.canvas.style.width = `${this.width}px`
+    this.canvas.style.height = `${this.height}px`
+    this.ctx.scale(dpr, dpr)
+  }
+
+  private async preRenderFrames() {
+    const offscreen = document.createElement('canvas')
+    offscreen.width = this.width
+    offscreen.height = this.height
+    const ctx = offscreen.getContext('2d')!
+
+    // 预渲染所有帧 - 确保覆盖完整滚动周期
+    const scrollRange = 20  // 减少滚动范围，让每帧移动更少
+    for (let frame = 0; frame < this.frameCount; frame++) {
+      const offset = (frame / this.frameCount) * scrollRange
+      this.drawFrame(ctx, offset)
+      
+      // 创建ImageBitmap
+      const bitmap = await createImageBitmap(offscreen)
+      this.frames.push(bitmap)
+    }
+    
+    this.isReady = true
+  }
+
+  private drawFrame(ctx: CanvasRenderingContext2D, offset: number) {
+    const { width, height, candles } = this
+
+    // 背景渐变
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, height)
+    bgGrad.addColorStop(0, '#03080d')
+    bgGrad.addColorStop(0.5, '#050a10')
+    bgGrad.addColorStop(1, '#081018')
+    ctx.fillStyle = bgGrad
+    ctx.fillRect(0, 0, width, height)
+
+    // 网格线
+    ctx.strokeStyle = 'rgba(6, 182, 212, 0.03)'
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    ctx.moveTo(0, height * 0.33)
+    ctx.lineTo(width, height * 0.33)
+    ctx.moveTo(0, height * 0.66)
+    ctx.lineTo(width, height * 0.66)
+    ctx.stroke()
+
+    // 可见K线数量 - 减少数量确保完全在屏幕内
+    const visibleCount = 30
+    // 确保有足够的K线数据，避免边界露出
+    const maxOffset = candles.length - visibleCount - 10
+    const safeOffset = Math.min(offset, maxOffset)
+    const startIdx = Math.floor(safeOffset) % maxOffset
+    const remainder = offset % 1
+
+    // 计算价格范围 - 使用safeOffset
+    let minP = Infinity, maxP = -Infinity
+    for (let i = startIdx; i < startIdx + visibleCount + 1 && i < candles.length; i++) {
+      const c = candles[i]
+      minP = Math.min(minP, c.low)
+      maxP = Math.max(maxP, c.high)
+    }
+    const range = maxP - minP || 1
+
+    const padY = height * 0.12
+    const drawH = height - padY * 2
+    const stepX = width / visibleCount
+    const candleW = stepX * 0.55
+    const gap = stepX * 0.45
+    const baseAlpha = 0.35
+
+    // 子像素偏移
+    const shiftX = -remainder * stepX
+
+    // 批量绘制影线（绿色）
+    ctx.strokeStyle = `rgba(52, 211, 153, ${baseAlpha})`
+    ctx.lineWidth = 1.2
+    ctx.beginPath()
+    for (let i = 0; i < visibleCount; i++) {
+      const c = candles[startIdx + i]
+      if (c.close < c.open) continue
+      const x = i * stepX + gap / 2 + candleW / 2 + shiftX
+      const yHigh = padY + (1 - (c.high - minP) / range) * drawH
+      const yLow = padY + (1 - (c.low - minP) / range) * drawH
+      ctx.moveTo(x, yHigh)
+      ctx.lineTo(x, yLow)
+    }
+    ctx.stroke()
+
+    // 批量绘制影线（红色）
+    ctx.strokeStyle = `rgba(239, 68, 68, ${baseAlpha})`
+    ctx.beginPath()
+    for (let i = 0; i < visibleCount; i++) {
+      const c = candles[startIdx + i]
+      if (c.close >= c.open) continue
+      const x = i * stepX + gap / 2 + candleW / 2 + shiftX
+      const yHigh = padY + (1 - (c.high - minP) / range) * drawH
+      const yLow = padY + (1 - (c.low - minP) / range) * drawH
+      ctx.moveTo(x, yHigh)
+      ctx.lineTo(x, yLow)
+    }
+    ctx.stroke()
+
+    // 批量绘制实体（绿色）
+    ctx.fillStyle = `rgba(16, 185, 129, ${baseAlpha * 0.75})`
+    for (let i = 0; i < visibleCount; i++) {
+      const c = candles[startIdx + i]
+      if (c.close < c.open) continue
+      const x = i * stepX + gap / 2 + shiftX
+      const yOpen = padY + (1 - (c.open - minP) / range) * drawH
+      const yClose = padY + (1 - (c.close - minP) / range) * drawH
+      const bodyTop = Math.min(yOpen, yClose)
+      const bodyH = Math.max(Math.abs(yClose - yOpen), 1)
+      ctx.fillRect(x, bodyTop, candleW, bodyH)
+    }
+
+    // 批量绘制实体（红色）
+    ctx.fillStyle = `rgba(220, 38, 38, ${baseAlpha * 0.75})`
+    for (let i = 0; i < visibleCount; i++) {
+      const c = candles[startIdx + i]
+      if (c.close >= c.open) continue
+      const x = i * stepX + gap / 2 + shiftX
+      const yOpen = padY + (1 - (c.open - minP) / range) * drawH
+      const yClose = padY + (1 - (c.close - minP) / range) * drawH
+      const bodyTop = Math.min(yOpen, yClose)
+      const bodyH = Math.max(Math.abs(yClose - yOpen), 1)
+      ctx.fillRect(x, bodyTop, candleW, bodyH)
+    }
+
+    // 绘制MA均线
+    ctx.strokeStyle = `rgba(251, 191, 36, ${baseAlpha * 0.4})`
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    let first = true
+    const period = 10
+    for (let i = period; i < visibleCount; i++) {
+      let sum = 0
+      for (let j = 0; j < period; j++) {
+        sum += candles[startIdx + i - j].close
+      }
+      const ma = sum / period
+      const x = (i - period / 2) * stepX + gap / 2 + candleW / 2 + shiftX
+      const y = padY + (1 - (ma - minP) / range) * drawH
+      if (first) { ctx.moveTo(x, y); first = false }
+      else ctx.lineTo(x, y)
+    }
+    ctx.stroke()
+  }
+
+  render() {
+    if (!this.isReady || this.frames.length === 0) return
+    
+    this.frameTick++
+    if (this.frameTick % this.frameDelay !== 0) return  // 控制播放速度
+    
+    this.ctx.clearRect(0, 0, this.width, this.height)
+    this.ctx.drawImage(this.frames[this.currentFrame], 0, 0)
+    this.currentFrame = (this.currentFrame + 1) % this.frames.length
+  }
+
+  destroy() {
+    // 释放ImageBitmap内存
+    this.frames.forEach(bitmap => bitmap.close())
+    this.frames = []
+  }
+}
+
+let candleScroller: LightweightCandleScroller | null = null
+
+function animateKLine() {
+  if (!candleScroller) return
+  candleScroller.render()
+  animFrameId = requestAnimationFrame(animateKLine)
+}
+// ================================================
+
+const hasError = computed(() => status.value.error_code !== null)
+
+const dotClass = computed(() => {
+  if (status.value.ready) return 'ready'
+  if (hasError.value) return 'error'
+  return 'loading'
+})
+
+const statusText = computed(() => {
+  if (status.value.ready) return 'Online'
+  if (hasError.value) return 'Error'
+  return 'Loading...'
+})
+
+const runDemoSequence = () => {
+  const runStep = () => {
+    if (currentStep >= DEMO_SEQUENCE.length) {
+      onReady()
+      return
+    }
+
+    const step = DEMO_SEQUENCE[currentStep]
+    status.value = {
+      ...step,
+      error_code: null,
+      error_message: null,
+      ready: step.progress === 100,
+    }
+
+    currentStep++
+    const delay = step.delay / DEMO_SPEED
+    demoTimer = setTimeout(runStep, delay)
+  }
+
+  demoTimer = setTimeout(runStep, 800 / DEMO_SPEED)
 }
 
 const beginStartup = async () => {
-  const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:5000'
-  
+  if (DEMO_MODE) {
+    runDemoSequence()
+    return
+  }
+
   try {
+    const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost:5000'
     const response = await fetch(`${apiBase}/api/startup-begin`, { method: 'POST' })
+    
     if (response.ok) {
-      connectSSE()
-    } else {
-      pollStatus()
+      const eventSource = new EventSource(`${apiBase}/api/startup-logs`)
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.event === 'close') {
+            eventSource.close()
+            return
+          }
+          status.value = data
+          if (data.ready) onReady()
+        } catch {}
+      }
+      
+      eventSource.onerror = () => {
+        eventSource.close()
+        setTimeout(beginStartup, 1000)
+      }
     }
-  } catch (e) {
-    status.value.message = '正在等待后端服务响应...'
-    status.value.phase = 'waiting'
+  } catch {
     setTimeout(beginStartup, 1000)
   }
 }
 
 const onReady = () => {
-  if (timeoutTimer.value) {
-    clearTimeout(timeoutTimer.value)
-  }
-  
+  // 触发过渡状态 - 内容向上滑出，背景保留
+  isRevealing.value = true
+
+  // 通知父组件显示主界面（主界面开始淡入）
+  setTimeout(() => {
+    emit('ready')
+  }, 400)
+
+  // 完全移除加载界面
   setTimeout(() => {
     visible.value = false
-    emit('ready')
-  }, 500)
+    isRevealing.value = false
+  }, 1200)
 }
 
 const retryStartup = () => {
+  if (demoTimer) clearTimeout(demoTimer)
+  currentStep = 0
   status.value = {
     phase: 'idle',
     step: 'initializing',
-    message: '正在唤醒 AquaTrade...',
+    message: 'Initializing AquaTrade...',
     progress: 0,
     ready: false,
     error_code: null,
     error_message: null,
-    logs: []
   }
-  startTime.value = Date.now()
   beginStartup()
-  connectSSE()
 }
-
-const openLogs = () => {
-  console.log('Opening logs...')
-}
-
-const checkTimeout = () => {
-  if (!status.value.ready && !hasError.value && Date.now() - startTime.value > TIMEOUT_MS) {
-    status.value.error_code = 'ERR_TIMEOUT'
-    status.value.error_message = '启动超时，请检查后端服务是否正常运行'
-    emit('error', 'ERR_TIMEOUT', status.value.error_message)
-  }
-}
-
-watch(displayLogs, scrollToBottom)
 
 onMounted(() => {
-  startTime.value = Date.now()
-  timeoutTimer.value = window.setInterval(checkTimeout, 5000)
-  status.value.message = '正在连接后端服务...'
+  // 初始化K线画布
+  if (klineCanvas.value) {
+    candleScroller = new LightweightCandleScroller(klineCanvas.value)
+    animateKLine()
+  }
+  
   beginStartup()
 })
 
 onUnmounted(() => {
-  eventSource.value?.close()
-  if (timeoutTimer.value) {
-    clearInterval(timeoutTimer.value)
-  }
+  if (demoTimer) clearTimeout(demoTimer)
+  if (animFrameId) cancelAnimationFrame(animFrameId)
+  candleScroller?.destroy()
 })
 </script>
 
 <style scoped>
-.splash-screen {
+.splash-container {
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  background: linear-gradient(135deg, #0B1120 0%, #0F172A 50%, #1E293B 100%);
+  inset: 0;
   z-index: 9999;
   display: flex;
+  align-items: flex-end;
   justify-content: center;
-  align-items: center;
+  padding: 3rem;
   overflow: hidden;
+  background: #03080d;
 }
 
-.splash-background {
+.kline-canvas {
   position: absolute;
   inset: 0;
-  overflow: hidden;
+  z-index: 0;
 }
 
-.wave-container {
+.splash-overlay {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 100%;
-  height: 40%;
+  inset: 0;
+  z-index: 1;
+  background: 
+    radial-gradient(ellipse at 30% 85%, rgba(6, 182, 212, 0.06) 0%, transparent 50%),
+    radial-gradient(ellipse at 75% 20%, rgba(6, 182, 212, 0.03) 0%, transparent 35%);
+  pointer-events: none;
 }
 
-.wave {
+.splash-grain {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  width: 200%;
-  height: 100%;
-  background: linear-gradient(180deg, transparent 60%, rgba(6, 182, 212, 0.03) 100%);
-  border-radius: 50% 50% 0 0;
-  transform-origin: bottom;
-}
-
-.wave1 {
-  animation: wave 8s ease-in-out infinite;
-  opacity: 0.5;
-}
-
-.wave2 {
-  animation: wave 10s ease-in-out infinite 0.5s;
-  opacity: 0.3;
-}
-
-.wave3 {
-  animation: wave 12s ease-in-out infinite 1s;
-  opacity: 0.2;
-}
-
-@keyframes wave {
-  0%, 100% {
-    transform: translateX(0) translateY(0);
-  }
-  50% {
-    transform: translateX(-25%) translateY(-10px);
-  }
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 400 400' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
 }
 
 .splash-content {
   position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 2rem;
-  max-width: 600px;
+  z-index: 3;
   width: 100%;
+  max-width: 1200px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4rem;
+  align-items: end;
 }
 
-.logo-section {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  margin-bottom: 3rem;
+.hero-section {
+  max-width: 700px;
 }
 
-.logo-wrapper {
-  position: relative;
-  margin-bottom: 1.5rem;
-}
-
-.logo-glow {
-  position: absolute;
-  inset: -20px;
-  background: radial-gradient(circle, rgba(6, 182, 212, 0.3) 0%, transparent 70%);
-  border-radius: 50%;
-  animation: pulse 2s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% {
-    opacity: 0.5;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.8;
-    transform: scale(1.1);
-  }
-}
-
-.logo-icon {
-  position: relative;
-  width: 80px;
-  height: 80px;
-  background: linear-gradient(135deg, #06B6D4 0%, #0891B2 50%, #0E7490 100%);
-  border-radius: 20px;
+.label-line {
   display: flex;
   align-items: center;
-  justify-content: center;
-  box-shadow: 0 20px 40px rgba(6, 182, 212, 0.3);
-}
-
-.logo-text {
-  font-size: 2.5rem;
-  font-weight: 700;
-  background: linear-gradient(135deg, #67E8F9 0%, #22D3EE 50%, #06B6D4 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  letter-spacing: -0.02em;
-  margin: 0;
-}
-
-.logo-subtitle {
-  font-size: 0.875rem;
-  color: #64748B;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  margin-top: 0.25rem;
-}
-
-.progress-section {
-  width: 100%;
-  max-width: 400px;
+  gap: 1rem;
   margin-bottom: 2rem;
 }
 
-.progress-bar {
-  position: relative;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 3px;
-  overflow: hidden;
+.line {
+  width: 2rem;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(255,255,255,0.6), transparent);
 }
 
-.progress-fill {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  background: linear-gradient(90deg, #06B6D4 0%, #22D3EE 100%);
-  border-radius: 3px;
-  transition: width 0.3s ease;
+.label-text {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
 }
 
-.progress-glow {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.4) 50%, transparent 100%);
-  border-radius: 3px;
-  animation: shimmer 2s infinite;
+.main-title {
+  margin: 0;
+  line-height: 0.9;
+  letter-spacing: -0.04em;
 }
 
-@keyframes shimmer {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(400%);
-  }
-}
-
-.progress-info {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 0.75rem;
-}
-
-.progress-percent {
-  font-size: 0.875rem;
+.title-line {
+  display: block;
+  font-size: clamp(4rem, 10vw, 8rem);
   font-weight: 600;
-  color: #22D3EE;
-  font-variant-numeric: tabular-nums;
+  color: white;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 }
 
-.progress-message {
-  font-size: 0.875rem;
-  color: #94A3B8;
+.title-line.accent {
+  color: rgba(6, 182, 212, 0.15);
+  -webkit-text-stroke: 1px rgba(6, 182, 212, 0.4);
 }
 
-.logs-section {
-  width: 100%;
-  max-width: 500px;
-  margin-bottom: 1.5rem;
+.subtitle {
+  margin-top: 1.5rem;
+  font-size: 1rem;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 300;
+  letter-spacing: 0.02em;
 }
 
-.logs-container {
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  border-radius: 8px;
-  padding: 1rem;
-  height: 200px;
-  overflow-y: auto;
-  font-family: 'Fira Code', 'SF Mono', monospace;
-  font-size: 0.75rem;
-  line-height: 1.6;
-}
-
-.logs-container::-webkit-scrollbar {
-  width: 4px;
-}
-
-.logs-container::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.logs-container::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 2px;
-}
-
-.log-entry {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
-  white-space: nowrap;
-}
-
-.log-time {
-  color: #475569;
-}
-
-.log-level {
-  min-width: 50px;
-}
-
-.log-info .log-level {
-  color: #22D3EE;
-}
-
-.log-warn .log-level {
-  color: #FBBF24;
-}
-
-.log-error .log-level {
-  color: #EF4444;
-}
-
-.log-message {
-  color: #CBD5E1;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.error-section {
-  width: 100%;
-  max-width: 500px;
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 12px;
+.status-panel {
+  width: 280px;
+  background: rgba(8, 12, 16, 0.75);
+  backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
   padding: 1.5rem;
 }
 
-.error-content {
+.panel-header {
   display: flex;
-  align-items: flex-start;
-  gap: 1rem;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: 1rem;
 }
 
-.error-icon {
-  font-size: 1.5rem;
+.status-label {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.45);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
 }
 
-.error-info {
-  flex: 1;
-}
-
-.error-code {
-  font-size: 0.875rem;
+.status-value {
+  font-size: 0.85rem;
   font-weight: 600;
-  color: #FCA5A5;
-  margin: 0 0 0.25rem 0;
-  font-family: 'Fira Code', monospace;
+  font-family: 'SF Mono', 'Fira Code', monospace;
 }
 
-.error-message {
-  font-size: 0.875rem;
-  color: #FECACA;
-  margin: 0;
+.text-emerald-400 {
+  color: #34d399;
 }
 
-.error-actions {
+.progress-track {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.07);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 1.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #06b6d4, #34d399);
+  border-radius: 2px;
+  transition: width 0.4s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.4);
+}
+
+.progress-fill.active {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 12px rgba(52, 211, 153, 0.4); }
+  50% { box-shadow: 0 0 20px rgba(52, 211, 153, 0.6); }
+}
+
+.panel-metrics {
   display: flex;
-  gap: 0.75rem;
+  gap: 2rem;
 }
 
-.btn-retry, .btn-logs {
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s;
+.metric-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.metric-label {
+  font-size: 0.65rem;
+  color: rgba(255, 255, 255, 0.3);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.metric-value {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.75);
+  font-family: 'SF Mono', 'Fira Code', monospace;
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  border: none;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.dot.loading {
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.5);
+}
+
+.dot.ready {
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.5);
+  animation: none;
+}
+
+.dot.error {
+  background: #ef4444;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+  animation: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.8); }
+}
+
+.error-section, .timeout-section {
+  position: absolute;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  padding: 1rem 2rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 12px;
+}
+
+.error-section p, .timeout-section p {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+}
+
+.error-code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: #fca5a5;
+  font-weight: 600;
+}
+
+.error-message {
+  color: #fecaca;
+  font-size: 0.8rem;
+}
+
+.timeout-section p {
+  color: #fbbf24;
 }
 
 .btn-retry {
-  background: #EF4444;
+  padding: 0.5rem 1.25rem;
+  border: none;
+  border-radius: 8px;
+  background: #ef4444;
   color: white;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .btn-retry:hover {
-  background: #DC2626;
+  background: #dc2626;
+  transform: translateY(-1px);
 }
 
-.btn-logs {
-  background: rgba(255, 255, 255, 0.1);
-  color: #CBD5E1;
+.demo-badge {
+  position: absolute;
+  top: 1.5rem;
+  right: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.9rem;
+  background: rgba(168, 85, 247, 0.15);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: 999px;
+  font-size: 0.65rem;
+  color: #c084fc;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-family: 'SF Mono', 'Fira Code', monospace;
 }
 
-.btn-logs:hover {
-  background: rgba(255, 255, 255, 0.15);
+/* ========== 过渡动画 ========== */
+.splash-container {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  transition: opacity 0.8s ease, transform 0.8s ease;
 }
 
-.timeout-section {
-  text-align: center;
+.splash-container.is-exiting {
+  opacity: 0;
+  transform: scale(1.05);
+  pointer-events: none;
 }
 
-.timeout-message {
-  color: #FBBF24;
-  margin-bottom: 1rem;
+.splash-content {
+  transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.5s ease;
 }
 
-.splash-fade-enter-active,
-.splash-fade-leave-active {
-  transition: opacity 0.5s ease;
-}
-
-.splash-fade-enter-from,
-.splash-fade-leave-to {
+.splash-content.content-exit {
+  transform: translateY(-60px);
   opacity: 0;
 }
 </style>

@@ -9,7 +9,7 @@ import pandas as pd
 from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
 
-from core.backtest.flexible_backtest_engine import FlexibleBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from config.logger import get_logger
 
 logger = get_logger(__name__)
@@ -19,7 +19,7 @@ class OverfittingDetector:
     过拟合检测与稳健性测试套件
     """
     
-    def __init__(self, engine: FlexibleBacktestEngine):
+    def __init__(self, engine: UnifiedBacktestEngine):
         self.engine = engine
 
     def permutation_test(self, strategy_class, params: Dict, start_date: str, end_date: str, n_permutations: int = 10) -> Dict[str, Any]:

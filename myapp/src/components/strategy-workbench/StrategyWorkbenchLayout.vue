@@ -93,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import WorkbenchToolbar from './WorkbenchToolbar.vue';
 import CodeEditorPanel from './CodeEditorPanel.vue';
 import ChartPanel from './ChartPanel.vue';
@@ -115,15 +115,83 @@ const rightPanelWidth = computed(() => 100 - leftPanelWidth.value - centerPanelW
 const isResizing = ref(false);
 const resizeDirection = ref<'left' | 'right' | null>(null);
 
+// 默认策略代码模板
+const defaultStrategyCode = `from core.strategies.strategy_framework import StrategyBase
+
+class MyStrategy(StrategyBase):
+    """
+    我的策略 - 简单均线突破策略
+    """
+    strategy_name = "MyStrategy"
+    
+    def __init__(self, name=None):
+        super().__init__(name)
+    
+    def generate_signals(self, current_date, stock_pool_today, data_query):
+        """
+        策略逻辑实现
+        
+        参数:
+            current_date: 当前日期
+            stock_pool_today: DataFrame，当日股票数据
+            data_query: 数据查询对象
+        
+        返回:
+            Dict[str, str]: {股票代码: 'buy'/'sell'/'hold'}
+        """
+        signals = {}
+        
+        for _, row in stock_pool_today.iterrows():
+            code = row.get('stock_code') or row.get('symbol_code')
+            if not code:
+                continue
+            
+            close = row.get('close', 0)
+            ma20 = row.get('ma20', 0)
+            ma5 = row.get('ma5', 0)
+            volume_ratio = row.get('volume_ratio', 1)
+            is_st = row.get('is_st', False)
+            is_limit_up = row.get('is_limit_up', False)
+            
+            # 买入条件：价格突破20日均线 + 放量 + 非ST
+            if (close > ma20 and 
+                volume_ratio > 1.5 and
+                not is_st and
+                not is_limit_up):
+                signals[code] = 'buy'
+            
+            # 卖出条件：跌破5日均线
+            elif close < ma5:
+                signals[code] = 'sell'
+            
+            else:
+                signals[code] = 'hold'
+        
+        return signals
+`;
+
 // 策略代码
-const strategyCode = ref('');
-const strategyName = ref('');
+const strategyCode = ref(defaultStrategyCode);
+const strategyName = ref('MyStrategy');
+
+// 获取默认日期范围（最近一年）
+const getDefaultDateRange = () => {
+  const end = new Date();
+  const start = new Date();
+  start.setFullYear(start.getFullYear() - 1);
+  return {
+    startDate: start.toISOString().split('T')[0],
+    endDate: end.toISOString().split('T')[0],
+  };
+};
+
+const defaultDates = getDefaultDateRange();
 
 // 回测配置
 const backtestConfig = ref<BacktestConfig>({
   initialCapital: 1000000,
-  startDate: '',
-  endDate: '',
+  startDate: defaultDates.startDate,
+  endDate: defaultDates.endDate,
   stockPool: 'all',
   benchmark: '000300.SH',
   commission: 0.0003,
@@ -139,13 +207,40 @@ const currentBacktestDate = ref('');
 const equitySeries = ref<Array<{ date: string; equity: number }>>([]);
 const benchmarkSeries = ref<Array<{ date: string; equity: number }>>([]);
 const positionSeries = ref<Array<{ date: string; position: number }>>([]);
-const drawdownSeries = ref<Array<{ date: string; drawdown: number }>>([]);
-const tradeFrequencyData = ref<Array<{ date: string; count: number }>>([]);
 const trades = ref<Trade[]>([]);
 const positions = ref<Position[]>([]);
 const logs = ref<LogEntry[]>([]);
 const errors = ref<LogEntry[]>([]);
 const metrics = ref<BacktestMetrics | null>(null);
+
+const drawdownSeries = computed(() => {
+  if (equitySeries.value.length === 0) return [];
+  
+  let peak = -Infinity;
+  return equitySeries.value.map(item => {
+    if (item.equity > peak) {
+      peak = item.equity;
+    }
+    const drawdown = peak > 0 ? (item.equity / peak) - 1 : 0;
+    return {
+      date: item.date,
+      drawdown: drawdown
+    };
+  });
+});
+
+const tradeFrequencyData = computed(() => {
+  const counts: Record<string, number> = {};
+  trades.value.forEach(t => {
+    const date = t.date || t.entryDate;
+    if (date) {
+      counts[date] = (counts[date] || 0) + 1;
+    }
+  });
+  return Object.entries(counts)
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+});
 
 // 同步与选择状态
 const syncDate = ref('');
@@ -156,7 +251,7 @@ const apiStatus = ref<'connected' | 'disconnected'>('disconnected');
 const lastUpdate = ref('');
 
 // Socket.IO
-const { onEvent, emit } = useSocketIO();
+const { onEvent, emitEvent: emit, connect, status: socketStatus } = useSocketIO();
 
 // ============================================
 // 计算属性
@@ -164,6 +259,16 @@ const { onEvent, emit } = useSocketIO();
 
 const hasBacktestData = computed(() => {
   return equitySeries.value.length > 0 && metrics.value !== null;
+});
+
+// 监听 Socket 状态
+watch(socketStatus, (newStatus) => {
+  if (newStatus === 'OPEN') {
+    apiStatus.value = 'connected';
+    lastUpdate.value = new Date().toLocaleTimeString();
+  } else if (newStatus === 'CLOSED' || newStatus === 'ERROR') {
+    apiStatus.value = 'disconnected';
+  }
 });
 
 // ============================================
@@ -228,25 +333,47 @@ async function handleRunBacktest() {
   // 清空之前的数据
   equitySeries.value = [];
   benchmarkSeries.value = [];
+  positionSeries.value = [];
   trades.value = [];
   logs.value = [];
   errors.value = [];
   
+  logs.value.push({
+    time: new Date().toLocaleTimeString(),
+    message: '正在启动回测...',
+    type: 'info',
+  });
+  
   try {
-    emit('start_backtest', {
-      strategy_code: strategyCode.value,
-      config: backtestConfig.value,
+    emit('run_streaming_backtest', {
+      strategy_name: strategyName.value || 'MyStrategy',
+      start_date: backtestConfig.value.startDate,
+      end_date: backtestConfig.value.endDate,
+      benchmark_code: backtestConfig.value.benchmark,
+      initial_capital: backtestConfig.value.initialCapital,
+      commission: backtestConfig.value.commission,
+      slippage: backtestConfig.value.slippage,
     });
   } catch (error) {
     console.error('启动回测失败:', error);
     isRunning.value = false;
+    errors.value.push({
+      time: new Date().toLocaleTimeString(),
+      message: `启动回测失败: ${error}`,
+      type: 'error',
+    });
   }
 }
 
 // 停止回测
 function handleStopBacktest() {
-  emit('stop_backtest');
+  emit('cancel_streaming_backtest');
   isRunning.value = false;
+  logs.value.push({
+    time: new Date().toLocaleTimeString(),
+    message: '已发送停止请求',
+    type: 'info',
+  });
 }
 
 // 保存策略
@@ -272,12 +399,34 @@ async function handleSaveStrategy() {
 
 // 重置
 function handleReset() {
-  strategyCode.value = '';
-  strategyName.value = '';
+  strategyCode.value = defaultStrategyCode;
+  strategyName.value = 'MyStrategy';
   equitySeries.value = [];
+  benchmarkSeries.value = [];
+  positionSeries.value = [];
   trades.value = [];
   logs.value = [];
   errors.value = [];
+  metrics.value = null;
+  backtestProgress.value = 0;
+  currentBacktestDate.value = '';
+  
+  const dates = getDefaultDateRange();
+  backtestConfig.value = {
+    initialCapital: 1000000,
+    startDate: dates.startDate,
+    endDate: dates.endDate,
+    stockPool: 'all',
+    benchmark: '000300.SH',
+    commission: 0.0003,
+    slippage: 0.001,
+  };
+  
+  logs.value.push({
+    time: new Date().toLocaleTimeString(),
+    message: '已重置到默认状态',
+    type: 'info',
+  });
 }
 
 // 代码格式化
@@ -322,55 +471,126 @@ let unsubscribeComplete: (() => void) | null = null;
 let unsubscribeError: (() => void) | null = null;
 let unsubscribeEquity: (() => void) | null = null;
 let unsubscribeTrade: (() => void) | null = null;
+let unsubscribeRequestReceived: (() => void) | null = null;
+let unsubscribeBacktestStart: (() => void) | null = null;
+let unsubscribeCancelled: (() => void) | null = null;
 
 onMounted(() => {
-  // 监听回测进度
-  unsubscribeProgress = onEvent('backtest_progress', (data: any) => {
-    backtestProgress.value = data.progress || 0;
-    currentBacktestDate.value = data.current_date || '';
-  });
+  // 使用相对路径 ''，让 Socket.IO 自动使用当前域名
+  // 这样 Vite 代理可以正确代理 /socket.io 请求到后端
+  connect('');
 
-  // 监听净值数据流
-  unsubscribeEquity = onEvent('equity_update', (data: any) => {
-    if (data.equity_series) {
-      equitySeries.value = data.equity_series;
-    }
-    if (data.benchmark_series) {
-      benchmarkSeries.value = data.benchmark_series;
-    }
-    if (data.position_series) {
-      positionSeries.value = data.position_series;
-    }
-    if (data.drawdown_series) {
-      drawdownSeries.value = data.drawdown_series;
-    }
-  });
-
-  // 监听交易信号
-  unsubscribeTrade = onEvent('trade_signal', (data: any) => {
-    if (data.trade) {
-      trades.value.push(data.trade);
-    }
-  });
-
-  // 监听回测完成
-  unsubscribeComplete = onEvent('backtest_complete', (data: any) => {
-    isRunning.value = false;
-    metrics.value = data.metrics;
-    
-    // 完整数据更新
-    if (data.equity_series) equitySeries.value = data.equity_series;
-    if (data.benchmark_series) benchmarkSeries.value = data.benchmark_series;
-    if (data.trades) trades.value = data.trades;
-    
+  unsubscribeRequestReceived = onEvent('request_received', (data: any) => {
     logs.value.push({
       time: new Date().toLocaleTimeString(),
-      message: `回测完成 - 总收益: ${(data.metrics?.total_return * 100).toFixed(2)}%`,
+      message: data.message || '回测请求已收到',
+      type: 'info',
+    });
+  });
+
+  unsubscribeBacktestStart = onEvent('backtest_start', (data: any) => {
+    logs.value.push({
+      time: new Date().toLocaleTimeString(),
+      message: '回测开始运行...',
+      type: 'info',
+    });
+  });
+
+  unsubscribeProgress = onEvent('progress', (data: any) => {
+    backtestProgress.value = data.progress || 0;
+    currentBacktestDate.value = data.current_date || data.message || '';
+    if (data.message) {
+      logs.value.push({
+        time: new Date().toLocaleTimeString(),
+        message: data.message,
+        type: 'info',
+      });
+    }
+  });
+
+  unsubscribeEquity = onEvent('daily_equity', (data: any) => {
+    if (data.date) {
+      if (data.equity !== undefined) {
+        const existingIndex = equitySeries.value.findIndex(item => item.date === data.date);
+        if (existingIndex >= 0) {
+          equitySeries.value[existingIndex] = { date: data.date, equity: data.equity };
+        } else {
+          equitySeries.value.push({ date: data.date, equity: data.equity });
+        }
+        equitySeries.value.sort((a, b) => a.date.localeCompare(b.date));
+      }
+      if (data.benchmark_equity !== undefined || data.benchmarkReturn !== undefined) {
+        const benchmarkValue = data.benchmark_equity ?? data.benchmarkReturn;
+        const existingIndex = benchmarkSeries.value.findIndex(item => item.date === data.date);
+        if (existingIndex >= 0) {
+          benchmarkSeries.value[existingIndex] = { date: data.date, equity: benchmarkValue };
+        } else {
+          benchmarkSeries.value.push({ date: data.date, equity: benchmarkValue });
+        }
+        benchmarkSeries.value.sort((a, b) => a.date.localeCompare(b.date));
+      }
+      if (data.position !== undefined) {
+        positionSeries.value.push({ date: data.date, position: data.position });
+      }
+    }
+  });
+
+  unsubscribeTrade = onEvent('new_trade', (data: any) => {
+    if (data) {
+      const trade: Trade = {
+        id: data.id || `${data.date}-${data.symbolCode || data.symbol || data.symbol_code}`,
+        symbol: data.symbol || data.symbol_code || '',
+        symbolCode: data.symbolCode || data.symbol_code || data.symbol || '',
+        stockCode: data.symbolCode || data.symbol_code || data.symbol || '',
+        date: data.date || data.entryDate || '',
+        action: (data.action || 'buy').toLowerCase(),
+        price: data.price || data.entryPrice || 0,
+        volume: data.volume || data.quantity || data.shares || 0,
+        value: (data.price || data.entryPrice || 0) * (data.volume || data.quantity || 0),
+        profitLoss: data.profitLoss ?? data.profit_loss ?? data.pnl ?? 0,
+      };
+      trades.value.push(trade);
+      logs.value.push({
+        time: new Date().toLocaleTimeString(),
+        message: `交易: ${trade.action.toUpperCase()} ${trade.symbolCode} @ ${trade.price}`,
+        type: 'info',
+      });
+    }
+  });
+
+  unsubscribeComplete = onEvent('stream_complete', (data: any) => {
+    isRunning.value = false;
+    if (data) {
+      metrics.value = {
+        totalReturn: data.totalReturn ?? data.total_return ?? 0,
+        annualizedReturn: data.annualizedReturn ?? data.annualReturn ?? data.annual_return ?? 0,
+        maxDrawdown: data.maxDrawdown ?? data.max_drawdown ?? 0,
+        sharpeRatio: data.sharpeRatio ?? data.sharpe_ratio ?? 0,
+        sortinoRatio: data.sortinoRatio ?? data.sortino_ratio ?? 0,
+        volatility: data.volatility ?? 0,
+        winRate: data.winRate ?? data.win_rate ?? 0,
+        profitFactor: data.profitFactor ?? data.profit_factor ?? 0,
+        tradesCount: data.totalTrades ?? data.total_trades ?? data.tradesCount ?? 0,
+      };
+    }
+    
+    const returnPercent = ((data?.totalReturn ?? data?.total_return ?? 0) * 100).toFixed(2);
+    logs.value.push({
+      time: new Date().toLocaleTimeString(),
+      message: `回测完成 - 总收益: ${returnPercent}%`,
       type: 'success',
     });
   });
 
-  // 监听错误
+  unsubscribeCancelled = onEvent('backtest_cancelled', (data: any) => {
+    isRunning.value = false;
+    logs.value.push({
+      time: new Date().toLocaleTimeString(),
+      message: data.message || '回测已取消',
+      type: 'warning',
+    });
+  });
+
   unsubscribeError = onEvent('backtest_error', (data: any) => {
     isRunning.value = false;
     errors.value.push({
@@ -387,6 +607,9 @@ onBeforeUnmount(() => {
   unsubscribeError?.();
   unsubscribeEquity?.();
   unsubscribeTrade?.();
+  unsubscribeRequestReceived?.();
+  unsubscribeBacktestStart?.();
+  unsubscribeCancelled?.();
 });
 </script>
 
@@ -394,24 +617,47 @@ onBeforeUnmount(() => {
 .strategy-workbench {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  background-color: var(--bg-primary);
-  color: var(--text-primary);
+  height: 100%;
+  background-color: #131722;
+  color: #d1d4dc;
   overflow: hidden;
+  /* 定义策略工作台内部使用的 CSS 变量，确保子组件样式一致 */
+  --bg-primary: #0A0A0A;
+  --bg-secondary: #1e222d;
+  --bg-tertiary: #2a2e39;
+  --bg-hover: #3e3e42;
+  --text-primary: #d1d4dc;
+  --text-secondary: #b2b5be;
+  --text-muted: #787b86;
+  --border-color: #2a2e39;
+  --border-hover: #3e3e42;
+  --accent-primary: #2962ff;
+  --accent-warning: #f5a623;
+  --color-up: #089981;
+  --color-up-light: #0db89a;
+  --color-down: #f23645;
+  --color-down-light: #f55763;
 }
 
+/* 主内容区 - 增加内边距，与全局导航栏产生视觉分离 */
 .workbench-body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  padding: 8px;
+  gap: 8px;
+  background-color: #0d1117;
 }
 
+/* 左侧面板 - 增加圆角和阴影，做成卡片样式 */
 .left-panel {
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background-color: var(--bg-secondary);
-  border-right: 1px solid var(--border-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .center-panel {
@@ -419,6 +665,9 @@ onBeforeUnmount(() => {
   flex-direction: column;
   overflow: hidden;
   background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .right-panel {
@@ -426,18 +675,21 @@ onBeforeUnmount(() => {
   flex-direction: column;
   overflow: hidden;
   background-color: var(--bg-secondary);
-  border-left: 1px solid var(--border-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .resize-bar {
-  width: 6px;
-  background-color: var(--bg-primary);
+  width: 4px;
+  background-color: transparent;
   cursor: col-resize;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: background-color 0.2s;
   z-index: 10;
+  border-radius: 2px;
 }
 
 .resize-bar:hover {
@@ -460,11 +712,11 @@ onBeforeUnmount(() => {
   .left-panel {
     width: 30% !important;
   }
-  
+
   .center-panel {
     width: 40% !important;
   }
-  
+
   .right-panel {
     width: 30% !important;
   }
@@ -473,17 +725,17 @@ onBeforeUnmount(() => {
 @media (max-width: 767px) {
   .workbench-body {
     flex-direction: column;
+    padding: 4px;
+    gap: 4px;
   }
-  
+
   .left-panel,
   .center-panel,
   .right-panel {
     width: 100% !important;
     height: 33.33%;
-    border: none;
-    border-bottom: 1px solid var(--border-color);
   }
-  
+
   .resize-bar.vertical {
     display: none;
   }

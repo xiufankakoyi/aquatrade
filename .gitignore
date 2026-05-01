@@ -201,6 +201,13 @@ desktop.ini
 .env.*.local
 !.env.template
 
+# 敏感配置文件 (包含所有密钥)
+config/secrets.py
+!config/secrets_template.py
+
+# QuickTiny 爬虫配置 (包含 Token 和密码)
+quant/config.json
+
 # ============================================
 # 测试和沙盒
 # ============================================

@@ -128,6 +128,13 @@ else:
     # WSGI 模式：使用 Flask-SocketIO 的服务器
     sio_server = flask_sio.server
 
+# 设置全局 Socket.IO 实例
+try:
+    from server.socketio_manager import set_global_socketio
+    set_global_socketio(sio_server)
+except Exception as e:
+    print(f"[WARNING] 无法设置全局 Socket.IO 实例: {e}")
+
 # #region agent log
 _t4 = time.perf_counter()
 try:

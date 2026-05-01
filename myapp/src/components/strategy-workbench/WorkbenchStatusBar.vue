@@ -15,7 +15,7 @@
       
       <div class="status-item">
         <i class="fas fa-clock"></i>
-        <span class="status-text">{{ lastUpdate || '--' }}</span>
+        <span class="status-text">{{ formattedLastUpdate }}</span>
       </div>
     </div>
 
@@ -45,18 +45,30 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
+
 // ============================================
 // Props
 // ============================================
 interface Props {
-  apiStatus: 'connected' | 'disconnected';
-  lastUpdate: string;
+  apiStatus: 'connected' | 'disconnected' | 'error';
+  lastUpdate: Date | null;
   currentDate?: string;
   progress?: number;
 }
 
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
   progress: 0,
+});
+
+// 格式化最后更新时间
+const formattedLastUpdate = computed(() => {
+  if (!props.lastUpdate) return '--';
+  return props.lastUpdate.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  });
 });
 </script>
 
@@ -65,10 +77,13 @@ withDefaults(defineProps<Props>(), {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 24px;
-  padding: 0 12px;
+  height: 32px;
+  padding: 0 16px;
+  margin: 0 8px 8px;
   background-color: var(--bg-secondary);
-  border-top: 1px solid var(--border-color);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   flex-shrink: 0;
 }
 

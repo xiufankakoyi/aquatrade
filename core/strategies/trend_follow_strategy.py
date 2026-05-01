@@ -6,6 +6,33 @@ from typing import Dict, List
 import time
 
 import pandas as pd
+import numpy as np
+
+
+def _is_empty(data) -> bool:
+    """检查数据是否为空，支持 DataFrame、Polars DataFrame 和 numpy array"""
+    if data is None:
+        return True
+    if isinstance(data, np.ndarray):
+        return data.size == 0
+    if hasattr(data, 'is_empty'):
+        return data.is_empty()
+    if hasattr(data, 'empty'):
+        return data.empty
+    return False
+
+
+def _ensure_dataframe(data):
+    """确保数据是 DataFrame 格式，支持 numpy array 转换"""
+    if data is None:
+        return None
+    if isinstance(data, np.ndarray):
+        if data.size == 0:
+            return pd.DataFrame()
+        if len(data.shape) == 1:
+            return pd.DataFrame({'value': data})
+        return pd.DataFrame(data)
+    return data
 
 from core.strategies.strategy_framework import StrategyBase
 from config.config import Config
@@ -56,7 +83,7 @@ class TrendFollowStrategy(StrategyBase):
     - 收盘价跌破 MA10（或 MA5）视为趋势破位，全部卖出
     """
 
-    strategy_id = "trend_follow_v1"
+    strategy_id = "trend_follow_main_wave"
     strategy_name = "主升浪趋势跟随策略"
     needs_today_pool = True  # 策略需要当日股票池数据
 
@@ -86,9 +113,9 @@ class TrendFollowStrategy(StrategyBase):
         previous_date = self._last_date
         self._last_date = current_date
 
-        # 昨日股票池快照：用于生成“次日买入信号”
+        # 昨日股票池快照：用于生成"次日买入信号"
         stock_pool_yesterday = self._get_previous_day_pool(previous_date, data_query)
-        if stock_pool_yesterday is None or stock_pool_yesterday.empty:
+        if _is_empty(stock_pool_yesterday):
             return {}
 
         # 预筛 + 趋势择股（在昨日 K 线上完成）
@@ -99,7 +126,7 @@ class TrendFollowStrategy(StrategyBase):
         buy_candidates = self._evaluate_buy_candidates(pre_screened_stocks, stock_pool_yesterday)
 
         # 今日卖出信号：趋势破位就走
-        if stock_pool_today is None or stock_pool_today.empty:
+        if _is_empty(stock_pool_today):
             sell_signals: List[str] = []
         else:
             sell_signals = self._get_sell_signals(stock_pool_today, current_date, data_query)
@@ -119,7 +146,7 @@ class TrendFollowStrategy(StrategyBase):
 
         try:
             pool = data_query.get_stock_pool(date, use_cache=True, filters={"min_mv": 0})
-            if pool is None or pool.empty:
+            if _is_empty(pool):
                 return None
         except Exception as exc:
             print(f"[{date}] Trend策略: 获取股票池失败: {exc}")
@@ -136,6 +163,10 @@ class TrendFollowStrategy(StrategyBase):
         基本完全复用 JQ 策略的高性能写法。
         """
         t0 = time.perf_counter()
+        
+        stock_pool = _ensure_dataframe(stock_pool)
+        if _is_empty(stock_pool):
+            return []
 
         sort_col = "amount" if "amount" in stock_pool.columns else "total_mv"
         top_stocks = stock_pool.nlargest(self.config.max_candidates, sort_col)
@@ -150,7 +181,7 @@ class TrendFollowStrategy(StrategyBase):
         if Config.EXCLUDE_CY and "is_cy" in top_stocks.columns:
             mask &= top_stocks["is_cy"] == 0
 
-        filtered_stocks = top_stocks[mask]
+        filtered_stocks = top_stocks[mask].copy()
         if filtered_stocks.empty:
             return []
 
@@ -174,8 +205,9 @@ class TrendFollowStrategy(StrategyBase):
                 days_listed = (current_dt - list_dates_series).dt.days
 
             valid_days_mask = days_listed.notna() & (days_listed >= self.required_days)
-            final_mask = mask & valid_days_mask
-            result = top_stocks.loc[final_mask, "stock_code"].tolist()
+            # 修复：确保索引一致，使用 filtered_stocks 而不是 top_stocks
+            final_mask = valid_days_mask.reindex(filtered_stocks.index, fill_value=False)
+            result = filtered_stocks.loc[final_mask, "stock_code"].tolist()
 
             dt_ms = (time.perf_counter() - t0) * 1000
             print(
@@ -198,7 +230,11 @@ class TrendFollowStrategy(StrategyBase):
         - 无明显长上影线
         """
         t0 = time.perf_counter()
-        if not pre_screened_codes or stock_pool_snapshot is None or stock_pool_snapshot.empty:
+        if not pre_screened_codes or _is_empty(stock_pool_snapshot):
+            return []
+        
+        stock_pool_snapshot = _ensure_dataframe(stock_pool_snapshot)
+        if _is_empty(stock_pool_snapshot):
             return []
 
         required_cols = {"stock_code", "close", "prev_close", "ma5"}
@@ -278,7 +314,11 @@ class TrendFollowStrategy(StrategyBase):
         - 优先用 MA10：收盘价 < MA10 视为趋势破坏
         - 若无 MA10 列，则退化为 MA5
         """
-        if stock_pool is None or stock_pool.empty:
+        if _is_empty(stock_pool):
+            return []
+        
+        stock_pool = _ensure_dataframe(stock_pool)
+        if _is_empty(stock_pool):
             return []
 
         long_ma_col = f"ma{self.config.ma_long_days}"
@@ -300,7 +340,7 @@ class TrendFollowStrategy(StrategyBase):
                     window=self.config.ma_long_days,
                     min_periods=self.config.ma_long_days,
                 )
-                if snapshot.empty:
+                if _is_empty(snapshot):
                     return []
 
                 snapshot = snapshot.dropna(subset=["ma_value"])

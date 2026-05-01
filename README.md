@@ -73,6 +73,261 @@ graph TD
   - 估值因子簇 (`factors_valuation`): PE、PB、市值、换手率
   - 实验因子簇 (`factors_experimental`): 涨跌停、情绪、龙头
 
+### QuestDB 表结构详情
+
+#### 📊 基础行情表 (`base_daily`) - 6,841,370 行
+| 字段名 | 类型 | 描述 |
+| :--- | :--- | :--- |
+| `timestamp` | TIMESTAMP | 交易日期 (分区键) |
+| `stock_code` | VARCHAR | 股票代码 (如 000001.SZ) |
+| `open` | DOUBLE | 开盘价 |
+| `high` | DOUBLE | 最高价 |
+| `low` | DOUBLE | 最低价 |
+| `close` | DOUBLE | 收盘价 |
+| `volume` | DOUBLE | 成交量 (手) |
+| `amount` | DOUBLE | 成交额 (元) |
+| `adj_factor` | DOUBLE | 复权因子 |
+| `prev_close` | DOUBLE | 昨收价 |
+
+#### 📊 动量因子表 (`factors_momentum`) - 5,441 行
+| 字段名 | 类型 | 描述 |
+| :--- | :--- | :--- |
+| `timestamp` | TIMESTAMP | 交易日期 (分区键) |
+| `stock_code` | VARCHAR | 股票代码 |
+| `rsi_14` | DOUBLE | 14日相对强弱指标 |
+| `kdj_k` | DOUBLE | KDJ-K值 |
+| `kdj_d` | DOUBLE | KDJ-D值 |
+| `kdj_j` | DOUBLE | KDJ-J值 |
+| `macd_dif` | DOUBLE | MACD-DIF (快线) |
+| `macd_dea` | DOUBLE | MACD-DEA (慢线) |
+| `macd_histogram` | DOUBLE | MACD柱状图 |
+| `atr_14` | DOUBLE | 14日平均真实波幅 |
+| `ma5` | DOUBLE | 5日均线 |
+| `ma10` | DOUBLE | 10日均线 |
+| `ma20` | DOUBLE | 20日均线 |
+| `ma60` | DOUBLE | 60日均线 |
+| `ma120` | DOUBLE | 120日均线 |
+| `ma250` | DOUBLE | 250日均线 |
+| `boll_upper` | DOUBLE | 布林带上轨 |
+| `boll_mid` | DOUBLE | 布林带中轨 |
+| `boll_lower` | DOUBLE | 布林带下轨 |
+| `bias_5` | DOUBLE | 5日乖离率 |
+| `bias_10` | DOUBLE | 10日乖离率 |
+| `bias_20` | DOUBLE | 20日乖离率 |
+
+#### 📊 估值因子表 (`factors_valuation`) - 6,841,370 行
+| 字段名 | 类型 | 描述 |
+| :--- | :--- | :--- |
+| `trade_date` | TIMESTAMP | 交易日期 (分区键) |
+| `stock_code` | SYMBOL | 股票代码 |
+| `pe` | DOUBLE | 市盈率 (动态) |
+| `pe_ttm` | DOUBLE | 市盈率 TTM |
+| `pb` | DOUBLE | 市净率 |
+| `ps` | DOUBLE | 市销率 |
+| `ps_ttm` | DOUBLE | 市销率 TTM |
+| `total_mv` | DOUBLE | 总市值 (万元) |
+| `float_mv` | DOUBLE | 流通市值 (万元) |
+| `turnover_rate` | DOUBLE | 换手率 (%) |
+| `turnover_free` | DOUBLE | 自由流通换手率 (%) |
+| `volume_ratio` | DOUBLE | 量比 |
+| `dividend_yield` | DOUBLE | 股息率 (%) |
+
+---
+
+### Tushare API 字段映射
+
+#### 1. `daily` 接口 → `base_daily` 表
+
+| Tushare 字段 | 类型 | 描述 | QuestDB 字段 | 类型 | 映射说明 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `ts_code` | str | TS股票代码 | `stock_code` | VARCHAR | 格式相同，如 000001.SZ |
+| `trade_date` | str | 交易日期 (YYYYMMDD) | `timestamp` | TIMESTAMP | 需转换，如 20230101 → 2023-01-01 |
+| `open` | float | 开盘价 | `open` | DOUBLE | 直接映射 |
+| `high` | float | 最高价 | `high` | DOUBLE | 直接映射 |
+| `low` | float | 最低价 | `low` | DOUBLE | 直接映射 |
+| `close` | float | 收盘价 | `close` | DOUBLE | 直接映射 |
+| `pre_close` | float | 昨收价 | `prev_close` | DOUBLE | 直接映射 |
+| `vol` | float | 成交量 (手) | `volume` | DOUBLE | 单位一致 |
+| `amount` | float | 成交额 (千元) | `amount` | DOUBLE | **需 ×1000 转为元** |
+| `change` | float | 涨跌额 | — | — | 未存储 |
+| `pct_chg` | float | 涨跌幅 | — | — | 未存储 |
+
+#### 2. `adj_factor` 接口 → `base_daily` 表
+
+| Tushare 字段 | 类型 | 描述 | QuestDB 字段 | 类型 | 映射说明 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `ts_code` | str | TS股票代码 | `stock_code` | VARCHAR | 与 daily 一致 |
+| `trade_date` | str | 交易日期 | `timestamp` | TIMESTAMP | 同上 |
+| `adj_factor` | float | 复权因子 | `adj_factor` | DOUBLE | 直接映射 |
+
+> **注意**: `adj_factor` 数据需与 `daily` 数据按 `(stock_code, trade_date)` 关联后写入。
+
+#### 3. `daily_basic` 接口 → `factors_valuation` 表
+
+| Tushare 字段 | 类型 | 描述 | QuestDB 字段 | 类型 | 映射说明 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `ts_code` | str | TS股票代码 | `stock_code` | SYMBOL | 直接映射 |
+| `trade_date` | str | 交易日期 | `trade_date` | TIMESTAMP | 需转换 |
+| `turnover_rate` | float | 换手率 (%) | `turnover_rate` | DOUBLE | 直接映射 |
+| `turnover_rate_f` | float | 自由流通换手率 (%) | `turnover_free` | DOUBLE | 字段名对应 |
+| `volume_ratio` | float | 量比 | `volume_ratio` | DOUBLE | 直接映射 |
+| `pe` | float | 市盈率 (动态) | `pe` | DOUBLE | 直接映射 |
+| `pe_ttm` | float | 市盈率 TTM | `pe_ttm` | DOUBLE | 直接映射 |
+| `pb` | float | 市净率 | `pb` | DOUBLE | 直接映射 |
+| `ps` | float | 市销率 | `ps` | DOUBLE | 直接映射 |
+| `ps_ttm` | float | 市销率 TTM | `ps_ttm` | DOUBLE | 直接映射 |
+| `total_mv` | float | 总市值 (万元) | `total_mv` | DOUBLE | 单位一致 |
+| `circ_mv` | float | 流通市值 (万元) | `float_mv` | DOUBLE | 字段名对应 |
+| `dv_ratio` | float | 股息率 (%) | `dividend_yield` | DOUBLE | 字段名对应 |
+| `dv_ttm` | float | 股息率 TTM | — | — | 未存储 |
+| `total_share` | float | 总股本 (万股) | — | — | 未存储 |
+| `float_share` | float | 流通股本 (万股) | — | — | 未存储 |
+| `free_share` | float | 自由流通股本 (万) | — | — | 未存储 |
+| `close` | float | 当日收盘价 | — | — | base_daily 已含 |
+
+---
+
+### 技术指标计算说明
+
+`factors_momentum` 表中的所有指标需基于 `base_daily` 数据计算，Tushare 不直接提供。
+
+#### 数据准备
+
+```python
+# 复权价格计算 (建议使用后复权保持历史连续性)
+adj_close = close * adj_factor
+adj_open = open * adj_factor
+adj_high = high * adj_factor
+adj_low = low * adj_factor
+```
+
+#### 计算公式
+
+**1. 均线 (MA)**
+```
+MA5  = 最近5日收盘价的算术平均值
+MA10 = 最近10日收盘价的算术平均值
+MA20, MA60, MA120, MA250 同理
+```
+
+**2. 乖离率 (BIAS)**
+```
+BIAS5  = (收盘价 - MA5) / MA5 × 100%
+BIAS10 = (收盘价 - MA10) / MA10 × 100%
+BIAS20 = (收盘价 - MA20) / MA20 × 100%
+```
+
+**3. RSI (14日相对强弱指标)**
+```
+涨幅 = max(收盘价 - 昨收, 0)
+跌幅 = max(昨收 - 收盘价, 0)
+平均涨幅 = 14日涨幅的 Wilder 平滑 (EMA-like, α=1/14)
+平均跌幅 = 14日跌幅的 Wilder 平滑
+RS = 平均涨幅 / 平均跌幅
+RSI_14 = 100 - 100 / (1 + RS)
+```
+
+**4. KDJ (随机指标, 9日)**
+```
+LLV = 最近9日最低价的最小值
+HHV = 最近9日最高价的最大值
+RSV = (收盘价 - LLV) / (HHV - LLV) × 100
+K值 = 2/3 × 前日K + 1/3 × RSV (首日取50)
+D值 = 2/3 × 前日D + 1/3 × K值 (首日取50)
+J值 = 3 × K值 - 2 × D值
+```
+
+**5. MACD (12, 26, 9)**
+```
+EMA12 = 收盘价的12日指数移动平均 (α=2/13)
+EMA26 = 收盘价的26日指数移动平均 (α=2/27)
+DIF = EMA12 - EMA26
+DEA = DIF的9日指数移动平均 (α=2/10)
+MACD_Histogram = (DIF - DEA) × 2
+```
+
+**6. ATR (14日平均真实波幅)**
+```
+TR = max(今日最高-今日最低, |今日最高-昨收|, |今日最低-昨收|)
+ATR_14 = 14日TR的 Wilder 平滑
+```
+
+**7. 布林带 (20日, 2倍标准差)**
+```
+BOLL_MID = MA20
+BOLL_UPPER = MA20 + 2 × std(20日收盘价)
+BOLL_LOWER = MA20 - 2 × std(20日收盘价)
+```
+
+#### 计算注意事项
+
+| 项目 | 说明 |
+| :--- | :--- |
+| 滑动窗口 | 每只股票按 `timestamp` 升序计算，注意边界 (如 RSI 需14日数据) |
+| 数据量 | base_daily 684万行，需分批处理避免内存溢出 |
+| 复权一致性 | 所有价格计算需使用相同的复权方式 |
+| 空值处理 | 窗口不足时指标为 NULL |
+
+---
+
+### 数据导入流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Tushare API                              │
+├──────────────────┬──────────────────┬───────────────────────────┤
+│     daily        │    adj_factor    │      daily_basic          │
+│   (基础行情)      │    (复权因子)     │      (估值数据)            │
+└────────┬─────────┴────────┬─────────┴────────────┬──────────────┘
+         │                  │                      │
+         ▼                  ▼                      │
+    ┌─────────┐        ┌─────────┐                 │
+    │字段映射  │        │按日期合并 │                 │
+    │单位转换  │        │(ts_code) │                 │
+    └────┬────┘        └────┬────┘                 │
+         │                  │                      │
+         └────────┬─────────┘                      │
+                  ▼                                │
+         ┌────────────────┐                        │
+         │   base_daily   │                        │
+         │   (684万行)     │                        │
+         └───────┬────────┘                        │
+                 │                                 │
+                 ▼                                 ▼
+         ┌────────────────┐               ┌─────────────────┐
+         │ 计算技术指标     │               │ factors_valuation│
+         │ MA/RSI/KDJ/... │               │    (684万行)     │
+         └───────┬────────┘               └─────────────────┘
+                 ▼
+         ┌────────────────┐
+         │factors_momentum│
+         │   (需重新导入)  │
+         └────────────────┘
+```
+
+---
+
+#### 🔗 常用 JOIN 查询示例
+```sql
+-- 获取某日完整数据 (行情 + 动量因子)
+SELECT 
+    b.timestamp, b.stock_code, b.open, b.high, b.low, b.close, b.volume, b.amount,
+    f.ma5, f.ma10, f.ma20, f.rsi_14
+FROM base_daily b
+LEFT JOIN factors_momentum f ON b.timestamp = f.timestamp AND b.stock_code = f.stock_code
+WHERE b.timestamp = '2024-01-15'
+ORDER BY b.stock_code;
+
+-- 获取某日完整数据 (行情 + 估值因子)
+SELECT 
+    b.timestamp, b.stock_code, b.close, b.volume,
+    v.pe, v.pe_ttm, v.pb, v.total_mv, v.turnover_rate
+FROM base_daily b
+LEFT JOIN factors_valuation v ON b.timestamp = v.trade_date AND b.stock_code = v.stock_code
+WHERE b.timestamp = '2024-01-15'
+ORDER BY v.total_mv DESC;
+```
+
 - **Parquet**: 列式存储，极致压缩，配合 DuckDB 实现零拷贝查询。
   - 历史归档数据 (< 2020年)
   - 冷数据只读，无更新压力

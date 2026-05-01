@@ -30,8 +30,8 @@
       <!-- Main Content Area -->
       <div class="flex-1 flex overflow-hidden">
         <!-- Chart Content (Left) -->
-        <div class="flex-1 relative bg-[#131722] border-r border-[#2a2e39]">
-          <div v-if="isLoading" class="absolute inset-0 flex flex-col items-center justify-center bg-[#131722]/80 z-10">
+        <div class="flex-1 relative bg-[#0A0A0A] border-r border-[#2a2e39]">
+          <div v-if="isLoading" class="absolute inset-0 flex flex-col items-center justify-center bg-[#0A0A0A]/80 z-10">
             <div class="w-12 h-12 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin mb-4"></div>
             <p class="text-sm text-slate-400">正在加载历史 K 线及基准数据...</p>
           </div>
@@ -175,7 +175,8 @@ const emit = defineEmits(['close']);
 const isAnalyzingSymbol = ref(false);
 const aiReport = ref('');
 let analysisController: AbortController | null = null;
-const API_BASE_URL = 'http://localhost:5000/api';
+// 使用相对路径，让 Vite 代理可以正确代理请求到后端
+const API_BASE_URL = '/api';
 
 async function analyzeSymbol() {
   if (isAnalyzingSymbol.value || symbolTrades.value.length === 0) return;
@@ -278,12 +279,14 @@ async function loadData() {
   if (!props.symbolCode || !props.isOpen) return;
   
   isLoading.value = true;
+  // 【修复】使用规范化后的代码进行查询
   const targetCode = normalizeSymbolCode(props.symbolCode);
   symbolTrades.value = props.trades.filter(t => normalizeSymbolCode(t.symbolCode || t.symbol) === targetCode);
   
   try {
-    const klineData = await getKlineData(props.symbolCode, props.startDate, props.endDate);
-    const bCode = props.benchmarkCode || '000300';
+    // 【修复】使用规范化后的代码获取K线数据
+    const klineData = await getKlineData(targetCode, props.startDate, props.endDate);
+    const bCode = normalizeSymbolCode(props.benchmarkCode || '000300');
     const benchmarkData = await getKlineData(bCode, props.startDate, props.endDate);
     
     renderChart(klineData, benchmarkData);
@@ -379,6 +382,13 @@ function renderChart(kline: any[], benchmark: any[]) {
         fontWeight: 'bold'
       }
     }));
+  
+  console.log('[TradeDeepDive] 买卖点标记:', { 
+    buyCount: buyPoints.length, 
+    sellCount: sellPoints.length,
+    symbolTrades: symbolTrades.value.length,
+    dates: dates.length
+  });
 
   const option: echarts.EChartsOption = {
     backgroundColor: 'transparent',

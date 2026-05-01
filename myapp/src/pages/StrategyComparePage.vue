@@ -373,7 +373,8 @@
 import { ref, computed, onMounted, watch } from 'vue';
 import EquityCurve from '../components/EquityCurve.vue';
 
-const API_BASE_URL = 'http://localhost:5000/api';
+// 使用相对路径，让 Vite 代理可以正确代理请求到后端
+const API_BASE_URL = '/api';
 
 // 策略相关
 const availableStrategies = ref<Array<{ id: string; name: string }>>([]);

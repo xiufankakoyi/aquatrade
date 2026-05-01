@@ -1,366 +1,354 @@
 """
-数据查询相关路由
+数据路由
+
+提供数据状态查询和数据更新接口
 """
-from flask import Blueprint, request
-from server.performance_utils import json_response
-from datetime import datetime
+import os
+import sys
+import threading
 import time
+from datetime import datetime
+from typing import Dict, Any
+
+from loguru import logger
+from flask import Blueprint, jsonify, request
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
+
 from config.config import Config
-from core.error_handler import ErrorHandler, ErrorLevel, capture_error
 
-data_bp = Blueprint('data', __name__, url_prefix='/api')
+data_bp = Blueprint('data', __name__, url_prefix='/api/db')
 
 
-@data_bp.route('/kline', methods=['GET'])
-def get_kline_data():
+def json_response(data: Dict[str, Any], status: int = 200):
+    """返回 JSON 响应"""
+    response = jsonify(data)
+    response.status_code = status
+    return response
+
+
+@data_bp.route('/status', methods=['GET'])
+def get_data_status():
     """
-    HTTP 接口：返回指定标的在时间区间内的 K 线数据
-    """
-    from server.app import get_api
-    
-    symbol_code = request.args.get('symbol')
-    start_date = request.args.get('start')
-    end_date = request.args.get('end')
+    获取数据状态（简化为快速返回，不调用外部API）
 
-    if not symbol_code:
-        return json_response({"success": False, "error": "缺少 symbol 参数"}, status_code=400)
-
-    try:
-        history = get_api().get_symbol_kline(symbol_code, start_date, end_date)
-        return json_response({"success": True, "data": history})
-    except Exception as e:
-        from config.logger import get_logger
-        logger = get_logger(__name__)
-        logger.error(f"获取K线数据失败: {e}", exc_info=True)
-        return json_response({"success": False, "error": str(e)}, status_code=500)
-
-
-def _emit_progress(data):
-    """
-    兼容 ASGI 模式的进度发送函数
-    
-    使用 asyncio.run_coroutine_threadsafe 在后台线程中调用异步 emit
-    使用广播模式（不指定 room）确保所有连接的客户端都能收到进度更新
+    Returns:
+        {
+            "success": True,
+            "data": {
+                "stock": {...},
+                "dragon_eye": {...},
+                "overall_status": "OK" | "WARNING" | "CRITICAL",
+                "overall_message": "..."
+            }
+        }
     """
     try:
-        import asyncio
-        from server.asgi_entry import sio
-        from config.logger import get_logger
-        logger = get_logger(__name__)
-        
-        # 调试日志
-        logger.info(f"[DataUpdate] 发送进度: {data}")
-        
-        # 获取或创建事件循环
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        # 使用广播模式发送事件（不指定 room，所有客户端都能收到）
-        async def emit_broadcast():
-            await sio.emit('db_update_progress', data)
-            logger.debug(f"[DataUpdate] 进度事件已广播: {data.get('status', 'unknown')}")
-        
-        if loop.is_running():
-            asyncio.run_coroutine_threadsafe(emit_broadcast(), loop)
-        else:
-            loop.run_until_complete(emit_broadcast())
-            
-    except Exception as e:
-        from config.logger import get_logger
-        logger = get_logger(__name__)
-        logger.warning(f"[DataUpdate] 进度发送失败: {e}", exc_info=True)
+        from data_svc.storage.lancedb_reader import get_lancedb_reader
 
+        reader = get_lancedb_reader()
+        result = {
+            "success": True,
+            "data": {
+                "stock": {
+                    "db_latest_date": None,
+                    "api_latest_date": None,
+                    "days_behind": 0,
+                    "row_count": 0,
+                    "status": "OK",
+                    "message": "数据已是最新"
+                },
+                "dragon_eye": {
+                    "latest_date": None,
+                    "days_behind": 0,
+                    "status": "WARNING",
+                    "message": "检查中..."
+                },
+                "overall_status": "WARNING",
+                "overall_message": "检查中..."
+            }
+        }
 
-@data_bp.route('/db/update', methods=['POST'])
-def update_database():
-    """
-    触发数据库增量更新 (Tushare -> 目标数据库
-    
-    【修复】根据 DB_BACKEND 自动选择更新器：
-    - duckdb/parquet: 使用 ParquetUpdater
-    - lancedb: 使用 LanceDBUpdater
-    - questdb: 使用 QuestDBUpdater
-    """
-    import threading
-    import os
-    from config.logger import get_logger
-    logger = get_logger(__name__)
-    
-    logger.info("[DataUpdate] 收到数据库更新请求")
-    
-    def run_update_task():
-        """
-        后台线程执行更新任务，包含完整的错误捕获
-        """
         try:
-            _run_update_task_inner()
+            stats = reader.get_db_stats()
+            result["data"]["stock"]["db_latest_date"] = stats.get("latest_date")
+            result["data"]["stock"]["row_count"] = stats.get("row_count", 0)
+            if stats.get("row_count", 0) == 0:
+                result["data"]["stock"]["status"] = "WARNING"
+                result["data"]["stock"]["message"] = "数据库为空"
         except Exception as e:
-            logger.error(f"[DataUpdate] 后台任务异常: {e}", exc_info=True)
-            ErrorHandler.capture(e, level=ErrorLevel.CRITICAL, category="database", context={"task": "update_database"})
+            logger.warning(f"[DataStatus] LanceDB check failed: {e}")
+
+        try:
+            dragon_status = _get_dragon_eye_status()
+            result["data"]["dragon_eye"] = dragon_status
+        except Exception as e:
+            logger.warning(f"[DataStatus] DragonEye check failed: {e}")
+
+        stock_status = result["data"]["stock"]["status"]
+        dragon_status_val = result["data"]["dragon_eye"]["status"]
+
+        if stock_status == "OK" and dragon_status_val in ["OK", "WARNING"]:
+            result["data"]["overall_status"] = "OK"
+            result["data"]["overall_message"] = "所有数据已是最新"
+        elif stock_status == "CRITICAL" or dragon_status_val == "CRITICAL":
+            result["data"]["overall_status"] = "CRITICAL"
+            result["data"]["overall_message"] = "存在严重落后的数据，请立即更新"
+        else:
+            result["data"]["overall_status"] = "WARNING"
+            result["data"]["overall_message"] = "部分数据落后，建议更新"
+
+        return json_response(result)
+
+    except Exception as e:
+        logger.error(f"[DataStatus] Error: {e}")
+        return json_response({"success": False, "error": str(e)}, 500)
+
+
+def _get_dragon_eye_status() -> Dict[str, Any]:
+    """
+    获取 DragonEye 爬虫数据状态
+
+    检查爬虫数据目录获取最新日期
+    爬虫数据保存在 quant/data_lake 目录
+    """
+    try:
+        from pathlib import Path
+
+        # 可能的爬虫数据目录
+        possible_base_dirs = [
+            Path(Config.BASE_DIR) / "quant" / "data",           # aquatrade/quant/data
+            Path(r"c:\Users\Liu\Desktop\projects\quant") / "data",  # projects/quant/data
+        ]
+
+        latest_date_str = None
+        data_dir = None
+
+        for base_dir in possible_base_dirs:
+            for subdir in ["data_lake", "cleaned_data"]:
+                check_dir = base_dir / subdir
+                if check_dir.exists():
+                    date_dirs = [d for d in check_dir.iterdir() if d.is_dir()]
+                    if date_dirs:
+                        current_latest = max(d.name for d in date_dirs)
+                        if latest_date_str is None or current_latest > latest_date_str:
+                            latest_date_str = current_latest
+                            data_dir = check_dir
+
+        if not latest_date_str or not data_dir:
+            return {
+                "latest_date": None,
+                "days_behind": 0,
+                "status": "WARNING",
+                "message": "暂无爬虫数据"
+            }
+
+        latest_date = datetime.strptime(latest_date_str, '%Y-%m-%d')
+
+        # 使用日历天数估算（Tushare API 调用已移除以避免超时）
+        today = datetime.now().date()
+        days_behind = (today - latest_date.date()).days
+
+        if days_behind == 0:
+            return {
+                "latest_date": latest_date_str,
+                "days_behind": 0,
+                "status": "OK",
+                "message": "爬虫数据已是最新"
+            }
+        elif days_behind <= 3:
+            return {
+                "latest_date": latest_date_str,
+                "days_behind": days_behind,
+                "status": "WARNING",
+                "message": f"爬虫数据落后约 {days_behind} 天"
+            }
+        else:
+            return {
+                "latest_date": latest_date_str,
+                "days_behind": days_behind,
+                "status": "CRITICAL",
+                "message": f"爬虫数据严重落后约 {days_behind} 天"
+            }
+
+    except Exception as e:
+        return {
+            "latest_date": None,
+            "days_behind": 0,
+            "status": "WARNING",
+            "message": f"检查失败: {str(e)}"
+        }
+
+
+@data_bp.route('/update', methods=['POST'])
+def trigger_update():
+    """
+    触发数据更新（后台异步执行）
+
+    Returns:
+        {"success": True, "message": "更新任务已启动"}
+    """
+    try:
+        from data_svc.storage.unified_updater import UnifiedDataUpdater
+
+        def background_update():
+            """后台更新线程"""
             try:
-                _emit_progress({
-                    "status": "FAILED",
-                    "progress": 0,
-                    "message": f"后台任务异常: {str(e)}"
-                })
-            except:
-                pass
+                updater = UnifiedDataUpdater()
+                result = updater.run_full_update()
 
-    def _run_update_task_inner():
-        try:
-            time.sleep(0.5)  # 等待 Socket.IO 连接建立
-            db_backend = os.getenv("DB_BACKEND", "duckdb").lower()
-            logger.info(f"[DataUpdate] 数据库后端: {db_backend}")
-            
-            if db_backend in ["duckdb", "parquet"]:
-                from data_svc.database.parquet_updater import ParquetUpdater
-                logger.info("[DataUpdate] 使用 ParquetUpdater")
-                updater = ParquetUpdater(progress_callback=_emit_progress)
-                result = updater.run_sync()
-                logger.info(f"[DataUpdate] 任务完成: {result}")
-            elif db_backend == "lancedb":
-                from data_svc.database.lance_updater import LanceDBUpdater
-                updater = LanceDBUpdater(progress_callback=_emit_progress)
-                updater.run_sync()
-            elif db_backend == "questdb":
-                from data_svc.database.questdb_updater import QuestDBUpdater
-                updater = QuestDBUpdater(progress_callback=_emit_progress)
-                updater.run_sync()
-            else:
-                _emit_progress({
-                    "status": "FAILED",
-                    "progress": 0,
-                    "message": f"不支持的数据库后端: {db_backend}"
-                })
-                return
-            
-        except ValueError as e:
-            logger.error(f"配置错误: {e}")
-            _emit_progress({
-                "status": "FAILED",
-                "progress": 0,
-                "message": str(e)
-            })
-            ErrorHandler.capture(e, level=ErrorLevel.ERROR, category="database", context={"db_backend": db_backend})
-        except ImportError as e:
-            logger.error(f"依赖缺失: {e}")
-            _emit_progress({
-                "status": "FAILED",
-                "progress": 0,
-                "message": f"依赖缺失: {str(e)}"
-            })
-            ErrorHandler.capture(e, level=ErrorLevel.ERROR, category="database")
-        except Exception as e:
-            logger.error(f"Database update task failed: {e}", exc_info=True)
-            _emit_progress({
-                "status": "FAILED",
-                "progress": 0,
-                "message": f"更新失败: {str(e)}"
-            })
-            ErrorHandler.capture(e, level=ErrorLevel.ERROR, category="database", context={"db_backend": db_backend})
+                # 通过 Socket.IO 广播进度（如果可用）
+                try:
+                    from server.asgi_socketio_handlers import sio
+                    if sio:
+                        sio.emit('db_update_progress', {
+                            "status": "COMPLETED" if result.success else "FAILED",
+                            "progress": 100,
+                            "message": result.message
+                        })
+                except:
+                    pass
 
-    thread = threading.Thread(target=run_update_task, daemon=True)
-    thread.start()
-    
-    return json_response({"success": True, "message": "数据库更新任务已在后台启动"})
+                logger.info(f"[DataUpdate] Background update completed: {result.message}")
+            except Exception as e:
+                logger.error(f"[DataUpdate] Background update failed: {e}")
 
+        # 启动后台更新线程
+        update_thread = threading.Thread(target=background_update, daemon=True)
+        update_thread.start()
 
-@data_bp.route('/latest_price', methods=['GET'])
-def get_latest_price():
-    """
-    返回一个或多个标的的最新价格
-    """
-    from server.app import get_api
-    
-    symbol = request.args.get('symbol')
-    symbols_param = request.args.get('symbols')
-    target_date = request.args.get('date')
-
-    symbol_list = []
-    if symbols_param:
-        symbol_list = [code.strip() for code in symbols_param.split(',') if code.strip()]
-    elif symbol:
-        symbol_list = [symbol.strip()]
-
-    if not symbol_list:
-        return json_response({"success": False, "error": "缺少 symbol/symbols 参数"}, status_code=400)
-
-    try:
-        latest_prices = get_api().get_latest_prices(symbol_list, target_date)
-        return json_response(latest_prices)
-    except Exception as e:
-        from config.logger import get_logger
-        logger = get_logger(__name__)
-        logger.error(f"获取最新价格失败: {e}", exc_info=True)
-        return json_response({"success": False, "error": str(e)}, status_code=500)
-
-
-@data_bp.route('/db/last_date', methods=['GET'])
-def get_db_last_date():
-    """
-    获取数据库中最新数据的日期
-    
-    Returns:
-        {
-            "success": True,
-            "last_date": "2025-02-10",  # 格式: YYYY-MM-DD
-            "trade_date": "20250210"    # 格式: YYYYMMDD
-        }
-    """
-    import os
-    from config.logger import get_logger
-    logger = get_logger(__name__)
-    
-    try:
-        db_backend = os.getenv("DB_BACKEND", "duckdb").lower()
-        
-        if db_backend in ["duckdb", "parquet"]:
-            from data_svc.database.parquet_updater import ParquetUpdater
-            updater = ParquetUpdater()
-            last_date = updater._get_last_date()
-            
-            if last_date:
-                # 转换格式: YYYYMMDD -> YYYY-MM-DD
-                formatted_date = f"{last_date[:4]}-{last_date[4:6]}-{last_date[6:]}"
-                return json_response({
-                    "success": True,
-                    "last_date": formatted_date,
-                    "trade_date": last_date
-                })
-            else:
-                # 数据库为空，返回默认起始日期
-                return json_response({
-                    "success": True,
-                    "last_date": "2025-01-01",
-                    "trade_date": "20250101",
-                    "message": "数据库为空，使用默认起始日期"
-                })
-        elif db_backend == "questdb":
-            # QuestDB 实现
-            from data_svc.database.questdb_updater import QuestDBUpdater
-            updater = QuestDBUpdater()
-            last_date = updater._get_last_date()
-            
-            if last_date:
-                formatted_date = f"{last_date[:4]}-{last_date[4:6]}-{last_date[6:]}"
-                return json_response({
-                    "success": True,
-                    "last_date": formatted_date,
-                    "trade_date": last_date
-                })
-            else:
-                return json_response({
-                    "success": True,
-                    "last_date": "2025-01-01",
-                    "trade_date": "20250101",
-                    "message": "数据库为空，使用默认起始日期"
-                })
-        else:
-            return json_response({
-                "success": False,
-                "error": f"不支持的数据库后端: {db_backend}"
-            }, status_code=400)
-            
-    except Exception as e:
-        logger.error(f"获取数据库最新日期失败: {e}", exc_info=True)
-        return json_response({
-            "success": False,
-            "error": f"获取数据库最新日期失败: {str(e)}"
-        }, status_code=500)
-
-
-@data_bp.route('/db/missing_dates', methods=['GET'])
-def get_missing_dates():
-    """
-    获取指定时间范围内缺失的交易日期
-    
-    Query Args:
-        start_date: 起始日期 (YYYY-MM-DD 或 YYYYMMDD)
-        end_date: 结束日期 (YYYY-MM-DD 或 YYYYMMDD)，默认为今天
-        
-    Returns:
-        {
-            "success": True,
-            "missing_dates": ["20250201", "20250205", ...],
-            "missing_count": 5,
-            "total_trade_days": 20,
-            "coverage_rate": "75.0%"
-        }
-    """
-    import os
-    import pandas as pd
-    from config.logger import get_logger
-    logger = get_logger(__name__)
-    
-    try:
-        # 获取参数
-        start_date = request.args.get('start_date', '2025-01-01')
-        end_date = request.args.get('end_date')
-        
-        # 标准化日期格式
-        if '-' in start_date:
-            start_date = start_date.replace('-', '')
-        if end_date and '-' in end_date:
-            end_date = end_date.replace('-', '')
-        if not end_date:
-            end_date = datetime.now().strftime('%Y%m%d')
-        
-        logger.info(f"[MissingDates] 查询缺失日期: {start_date} 到 {end_date}")
-        
-        # 获取交易日历
-        import tushare as ts
-        ts.set_token(Config.TUSHARE_TOKEN)
-        pro = ts.pro_api()
-        trade_cal = pro.trade_cal(exchange='', start_date=start_date, end_date=end_date)
-        
-        if trade_cal is None or trade_cal.empty:
-            return json_response({
-                "success": False,
-                "error": "无法获取交易日历"
-            }, status_code=500)
-        
-        # 获取所有交易日
-        all_trade_dates = set(trade_cal['cal_date'].tolist())
-        
-        # 获取数据库中已有的日期
-        db_backend = os.getenv("DB_BACKEND", "duckdb").lower()
-        existing_dates = set()
-        
-        if db_backend in ["duckdb", "parquet"]:
-            from data_svc.database.parquet_updater import ParquetUpdater
-            updater = ParquetUpdater()
-            existing_dates = updater._get_existing_dates()
-        elif db_backend == "questdb":
-            from data_svc.database.questdb_updater import QuestDBUpdater
-            updater = QuestDBUpdater()
-            existing_dates = updater._get_existing_dates()
-        
-        # 计算缺失的日期（在交易日历中但不在数据库中）
-        missing_dates = sorted(list(all_trade_dates - existing_dates))
-        
-        # 计算覆盖率
-        total_trade_days = len(all_trade_dates)
-        missing_count = len(missing_dates)
-        coverage_rate = ((total_trade_days - missing_count) / total_trade_days * 100) if total_trade_days > 0 else 0
-        
-        logger.info(f"[MissingDates] 发现 {missing_count} 个缺失日期，覆盖率: {coverage_rate:.1f}%")
-        
         return json_response({
             "success": True,
-            "missing_dates": missing_dates,
-            "missing_count": missing_count,
-            "total_trade_days": total_trade_days,
-            "coverage_rate": f"{coverage_rate:.1f}%",
-            "start_date": start_date,
-            "end_date": end_date
+            "message": "数据更新任务已在后台启动",
+            "job_id": f"update_{int(time.time())}"
         })
-        
+
     except Exception as e:
-        logger.error(f"获取缺失日期失败: {e}", exc_info=True)
+        logger.error(f"[DataUpdate] Failed to start update: {e}")
+        return json_response({"success": False, "error": str(e)}, 500)
+
+
+@data_bp.route('/update/dragon', methods=['POST'])
+def trigger_dragon_update():
+    """
+    触发 DragonEye 爬虫数据更新（后台异步执行）
+
+    Request Body:
+        - date: 目标日期 (YYYY-MM-DD)，默认为今天
+
+    Returns:
+        {"success": True, "message": "爬虫任务已启动", "job_id": "xxx"}
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        target_date = data.get('date') or datetime.now().strftime("%Y-%m-%d")
+
+        from core.dragon_eye.service import DragonEyeService
+        service = DragonEyeService()
+
+        def background_crawl():
+            """后台爬虫线程"""
+            try:
+                job_id = service.run_crawler(target_date)
+                logger.info(f"[DragonUpdate] Crawl job started: {job_id}")
+            except Exception as e:
+                logger.error(f"[DragonUpdate] Crawl failed: {e}")
+
+        crawl_thread = threading.Thread(target=background_crawl, daemon=True)
+        crawl_thread.start()
+
         return json_response({
-            "success": False,
-            "error": f"获取缺失日期失败: {str(e)}"
-        }, status_code=500)
+            "success": True,
+            "message": f"爬虫任务已在后台启动，目标日期: {target_date}",
+            "job_id": f"dragon_{int(time.time())}"
+        })
+
+    except Exception as e:
+        logger.error(f"[DragonUpdate] Failed to start crawl: {e}")
+        return json_response({"success": False, "error": str(e)}, 500)
+
+
+@data_bp.route('/update/all', methods=['POST'])
+def trigger_full_update():
+    """
+    触发全部数据更新（股票数据 + DragonEye 爬虫）
+
+    Request Body:
+        - date: DragonEye 目标日期 (YYYY-MM-DD)，默认为今天
+
+    Returns:
+        {"success": True, "message": "全部更新任务已在后台启动"}
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        dragon_date = data.get('date') or datetime.now().strftime("%Y-%m-%d")
+
+        def background_full_update():
+            """后台完整更新线程"""
+            try:
+                # 1. 更新股票数据
+                from data_svc.storage.unified_updater import UnifiedDataUpdater
+                updater = UnifiedDataUpdater()
+                stock_result = updater.run_full_update()
+                logger.info(f"[FullUpdate] Stock update: {stock_result.message}")
+
+                # 2. 更新 DragonEye 爬虫数据
+                from core.dragon_eye.service import DragonEyeService
+                service = DragonEyeService()
+                job_id = service.run_crawler(dragon_date)
+                logger.info(f"[FullUpdate] DragonEye crawl job: {job_id}")
+
+                # 广播完成
+                try:
+                    from server.asgi_socketio_handlers import sio
+                    if sio:
+                        sio.emit('db_update_progress', {
+                            "status": "COMPLETED",
+                            "progress": 100,
+                            "message": f"全部数据更新完成，爬虫任务已启动"
+                        })
+                except:
+                    pass
+
+            except Exception as e:
+                logger.error(f"[FullUpdate] Failed: {e}")
+
+        update_thread = threading.Thread(target=background_full_update, daemon=True)
+        update_thread.start()
+
+        return json_response({
+            "success": True,
+            "message": "全部数据更新任务已在后台启动",
+            "job_id": f"full_{int(time.time())}"
+        })
+
+    except Exception as e:
+        logger.error(f"[FullUpdate] Failed to start: {e}")
+        return json_response({"success": False, "error": str(e)}, 500)
+
+
+@data_bp.route('/update/progress', methods=['GET'])
+def get_update_progress():
+    """
+    获取更新进度（轮询接口，备用）
+
+    Returns:
+        {"success": True, "progress": 50, "status": "UPDATING", "message": "..."}
+    """
+    # 这个接口被 Socket.IO 替代，这里仅作为备用
+    return json_response({
+        "success": True,
+        "progress": 0,
+        "status": "IDLE",
+        "message": "请使用 Socket.IO 监听 db_update_progress 事件"
+    })
+
+
+# ============== 废弃的 ArcticDB 路由（已移除）==============
+
+# 以下路由已被移除：
+# - GET  /arcticdb/info    -> 使用 /db/status
+# - POST /arcticdb/query   -> 使用 LanceDB 原生查询
+# - POST /arcticdb/update   -> 使用 /db/update

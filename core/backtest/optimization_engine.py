@@ -42,7 +42,7 @@ except ImportError as exc:  # pragma: no cover - import guard
     ) from exc
 
 from config.config import Config
-from core.backtest.optimized_backtest_engine import OptimizedBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
 from core.strategies.strategy_factory import StrategyFactory
 
@@ -378,7 +378,7 @@ class _EvaluationHelper:
             traceback.print_exc()
             return {"score": MIN_FITNESS_SCORE, "metrics": None}
 
-        engine = OptimizedBacktestEngine(self.data_query)
+        engine = UnifiedBacktestEngine(self.data_query)
         final_metric: Optional[Dict[str, Any]] = None
         try:
             stream = engine.run_backtest_streaming(start_date, end_date, strategy, stop_event=stop_event)

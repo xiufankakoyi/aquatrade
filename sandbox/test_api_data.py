@@ -1,48 +1,39 @@
-import tushare as ts
-import pandas as pd
+"""
+直接测试 API 数据返回
+"""
+import sys
+from pathlib import Path
 
-# ==========================================
-# 1. 配置 Token
-# ==========================================
-# 请替换为你的 Tushare Token
-token = 'c32d8386d48a5c9e453add46d222912cdf866b3026950cba05c8b90b'
-pro = ts.pro_api(token)
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root / "server"))
 
-test_date = '20241231'
+import polars as pl
+from core.dragon_eye.manager import DragonEyeManager
 
-print(f"🚀 开盘啦(kpl_list) 权限生死局 (测试日期: {test_date})...\n")
+manager = DragonEyeManager()
 
-# ==========================================
-# 2. 接口测试
-# ==========================================
-try:
-    print(f"Testing [kpl_list] (请求开盘啦涨停数据)...", end="")
+print("测试 limit-up-trend 数据...")
+df = manager.get_market_sentiment("2026-02-01", "2026-02-20")
+
+print(f"数据形状: {df.shape}")
+print(f"列名: {df.columns}")
+
+if not df.is_empty():
+    df = df.sort('trade_date')
     
-    # tag 默认为 '涨停', 也可以试 '炸板'
-    df_kpl = pro.kpl_list(trade_date=test_date)
+    # 转换日期为字符串格式
+    if 'trade_date' in df.columns:
+        dates = df['trade_date'].dt.strftime('%Y-%m-%d').to_list()
+        print(f"dates: {dates[:5]}...")
     
-    if not df_kpl.empty:
-        print(f" ✅ 成功! 获取到 {len(df_kpl)} 条数据")
-        print("-" * 50)
-        
-        # 重点检查字段: lu_desc (原因), theme (题材), status (连板数)
-        # 这些是你策略的“灵魂”
-        cols_to_show = ['name', 'status', 'theme', 'lu_desc', 'bid_pct_chg']
-        
-        # 防止字段名变动，先取交集
-        valid_cols = [c for c in cols_to_show if c in df_kpl.columns]
-        
-        print("✨ 核心数据预览 (策略大脑):")
-        print(df_kpl[valid_cols].head(3).to_string())
-        
-        # 检查是否包含竞价数据 (用于弱转强策略)
-        if 'bid_pct_chg' in df_kpl.columns:
-            print(f"\n💡 包含竞价涨幅数据! 示例: {df_kpl['bid_pct_chg'].iloc[0]}%")
-    else:
-        print(" ⚠️ 请求成功但无数据 (可能是日期原因或休市)")
-
-except Exception as e:
-    print(f" ❌ 失败: {e}")
-    # 如果报错提示权限不足，那就是硬性 5000 分限制
-
-print("\n" + "="*30)
+    result = {
+        "dates": dates if 'dates' in dir() else [],
+        "limit_up_counts": df['limit_up_count'].to_list() if 'limit_up_count' in df.columns else [],
+        "max_heights": df['max_height'].to_list() if 'max_height' in df.columns else [],
+        "broken_ratios": df['broken_ratio'].to_list() if 'broken_ratio' in df.columns else [],
+    }
+    
+    print(f"\n结果:")
+    print(f"  dates: {result['dates'][:5]}...")
+    print(f"  limit_up_counts: {result['limit_up_counts'][:5]}...")
+    print(f"  max_heights: {result['max_heights'][:5]}...")

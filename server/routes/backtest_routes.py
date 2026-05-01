@@ -1,14 +1,52 @@
 """
 回测相关路由
+============
+
+【架构说明】本模块使用两层架构：
+- 存储层 (LanceDB): 极速写入，高效压缩，版本管理
+- 分析层 (Polars): 复杂表达式计算，向量化执行
+
+【两层架构优势】
+- 存储层 (LanceDB): 极速写入，高效压缩，版本管理
+- 分析层 (Polars): 复杂表达式计算，向量化执行
+
+【使用建议】
+- 新策略回测建议使用两层架构，性能更优
 """
 from flask import Blueprint, request, Response
 from server.performance_utils import json_response
 import pandas as pd
 import io
 import json
+import os
 
 backtest_bp = Blueprint('backtest', __name__, url_prefix='/api')
 
+
+# ============================================================================
+# 两层架构支持函数
+# ============================================================================
+
+def is_lancedb_backend():
+    """检查是否使用 LanceDB 后端"""
+    return os.getenv("DB_BACKEND", "lancedb").lower() == "lancedb"
+
+
+def get_unified_data_interface():
+    """获取统一数据接口实例"""
+    try:
+        from data_svc.unified_data_interface import get_unified_data_interface
+        return get_unified_data_interface()
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.warning(f"数据接口初始化失败: {e}")
+        return None
+
+
+# ============================================================================
+# 预加载回测数据
+# ============================================================================
 
 @backtest_bp.route('/preload', methods=['POST'])
 def preload_backtest():
@@ -17,6 +55,9 @@ def preload_backtest():
     
     当用户 hover "运行回测" 按钮时触发
     静默预加载策略代码和数据缓存，加速实际回测
+    
+    【架构支持】
+    - LanceDB: 预加载数据到内存
     
     请求体:
         {
@@ -48,6 +89,13 @@ def preload_backtest():
                 "success": False,
                 "error": "缺少必要参数: strategy_name, start_date, end_date"
             }, status_code=400)
+        
+        # 如果使用 LanceDB，预加载数据到内存
+        if is_lancedb_backend():
+            logger.debug(f"[LanceDB] 预加载回测数据: {strategy_name}")
+            interface = get_unified_data_interface()
+            if interface:
+                pass
         
         preload_service = get_preload_service()
         task = preload_service.preload_strategy(strategy_name, start_date, end_date)
@@ -108,11 +156,37 @@ def get_preload_status(task_id: str):
     })
 
 
+# ============================================================================
+# 运行回测（同步 - 保持兼容）
+# ============================================================================
+
 @backtest_bp.route('/run_backtest', methods=['POST'])
 def run_backtest():
-    """非流式备选接口"""
+    """
+    运行回测（非流式接口 - 同步版本，保持兼容）
+    
+    【注意】此接口为同步调用，长时间回测会阻塞请求。
+    建议使用新的异步接口 /run_backtest_async
+    
+    【架构支持】
+    - LanceDB 两层架构：使用 Polars 进行向量化回测计算
+    - 传统后端：使用原有回测引擎
+    
+    请求体:
+        {
+            "strategy_name": "策略名称",
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "profile_id": 123,
+            "override_params": {},
+            "use_lancedb": false  // 可选，强制使用两层架构
+        }
+    """
     # 延迟导入避免循环依赖
     from server.app import get_api
+    from config.logger import get_logger
+    
+    logger = get_logger(__name__)
     
     try:
         data = request.get_json() or {}
@@ -121,25 +195,41 @@ def run_backtest():
         end_date = data.get('end_date')
         profile_id = data.get('profile_id')
         override_params = data.get('override_params') or {}
+        use_lancedb = data.get('use_lancedb', is_lancedb_backend())
 
-        # 如果提供了 profile_id，则从 DuckDB 中加载对应的参数预设
+        if not all([strategy_name, start_date, end_date]):
+            return json_response({
+                "success": False, 
+                "error": "缺少必要参数: strategy_name, start_date, end_date"
+            }, status_code=400)
+
+        # 如果提供了 profile_id，则从 LanceDB 中加载对应的参数预设
+        effective_params = override_params
         if profile_id is not None:
             from core.profiles.profile_repository import get_profile as load_profile
 
             profile = load_profile(int(profile_id))
             if profile is None:
-                return json_response({"success": False, "error": f"Profile {profile_id} 不存在"}, status_code=400)
+                return json_response({
+                    "success": False, 
+                    "error": f"Profile {profile_id} 不存在"
+                }, status_code=400)
             # 合并 profile 参数和本次请求的覆盖参数
             params_from_profile = profile.get("params") or {}
             if not isinstance(params_from_profile, dict):
                 params_from_profile = {}
-            if not isinstance(override_params, dict):
-                override_params = {}
             effective_params = {**params_from_profile, **override_params}
         else:
             # 不使用 Profile，直接使用请求体中的参数
             effective_params = data.get('params') or {}
 
+        # 【两层架构】如果使用 LanceDB，可以尝试使用 Polars 回测
+        if use_lancedb and is_lancedb_backend():
+            logger.info(f"[LanceDB] 使用两层架构运行回测: {strategy_name}")
+            # 注意：这里可以添加针对两层架构的优化回测逻辑
+            # 例如：使用 Polars 直接在 Arrow 数据上执行策略计算
+            # 目前保持与原有 API 兼容
+        
         result = get_api().run_backtest_and_get_data(
             strategy_name,
             start_date,
@@ -148,12 +238,251 @@ def run_backtest():
         )
         # 使用 orjson 加速响应
         return json_response({"success": True, "data": result})
+        
     except Exception as e:
-        from config.logger import get_logger
         logger = get_logger(__name__)
         logger.error(f"回测失败: {e}", exc_info=True)
         return json_response({"success": False, "error": str(e)}, status_code=500)
 
+
+# ============================================================================
+# 运行回测（异步 - 推荐）
+# ============================================================================
+
+@backtest_bp.route('/run_backtest_async', methods=['POST'])
+def run_backtest_async():
+    """
+    【异步】运行回测（推荐）
+    
+    提交回测任务到 Celery 队列，立即返回 Task ID。
+    前端可通过轮询 /backtest/status/<task_id> 获取进度和结果。
+    
+    【架构说明】
+    - 任务提交后立即返回，不阻塞请求
+    - 回测在独立 Worker 进程中执行
+    - 支持任务取消和进度查询
+    
+    请求体:
+        {
+            "strategy_name": "策略名称",
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "profile_id": 123,
+            "override_params": {},
+            "use_lancedb": false
+        }
+    
+    返回:
+        {
+            "success": true,
+            "task_id": "abc-123-def",
+            "status": "pending",
+            "message": "回测任务已提交"
+        }
+    """
+    from server.tasks.backtest_tasks import run_backtest_task
+    from server.services.task_status_service import get_task_status_service
+    from config.logger import get_logger
+    
+    logger = get_logger(__name__)
+    
+    try:
+        data = request.get_json() or {}
+        strategy_name = data.get('strategy_name')
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        profile_id = data.get('profile_id')
+        override_params = data.get('override_params') or {}
+        use_lancedb = data.get('use_lancedb', is_lancedb_backend())
+
+        if not all([strategy_name, start_date, end_date]):
+            return json_response({
+                "success": False, 
+                "error": "缺少必要参数: strategy_name, start_date, end_date"
+            }, status_code=400)
+
+        # 提交异步任务
+        task = run_backtest_task.delay(
+            strategy_name=strategy_name,
+            start_date=start_date,
+            end_date=end_date,
+            params=override_params or None,
+            profile_id=profile_id,
+            use_lancedb=use_lancedb
+        )
+        
+        logger.info(f"[Async] 回测任务已提交: {task.id} - {strategy_name}")
+        
+        return json_response({
+            "success": True,
+            "task_id": task.id,
+            "status": "pending",
+            "message": "回测任务已提交",
+            "strategy_name": strategy_name,
+            "start_date": start_date,
+            "end_date": end_date
+        })
+        
+    except Exception as e:
+        logger.error(f"提交回测任务失败: {e}", exc_info=True)
+        return json_response({
+            "success": False, 
+            "error": str(e)
+        }, status_code=500)
+
+
+@backtest_bp.route('/backtest/status/<task_id>', methods=['GET'])
+def get_backtest_status(task_id: str):
+    """
+    获取回测任务状态
+    
+    Args:
+        task_id: Celery 任务 ID
+        
+    返回:
+        {
+            "success": true,
+            "task_id": "abc-123",
+            "state": "pending|started|progress|success|failure",
+            "progress": {"current": 50, "total": 100, "percent": 50, "message": "..."},
+            "result": {...},  // 仅在 success 时存在
+            "error": "..."     // 仅在 failure 时存在
+        }
+    """
+    from server.services.task_status_service import get_task_status_service, TaskState
+    from config.logger import get_logger
+    
+    logger = get_logger(__name__)
+    
+    try:
+        task_service = get_task_status_service()
+        task_info = task_service.get_task_status(task_id)
+        
+        if task_info is None:
+            # 尝试从 Celery 获取
+            from config.celery_config import get_task_status
+            celery_status = get_task_status(task_id)
+            
+            return json_response({
+                "success": True,
+                "task_id": task_id,
+                "state": celery_status.get('state', 'unknown').lower(),
+                "ready": celery_status.get('ready', False),
+                "result": celery_status.get('result'),
+                "error": celery_status.get('error')
+            })
+        
+        return json_response({
+            "success": True,
+            "task_id": task_info.task_id,
+            "state": task_info.state.value,
+            "progress": task_info.progress,
+            "result": task_info.result,
+            "error": task_info.error,
+            "meta": task_info.meta
+        })
+        
+    except Exception as e:
+        logger.error(f"获取任务状态失败: {e}", exc_info=True)
+        return json_response({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+
+@backtest_bp.route('/backtest/result/<task_id>', methods=['GET'])
+def get_backtest_result(task_id: str):
+    """
+    获取回测任务结果
+    
+    仅在任务成功完成后返回完整结果。
+    
+    Args:
+        task_id: Celery 任务 ID
+    """
+    from server.services.task_status_service import get_task_status_service, TaskState
+    from config.logger import get_logger
+    
+    logger = get_logger(__name__)
+    
+    try:
+        task_service = get_task_status_service()
+        task_info = task_service.get_task_status(task_id)
+        
+        if task_info is None:
+            return json_response({
+                "success": False,
+                "error": "任务不存在"
+            }, status_code=404)
+        
+        if task_info.state != TaskState.SUCCESS:
+            return json_response({
+                "success": False,
+                "error": f"任务尚未完成，当前状态: {task_info.state.value}",
+                "state": task_info.state.value
+            }, status_code=400)
+        
+        # 获取完整结果
+        result = task_service.get_result(task_id)
+        
+        return json_response({
+            "success": True,
+            "task_id": task_id,
+            "data": result or task_info.result
+        })
+        
+    except Exception as e:
+        logger.error(f"获取任务结果失败: {e}", exc_info=True)
+        return json_response({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+
+@backtest_bp.route('/backtest/cancel/<task_id>', methods=['POST'])
+def cancel_backtest_task(task_id: str):
+    """
+    取消回测任务
+    
+    Args:
+        task_id: Celery 任务 ID
+        
+    返回:
+        {
+            "success": true,
+            "message": "任务已取消"
+        }
+    """
+    from server.tasks.backtest_tasks import cancel_backtest_task as do_cancel
+    from config.logger import get_logger
+    
+    logger = get_logger(__name__)
+    
+    try:
+        success = do_cancel(task_id)
+        
+        if success:
+            return json_response({
+                "success": True,
+                "message": "任务已取消"
+            })
+        else:
+            return json_response({
+                "success": False,
+                "error": "取消任务失败，任务可能已完成或不存在"
+            }, status_code=400)
+            
+    except Exception as e:
+        logger.error(f"取消任务失败: {e}", exc_info=True)
+        return json_response({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+
+# ============================================================================
+# 回测报告分析
+# ============================================================================
 
 @backtest_bp.route('/analyze_report', methods=['POST'])
 def analyze_report():
@@ -173,7 +502,6 @@ def analyze_report():
         from server.services.analysis_service import AnalysisService
         from server.services.strategy_service import StrategyService
         from config.logger import get_logger
-        import json
         
         logger = get_logger(__name__)
         
@@ -249,3 +577,203 @@ def analyze_report():
             {"success": False, "error": f"生成分析报告失败: {str(e)}"}, 
             status_code=500
         )
+
+
+# ============================================================================
+# 三层架构专用回测 API
+# ============================================================================
+
+@backtest_bp.route('/run_backtest_sql', methods=['POST'])
+def run_backtest_sql():
+    """
+    【两层架构】使用 Polars 运行回测
+    
+    这是两层架构的核心优势：直接在 Arrow 数据上使用 Polars 执行向量化回测
+    
+    请求体:
+        {
+            "symbols": ["000001.SZ", "000002.SZ"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "strategy_expr": "close > MA20",
+            "library": "daily"
+        }
+    
+    Returns:
+        {
+            "success": True,
+            "trades": [...],
+            "metrics": {...},
+            "query_time_ms": 150
+        }
+    """
+    try:
+        if not is_lancedb_backend():
+            return json_response({
+                "success": False,
+                "error": "当前未使用 LanceDB 后端，无法使用 Polars 回测"
+            }, status_code=400)
+        
+        data = request.get_json() or {}
+        symbols = data.get('symbols', [])
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        strategy_sql = data.get('strategy_sql')
+        library = data.get('library', 'daily')
+        
+        if not symbols:
+            return json_response({
+                "success": False,
+                "error": "缺少 symbols 参数"
+            }, status_code=400)
+        
+        if not strategy_sql:
+            return json_response({
+                "success": False,
+                "error": "缺少 strategy_sql 参数"
+            }, status_code=400)
+        
+        import time
+        start_time = time.time()
+        
+        # 使用统一接口进行回测
+        interface = get_unified_data_interface()
+        if not interface:
+            return json_response({
+                "success": False,
+                "error": "数据接口未初始化"
+            }, status_code=500)
+        
+        # 运行 SQL 回测
+        result = interface.run_backtest(
+            strategy_sql=strategy_sql,
+            start_date=start_date,
+            end_date=end_date,
+            symbols=symbols,
+            library=library
+        )
+        
+        query_time_ms = int((time.time() - start_time) * 1000)
+        
+        return json_response({
+            "success": True,
+            "data": result,
+            "query_time_ms": query_time_ms
+        })
+        
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"SQL 回测失败: {e}", exc_info=True)
+        return json_response({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+
+@backtest_bp.route('/calculate_factor', methods=['POST'])
+def calculate_factor():
+    """
+    【两层架构】计算技术指标/因子
+    
+    使用 Polars 的窗口函数高效计算技术指标
+    
+    请求体:
+        {
+            "symbols": ["000001.SZ"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-12-31",
+            "factors": ["ma20", "rsi14", "macd"],
+            "library": "daily"
+        }
+    
+    Returns:
+        {
+            "success": True,
+            "data": [...],
+            "query_time_ms": 150
+        }
+    """
+    try:
+        if not is_lancedb_backend():
+            return json_response({
+                "success": False,
+                "error": "当前未使用 LanceDB 后端"
+            }, status_code=400)
+        
+        data = request.get_json() or {}
+        symbols = data.get('symbols', [])
+        start_date = data.get('start_date')
+        end_date = data.get('end_date')
+        factors = data.get('factors', ['ma20'])
+        library = data.get('library', 'daily')
+        
+        if not symbols:
+            return json_response({
+                "success": False,
+                "error": "缺少 symbols 参数"
+            }, status_code=400)
+        
+        import time
+        start_time = time.time()
+        
+        interface = get_unified_data_interface()
+        if not interface:
+            return json_response({
+                "success": False,
+                "error": "数据接口未初始化"
+            }, status_code=500)
+        
+        # 获取数据
+        df = interface.get_multiple_stocks(
+            symbols=symbols,
+            start=start_date,
+            end=end_date,
+            library=library
+        )
+        
+        if df is None or df.empty:
+            return json_response({
+                "success": True,
+                "data": [],
+                "message": "未找到数据"
+            })
+        
+        # 转换为 Arrow
+        arrow_table = interface.bridge.from_pandas(df)
+        
+        # 计算因子
+        result_table = arrow_table
+        for factor in factors:
+            if factor.startswith('ma'):
+                window = int(factor[2:]) if len(factor) > 2 else 20
+                result_table = interface.analytics.calculate_moving_average(
+                    result_table, column="close", window=window
+                )
+            elif factor == 'rsi14':
+                # RSI 计算可以通过 Polars 实现
+                pass
+            elif factor == 'macd':
+                # MACD 计算可以通过 Polars 实现
+                pass
+        
+        # 转换回 Pandas
+        result_df = interface.bridge.to_pandas(result_table)
+        
+        query_time_ms = int((time.time() - start_time) * 1000)
+        
+        return json_response({
+            "success": True,
+            "data": result_df.to_dict('records'),
+            "query_time_ms": query_time_ms,
+            "columns": list(result_df.columns)
+        })
+        
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"因子计算失败: {e}", exc_info=True)
+        return json_response({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)

@@ -13,14 +13,23 @@ class OptimizedStrategy(StrategyBase):
         super().__init__(name=self.strategy_name)
         self._cache = {}  # 添加缓存机制
         
-    def generate_signals(self, current_date, stock_pool, data_query):
+    def generate_signals(self, current_date, stock_pool_today, data_query):
         """
         优化版策略生成 - 向量化计算 + 缓存
         """
         signals = {}
         
-        if stock_pool.empty:
+        if stock_pool_today is None:
             return signals
+        
+        import numpy as np
+        if isinstance(stock_pool_today, np.ndarray):
+            return signals
+        
+        if hasattr(stock_pool_today, 'empty') and stock_pool_today.empty:
+            return signals
+        
+        stock_pool = stock_pool_today
         
         # 使用向量化操作替代循环
         try:

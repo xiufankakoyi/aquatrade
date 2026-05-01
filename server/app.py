@@ -5,12 +5,13 @@ import threading
 import time
 import uuid
 import math
-import random
 import warnings
 import json
-import gzip
-import base64
 import logging
+
+# ========== 最先加载环境变量 ==========
+from dotenv import load_dotenv
+load_dotenv()
 
 # ========== 全局线程异常钩子配置 ==========
 from core.error_handler import ErrorHandler, ErrorLevel
@@ -98,11 +99,8 @@ except ImportError:
 from server.performance_utils import json_response, pack_backtest_data
 from server.utils.system import _schedule_restart
 
-# 注意：路由和 Socket.IO 处理器注册函数的导入移到 socketio 创建之后，避免循环导入
 from server.utils.binary_packer import pack_backtest_result, estimate_size
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
-load_dotenv()  # 保留：环境变量需要在启动时加载
 from threading import Event
 from typing import Dict, Any, List
 from urllib.parse import unquote
@@ -117,105 +115,12 @@ try:
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
-try:
-    import duckdb  # type: ignore[import]
-except Exception:  # noqa: BLE001
-    duckdb = None
 
-# 延迟导入：避免启动时加载大型依赖
-# from server.visualization_api import BacktestVisualizationAPI
 from core.profiles.profile_repository import (
     create_profile as create_strategy_profile,
     list_profiles as list_strategy_profiles,
     get_profile as get_strategy_profile,
 )
-
-# Define stopwords (including financial domain noise words)
-STOPWORDS = {
-    "就是", "今天", "昨天", "明天", "目前", "现在", "还是",
-    "感觉", "觉得", "哈哈", "哈哈哈", "唉", "哎", "emm", "嘛", "嘿嘿", "呵呵",
-    # Common Chinese stopwords
-    "的", "了", "在", "是", "我", "有", "和", "就", "不", "人", "都", "一", "一个",
-    "上", "也", "很", "到", "说", "要", "去", "你", "会", "着", "没有", "看", "好",
-    "自己", "这", "那", "么", "得", "与", "为", "以", "对", "等", "当", "只", "而",
-    "把", "被", "让", "向", "从", "将", "比", "及", "除", "关于", "由于", "因为",
-    "所以", "如果", "但是", "不过", "虽然", "然而", "而且", "或者", "还是", "以及",
-    "并且", "因此", "从而", "因而", "继而", "随后", "然后", "于是", "接着", "之后",
-    "同时", "另外", "此外", "还有", "等等", "并", "且", "或", "者", "及", "如此",
-    "这样", "那样", "这样一来", "如此一来"
-}
-
-# 公告和广告语模式（在分词前过滤）
-ANNOUNCEMENT_PATTERNS = [
-    r"关于.*?的公告",
-    r"关于.*?预披露公告",
-    r"关于.*?减持.*?公告",
-    r"关于.*?承诺.*?公告",
-    r".*?承诺.*?不减持.*?",
-    r".*?股份减持计划.*?",
-    r".*?控股股东.*?承诺.*?",
-    r".*?董事.*?高级管理人员.*?",
-    r".*?股份.*?减持.*?预披露",
-    r".*?公告.*?公告",  # 重复"公告"的标题
-]
-
-# 广告语关键词（如果标题包含这些词，可能是广告）
-AD_KEYWORDS = [
-    "点击", "关注", "加微信", "扫码", "领取", "免费", "限时", "优惠", "促销",
-    "立即", "马上", "赶快", "不要错过", "机会", "赚钱", "收益", "投资",
-    "加群", "进群", "微信群", "QQ群", "联系", "咨询", "详情", "了解",
-]
-
-# 股市专业术语白名单（自定义词典）
-STOCK_TERMS = [
-    # 操作词
-    "加仓", "建仓", "清仓", "做T", "做t", "抄底", "割肉", "满仓", "空仓",
-    "减仓", "补仓", "平仓", "锁仓", "持仓", "开仓", "止盈", "止损",
-    # 情绪词
-    "诱多", "诱空", "洗盘", "踏空", "套牢", "起飞", "跳水", "杀跌", "追涨",
-    "砸盘", "护盘", "拉盘", "出货", "吸筹", "震仓", "横盘", "破位",
-    # 金融词
-    "分红", "除权", "除息", "破净", "市盈率", "市净率", "主力", "北向资金", 
-    "南向资金", "中字头", "蓝筹", "白马", "黑马", "题材", "概念", "板块",
-    "涨停", "跌停", "涨停板", "跌停板", "一字板", "开板", "封板",
-    "换手率", "成交量", "成交额", "流通股", "总股本", "市值", "估值",
-    # 特定称呼
-    "中行", "工行", "建行", "农行", "四大行", "银行股",
-    # 技术分析词
-    "均线", "MACD", "KDJ", "RSI", "布林线", "支撑位", "阻力位", "压力位",
-    "金叉", "死叉", "顶背离", "底背离", "突破", "回踩", "反弹", "回调",
-]
-
-# 允许的词性标签（放宽限制，保留更多有意义的词）
-# 包括：名词、动词、形容词、副词、数词、时间词等
-ALLOWED_POS_FLAGS = ['n', 'nr', 'ns', 'nt', 'nz', 'v', 'vn', 'vd', 'a', 'ad', 'an', 'd', 'm', 't', 'f']
-
-# 延迟初始化 jieba（避免启动时加载）
-_jieba_initialized = False
-jieba = None
-pseg = None
-
-def _init_jieba():
-    """延迟初始化 jieba（只在首次使用时初始化）"""
-    global jieba, pseg, _jieba_initialized
-    if _jieba_initialized:
-        return
-    
-    try:
-        import jieba as _jieba
-        import jieba.posseg as _pseg
-        jieba = _jieba
-        pseg = _pseg
-        # 初始化 jieba 时加载自定义词典
-        if jieba is not None:
-            # 将股市术语添加到 jieba 词典
-            for term in STOCK_TERMS:
-                jieba.add_word(term, freq=1000, tag='n')  # 设置为高频词，确保不被拆分
-        _jieba_initialized = True
-    except ImportError:
-        jieba = None
-        pseg = None
-        _jieba_initialized = True
 
 # CHANGED: 延迟初始化 API，在后台线程中预热数据库
 api = None
@@ -224,26 +129,17 @@ def get_api():
     """
     懒加载单例模式：获取 VisualizationAPI 实例
     只有在第一次调用时才创建对象，实现延迟初始化
+    预热操作延迟到首次使用时执行，避免启动阻塞
     """
     global api
     if api is None:
-        # 延迟导入：避免启动时加载
         from server.visualization_api import BacktestVisualizationAPI
         from config.logger import get_logger
         logger = get_logger(__name__)
         logger.info("正在初始化 VisualizationAPI（懒加载）...")
         api = BacktestVisualizationAPI()
-        # 执行一次简单的预热查询，让数据库连接和缓存就绪
-        try:
-            api._ensure_initialized()
-            # 获取最近的交易日，触发数据库查询初始化
-            dates = api.data_query.get_trading_dates()
-            if dates:
-                logger.info(f"数据库预热完成，最近交易日: {dates[-1] if dates else 'N/A'}")
-            else:
-                logger.warning("数据库预热完成，但未找到交易日数据")
-        except Exception as e:
-            logger.warning(f"数据库预热时出现警告: {e}", exc_info=True)
+        api._ensure_initialized()
+        logger.info("VisualizationAPI 初始化完成（预热延迟到首次查询）")
     return api
 
 def _normalize_strategy_id(strategy_name: str) -> str:
@@ -263,6 +159,75 @@ def _init_api():
 _redis_subscriber_thread = None
 _redis_subscriber_running = False
 
+def redis_subscriber_worker():
+    """Redis 订阅工作线程"""
+    global _redis_subscriber_running
+    from config.logger import get_logger
+    logger = get_logger(__name__)
+    
+    try:
+        redis_sub = redis.from_url(REDIS_URL, decode_responses=True)
+        pubsub = redis_sub.pubsub()
+        
+        pubsub.psubscribe(f"{NOTIFICATION_CHANNEL_PREFIX}:*")
+        
+        logger.info(f"Redis 订阅线程启动，监听频道: {NOTIFICATION_CHANNEL_PREFIX}:*")
+        _redis_subscriber_running = True
+        
+        while _redis_subscriber_running:
+            try:
+                message = pubsub.get_message(timeout=1.0)
+                
+                if message is None:
+                    continue
+                
+                if message['type'] == 'pmessage':
+                    channel = message['channel']
+                    data_str = message['data']
+                    
+                    try:
+                        data = json.loads(data_str)
+                        event = data.get('event')
+                        event_data = data.get('data', {})
+                        sid = data.get('sid')
+                        
+                        if sid:
+                            socketio.emit(event, event_data, to=sid)
+                        else:
+                            socketio.emit(event, event_data)
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Redis 消息 JSON 解析失败: {e}")
+                    except Exception as e:
+                        logger.error(f"转发 Redis 消息失败: {e}", exc_info=True)
+                        
+            except redis.ConnectionError as e:
+                logger.error(f"Redis 订阅连接错误: {e}")
+                time.sleep(5)
+                try:
+                    redis_sub = redis.from_url(REDIS_URL, decode_responses=True)
+                    pubsub = redis_sub.pubsub()
+                    pubsub.psubscribe(f"{NOTIFICATION_CHANNEL_PREFIX}:*")
+                except Exception:
+                    logger.error("Redis 重新连接失败")
+                    break
+            except Exception as e:
+                logger.error(f"Redis 订阅线程错误: {e}", exc_info=True)
+                time.sleep(1)
+        
+        try:
+            pubsub.close()
+            redis_sub.close()
+        except Exception:
+            pass
+        
+        logger.info("Redis 订阅线程已停止")
+        
+    except Exception as e:
+        from config.logger import get_logger
+        logger = get_logger(__name__)
+        logger.error(f"Redis 订阅线程初始化失败: {e}", exc_info=True)
+
 def start_redis_subscriber():
     """
     启动 Redis 订阅线程，监听 Worker 进程发布的进度消息
@@ -277,104 +242,32 @@ def start_redis_subscriber():
         return
     
     if _redis_subscriber_thread is not None and _redis_subscriber_thread.is_alive():
-        return  # 已经启动
+        return
     
-    # 延迟启动：只在首次调用时启动线程
     _redis_subscriber_thread = threading.Thread(target=redis_subscriber_worker, daemon=True)
     _redis_subscriber_thread.start()
     
     from config.logger import get_logger
     logger = get_logger(__name__)
     logger.info("Redis 订阅线程已启动")
-    
-    def redis_subscriber_worker():
-        """Redis 订阅工作线程"""
-        global _redis_subscriber_running
-        from config.logger import get_logger
-        logger = get_logger(__name__)
-        
-        try:
-            redis_sub = redis.from_url(REDIS_URL, decode_responses=True)
-            pubsub = redis_sub.pubsub()
-            
-            # 订阅所有通知频道（使用模式匹配）
-            pubsub.psubscribe(f"{NOTIFICATION_CHANNEL_PREFIX}:*")
-            
-            logger.info(f"Redis 订阅线程启动，监听频道: {NOTIFICATION_CHANNEL_PREFIX}:*")
-            _redis_subscriber_running = True
-            
-            while _redis_subscriber_running:
-                try:
-                    # 阻塞式接收消息，超时 1 秒
-                    message = pubsub.get_message(timeout=1.0)
-                    
-                    if message is None:
-                        continue
-                    
-                    # 消息类型：pmessage (pattern message)
-                    if message['type'] == 'pmessage':
-                        channel = message['channel']
-                        data_str = message['data']
-                        
-                        try:
-                            data = json.loads(data_str)
-                            event = data.get('event')
-                            event_data = data.get('data', {})
-                            sid = data.get('sid')  # session ID
-                            
-                            # 通过 socketio 转发给前端
-                            if sid:
-                                socketio.emit(event, event_data, to=sid)
-                            else:
-                                socketio.emit(event, event_data)
-                                
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"Redis 消息 JSON 解析失败: {e}")
-                        except Exception as e:
-                            logger.error(f"转发 Redis 消息失败: {e}", exc_info=True)
-                            
-                except redis.ConnectionError as e:
-                    logger.error(f"Redis 订阅连接错误: {e}")
-                    time.sleep(5)  # 等待后重试
-                    try:
-                        redis_sub = redis.from_url(REDIS_URL, decode_responses=True)
-                        pubsub = redis_sub.pubsub()
-                        pubsub.psubscribe(f"{NOTIFICATION_CHANNEL_PREFIX}:*")
-                    except Exception:
-                        logger.error("Redis 重新连接失败")
-                        break
-                except Exception as e:
-                    logger.error(f"Redis 订阅线程错误: {e}", exc_info=True)
-                    time.sleep(1)
-            
-            # 清理资源
-            try:
-                pubsub.close()
-                redis_sub.close()
-            except Exception:
-                pass
-            
-            logger.info("Redis 订阅线程已停止")
-            
-        except Exception as e:
-            logger.error(f"Redis 订阅线程启动失败: {e}", exc_info=True)
-            _redis_subscriber_running = False
-    
-    # 延迟启动：不在模块级别启动，改为在首次需要时启动
-    # _redis_subscriber_thread = threading.Thread(target=redis_subscriber_worker, daemon=True)
-    # _redis_subscriber_thread.start()
-    
-    # 注释掉模块级别的启动，改为在首次需要时启动
-    # from config.logger import get_logger
-    # logger = get_logger(__name__)
-    # logger.info("Redis 订阅线程已启动")
 
 app = Flask(__name__, static_folder='static')
 
 # CORS 配置：覆盖所有路径，包括 Socket.IO
 CORS(app, resources={
-    r"/api/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"], "headers": ["Content-Type", "Authorization", "X-Requested-With"]},
-    r"/socket.io/*": {"origins": "*", "methods": ["GET", "POST", "OPTIONS"], "headers": ["Content-Type", "Authorization", "X-Requested-With"]}
+    r"/api/*": {
+        "origins": ["http://localhost:5173", "http://127.0.0.1:5173"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+        "expose_headers": ["Content-Type", "X-Total-Count"],
+        "supports_credentials": True
+    },
+    r"/socket.io/*": {
+        "origins": ["http://localhost:5173", "http://127.0.0.1:5173"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization", "X-Requested-With"],
+        "supports_credentials": True
+    }
 }, supports_credentials=True)
 # 关键：开启 async_handlers，方便长任务
 # 注意：如果使用 Granian ASGI，需要确保兼容性
@@ -386,15 +279,21 @@ use_asgi = os.getenv("USE_GRANIAN", "false").lower() == "true"
 # - 仍然使用 'threading' 模式初始化 SocketIO
 # - run.py 中会使用 socketio.ASGIApp 来包装，它会正确处理 ASGI 请求
 # - socketio.ASGIApp 会自动将 threading 模式的服务器转换为 ASGI 兼容的服务器
-socketio = SocketIO(app, 
+socketio = SocketIO(app,
                     cors_allowed_origins="*",
-                    cors_credentials=True,  # 允许携带凭证
+                    cors_credentials=True,
                     async_handlers=True,
-                    async_mode='threading',  # 即使 ASGI 模式也使用 threading，ASGIApp 会处理转换
-                    logger=False,  # 关闭日志记录，减少输出
-                    engineio_logger=False,  # 关闭引擎IO日志
-                    ping_interval=25000,  # 增加ping间隔
-                    ping_timeout=60000)  # 增加ping超时
+                    async_mode='threading',
+                    logger=False,
+                    engineio_logger=False,
+                    ping_interval=25000,
+                    ping_timeout=60000,
+                    compression=True)  # 启用消息压缩
+
+# 设置全局 Socket.IO 实例，供其他模块使用
+from server.socketio_manager import set_global_socketio
+set_global_socketio(socketio)
+
 active_backtests: Dict[str, Event] = {}
 
 # GA 任务管理（已移动到 server.logic.optimization）
@@ -449,7 +348,31 @@ logging.getLogger("numba").setLevel(logging.WARNING)  # Numba JIT 编译日志
 
 # ======================================
 
+# ============================================================================
+# Celery 集成
+# ============================================================================
+
+# 导入 Celery 应用实例
+try:
+    from config.celery_config import celery_app
+    CELERY_AVAILABLE = True
+    print("[INFO] Celery 集成已启用")
+except Exception as e:
+    CELERY_AVAILABLE = False
+    print(f"[WARNING] Celery 集成不可用: {e}")
+
+# 导入任务模块（确保 Celery 能发现任务）
+if CELERY_AVAILABLE:
+    try:
+        from server.tasks import backtest_tasks
+        print("[INFO] Celery 任务模块已加载")
+    except Exception as e:
+        print(f"[WARNING] 加载 Celery 任务模块失败: {e}")
+
+# ============================================================================
 # 注册路由和 Socket.IO 处理器
+# ============================================================================
+
 # 注意：必须在 socketio 和 app 创建之后调用，延迟导入避免循环依赖
 # 关键：分离错误处理，确保路由注册和 Socket.IO 注册独立，互不影响
 
@@ -464,6 +387,13 @@ try:
             from config.config import Config
             from data_svc.database.db_utils import ensure_tables
             import sqlite3
+            import os
+            
+            db_dir = os.path.dirname(Config.DB_PATH)
+            if db_dir and not os.path.exists(db_dir):
+                os.makedirs(db_dir, exist_ok=True)
+                logger.info(f"创建数据库目录: {db_dir}")
+            
             conn = sqlite3.connect(Config.DB_PATH)
             ensure_tables(conn)
             conn.close()
@@ -471,7 +401,6 @@ try:
         except Exception as db_err:
             logger.error(f"数据库异步初始化失败: {db_err}")
 
-    # 使用线程进行异步初始化，避免阻塞主进程启动 (解决 Granian 502 问题)
     import threading
     threading.Thread(target=init_db_async, daemon=True).start()
         
@@ -589,7 +518,8 @@ def handle_500(e):
     
     return jsonify({
         'success': False,
-        'error': '服务器内部错误',
+        'error': str(e),
+        'traceback': error_trace,
         'data': []
     }), 500
 
@@ -616,6 +546,15 @@ def after_request_handler(response):
 def _ensure_api_initialized() -> None:
     """确保 API 已初始化（兼容性函数）"""
     get_api()
+    
+    # 启动启动服务检查（包含自动数据更新）
+    try:
+        from server.services.startup_service import get_startup_service
+        startup_service = get_startup_service()
+        startup_service.start_async()
+    except Exception as e:
+        logger = get_logger(__name__)
+        logger.warning(f"启动服务初始化失败: {e}")
 
 def _sanitize_json_data(data):
     """
@@ -644,107 +583,6 @@ def _sanitize_json_data(data):
 # 注意：大部分路由已迁移到 server/routes/ 目录下的独立文件
 # 以下路由保留在 app.py 中，因为它们需要直接访问 app 实例或特殊处理
 
-@app.route('/api/strategies', methods=['GET'])
-def get_strategies():
-    """
-    获取策略列表
-    ---
-    tags:
-      - Strategies
-    responses:
-      200:
-        description: List of available strategies
-        schema:
-          type: object
-          properties:
-            success:
-              type: boolean
-            data:
-              type: array
-              items:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  name:
-                    type: string
-                  safeId:
-                    type: string
-    """
-    try:
-        from core.strategies.strategy_factory import get_factory
-        factory = get_factory()
-        strategies = factory.list_strategies()
-
-        result = []
-        for i, strategy in enumerate(strategies):
-            raw_name = strategy.get('name', '')
-            safe_id = _normalize_strategy_id(raw_name)
-            strategy_id = strategy.get('id') or raw_name or safe_id or f"strategy_{i}"
-
-            # 检查重复，如果已存在则添加索引后缀
-            if len([s for s in result if s['id'] == strategy_id]) > 0:
-                strategy_id = f"{strategy_id}_{i}"
-
-            result.append({
-                "id": strategy_id,          # 策略 ID，用于前端识别
-                "name": raw_name or strategy_id,
-                "safeId": safe_id           # 安全的 URL 兼容 ID
-            })
-
-        response = jsonify({"success": True, "data": result})
-        response.headers.add('Content-Type', 'application/json')
-        return response
-    except Exception as e:
-        from config.logger import get_logger
-        logger = get_logger(__name__)
-        logger.error(f"获取策略列表失败: {e}", exc_info=True)
-        response = jsonify({"success": False, "data": [], "error": str(e)})
-        response.headers.add('Content-Type', 'application/json')
-        return response, 500
-
-@app.route('/api/test_strategies', methods=['GET'])
-def test_get_strategies():
-    """测试用策略列表端点 - 完全独立实现"""
-    try:
-        # 移除 DEBUG 日志
-        
-        # 硬编码策略列表
-        test_strategies = [
-            {"id": "test_strategy_1", "name": "测试策略1", "description": "这是第一个测试策略"},
-            {"id": "test_strategy_2", "name": "测试策略2", "description": "这是第二个测试策略"}
-        ]
-        
-        # 直接返回测试数据
-        response = jsonify({"success": True, "data": test_strategies})
-        # 移除 DEBUG 日志
-        return response
-    except Exception as e:
-        print(f"[ERROR] 测试端点失败: {e}")
-        return jsonify({"success": False, "error": str(e)})
-
-@app.route('/api/strategies/<strategy_id>/params', methods=['GET'])
-def get_strategy_params(strategy_id: str):
-    """获取指定策略的可优化参数列表"""
-    try:
-        # 允许同时使用原始名称和 safeId 进行访问
-        resolved_id = unquote(strategy_id)
-        try:
-            params = get_api().get_strategy_params(resolved_id)
-        except Exception:
-            # 尝试使用 safeId 匹配原始策略名
-            from core.strategies.strategy_factory import get_factory
-            factory = get_factory()
-            for item in factory.list_strategies():
-                raw_name = item.get('name', '')
-                if _normalize_strategy_id(raw_name) == resolved_id:
-                    resolved_id = raw_name
-                    break
-            params = get_api().get_strategy_params(resolved_id)
-        return jsonify(params)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 # 以下路由已迁移到 server/routes/ 目录：
 # - /api/run_backtest -> server/routes/backtest_routes.py
 # - /api/direct_test -> server/routes/system_routes.py
@@ -759,735 +597,13 @@ def get_strategy_params(strategy_id: str):
 # - /api/scatter_data -> server/routes/scatter_routes.py
 # - /api/ga_optimize/start -> server/routes/optimization_routes.py
 # - /api/ga_optimize/status/<task_id> -> server/routes/optimization_routes.py
-
-# 以下路由保留在 app.py 中（需要直接访问 app 实例或特殊处理）：
-
-@app.route('/api/latest_price', methods=['GET'])
-def get_latest_price():
-    """
-    返回一个或多个标的的最新价格
-    """
-    symbol = request.args.get('symbol')
-    symbols_param = request.args.get('symbols')
-    target_date = request.args.get('date')
-
-    symbol_list = []
-    if symbols_param:
-        symbol_list = [code.strip() for code in symbols_param.split(',') if code.strip()]
-    elif symbol:
-        symbol_list = [symbol.strip()]
-
-    if not symbol_list:
-        return jsonify({"success": False, "error": "缺少 symbol/symbols 参数"}), 400
-
-    try:
-        latest_prices = get_api().get_latest_prices(symbol_list, target_date)
-        return jsonify(latest_prices)
-    except Exception as e:
-        return json_response({"success": False, "error": str(e)}, status_code=500)
-
-
-@app.route('/api/stock_sentiment', methods=['GET'])
-def get_stock_sentiment():
-    """基于股吧爬虫数据的股票舆情汇总，优先使用 Parquet+DuckDB，加速查询。"""
-    try:
-        base_dir = Path(__file__).parent
-
-        limit_param = request.args.get('limit')
-        try:
-            limit = int(limit_param) if limit_param is not None else 50
-        except (TypeError, ValueError):
-            limit = 50
-
-        # 1. 优先尝试使用 Parquet + DuckDB（由 scripts/build_guba_posts_parquet.py 预生成）
-        parquet_path = base_dir / 'parquet_data' / 'guba_posts.parquet'
-        if duckdb is not None and parquet_path.exists():
-            try:
-                parquet_str = str(parquet_path).replace('\\', '/')
-                # DuckDB 直接在 Parquet 上聚合，避免逐文件读取 CSV
-                # 优化：使用 TRY_CAST 但减少重复转换，添加 WHERE 过滤提高性能
-                sql = f'''
-                    SELECT
-                        symbol,
-                        COALESCE(CAST(stockbar_code AS VARCHAR), CAST(RIGHT(symbol, 6) AS VARCHAR)) AS stockCode,
-                        COALESCE(CAST(stockbar_name AS VARCHAR), '') AS stockName,
-                        COUNT(*) AS totalPosts,
-                        SUM(COALESCE(TRY_CAST(post_click_count AS BIGINT), 0)) AS totalClicks,
-                        SUM(COALESCE(TRY_CAST(post_comment_count AS BIGINT), 0)) AS totalComments,
-                        SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) > 0 THEN 1 ELSE 0 END) AS bullishCount,
-                        SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) < 0 THEN 1 ELSE 0 END) AS bearishCount,
-                        SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) = 0 OR bullish_bearish IS NULL THEN 1 ELSE 0 END) AS neutralCount,
-                        COALESCE(AVG(TRY_CAST(bullish_bearish AS DOUBLE)), 0.0) AS sentimentScore,
-                        MAX(TRY_CAST(post_publish_time AS TIMESTAMP)) AS lastPostTime,
-                        COUNT(DISTINCT CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE)) AS activeDays
-                    FROM read_parquet('{parquet_str}')
-                    WHERE symbol IS NOT NULL
-                    GROUP BY symbol, stockbar_code, stockbar_name
-                    ORDER BY totalComments DESC, totalPosts DESC
-                    LIMIT ?
-                '''
-
-                effective_limit = limit if limit and limit > 0 else 1000
-                con = duckdb.connect()
-                try:
-                    # 设置 DuckDB 性能参数以加速查询
-                    try:
-                        con.execute("SET threads TO 4")
-                    except Exception:
-                        pass  # 如果设置失败，使用默认值
-                    try:
-                        con.execute("SET memory_limit='2GB'")
-                    except Exception:
-                        pass
-                    df = con.execute(sql, [effective_limit]).df()
-                finally:
-                    con.close()
-
-                # 转换为前端期望的字段格式
-                results = []
-                for _, row in df.iterrows():
-                    last_ts = row.get('lastPostTime')
-                    if pd.isna(last_ts):
-                        last_str = None
-                    else:
-                        # DuckDB 返回 Timestamp 时直接格式化为字符串
-                        last_str = str(last_ts)
-
-                    active_days = row.get('activeDays')
-                    try:
-                        active_days_int = int(active_days) if active_days is not None else None
-                    except (TypeError, ValueError):
-                        active_days_int = None
-
-                    results.append({
-                        "symbol": row.get('symbol') or '',
-                        "stockCode": row.get('stockCode') or '',
-                        "stockName": row.get('stockName') or '',
-                        "totalPosts": int(row.get('totalPosts') or 0),
-                        "totalClicks": int(row.get('totalClicks') or 0),
-                        "totalComments": int(row.get('totalComments') or 0),
-                        "bullishCount": int(row.get('bullishCount') or 0),
-                        "bearishCount": int(row.get('bearishCount') or 0),
-                        "neutralCount": int(row.get('neutralCount') or 0),
-                        "sentimentScore": float(row.get('sentimentScore') or 0.0),
-                        "lastPostTime": last_str,
-                        "activeDays": active_days_int,
-                    })
-
-                return json_response({"success": True, "data": results})
-            except Exception:
-                # DuckDB / Parquet 出错则回退到原始 CSV 方案
-                pass
-
-        # 2. 回退：沿用原来的逐 CSV 读取逻辑，保证兼容性
-        from config.config import Config
-        data_dir = Path(Config.SPIDER_DATA_DIR)
-        if not data_dir.exists():
-            return json_response({"success": True, "data": []})
-
-        results = []
-
-        for csv_path in sorted(data_dir.glob('*_posts.csv')):
-            symbol_code = csv_path.stem.replace('_posts', '')
-
-            try:
-                df = pd.read_csv(csv_path, encoding='utf-8-sig')
-            except Exception:
-                continue
-
-            if df is None or df.empty:
-                continue
-
-            total_posts = int(len(df))
-
-            if 'post_click_count' in df.columns:
-                total_clicks = int(pd.to_numeric(df['post_click_count'], errors='coerce').fillna(0).sum())
-            else:
-                total_clicks = 0
-
-            if 'post_comment_count' in df.columns:
-                total_comments = int(pd.to_numeric(df['post_comment_count'], errors='coerce').fillna(0).sum())
-            else:
-                total_comments = 0
-
-            bullish_count = 0
-            bearish_count = 0
-            neutral_count = 0
-            sentiment_score = 0.0
-            if 'bullish_bearish' in df.columns:
-                bb = pd.to_numeric(df['bullish_bearish'], errors='coerce').fillna(0)
-                bullish_count = int((bb > 0).sum())
-                bearish_count = int((bb < 0).sum())
-                neutral_count = int((bb == 0).sum())
-                sentiment_score = float(bb.mean()) if len(bb) > 0 else 0.0
-
-            stock_code = None
-            stock_name = None
-            if 'stockbar_code' in df.columns:
-                try:
-                    stock_code = str(df['stockbar_code'].iloc[0])
-                except Exception:
-                    stock_code = None
-            if 'stockbar_name' in df.columns:
-                try:
-                    stock_name = str(df['stockbar_name'].iloc[0])
-                except Exception:
-                    stock_name = None
-
-            last_post_time = None
-            active_days = None
-            if 'post_publish_time' in df.columns:
-                try:
-                    # 抑制日期解析格式警告
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings('ignore', category=UserWarning, message='.*Could not infer format.*')
-                        # 使用 format='mixed' 允许混合格式，提高解析性能并避免警告
-                        # 如果 pandas 版本不支持，会回退到自动推断
-                        try:
-                            times = pd.to_datetime(
-                                df['post_publish_time'],
-                                format='mixed',
-                                errors='coerce'
-                            )
-                        except (ValueError, TypeError):
-                            # 回退到自动推断（兼容旧版本 pandas）
-                            times = pd.to_datetime(
-                                df['post_publish_time'],
-                                errors='coerce'
-                            )
-                    if not times.isna().all():
-                        last = times.max()
-                        last_post_time = last.isoformat(sep=' ', timespec='seconds')
-                        active_days = int(times.dt.date.nunique())
-                except Exception:
-                    # 兜底：解析异常时直接忽略时间信息，避免阻塞接口
-                    last_post_time = None
-                    active_days = None
-
-            results.append({
-                "symbol": symbol_code,
-                "stockCode": stock_code or symbol_code[-6:],
-                "stockName": stock_name or "",
-                "totalPosts": total_posts,
-                "totalClicks": total_clicks,
-                "totalComments": total_comments,
-                "bullishCount": bullish_count,
-                "bearishCount": bearish_count,
-                "neutralCount": neutral_count,
-                "sentimentScore": sentiment_score,
-                "lastPostTime": last_post_time,
-                "activeDays": active_days,
-            })
-
-        results.sort(key=lambda x: (x['totalComments'], x['totalPosts']), reverse=True)
-        if limit > 0:
-            results = results[:limit]
-
-        return json_response({"success": True, "data": results})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e), "data": []}), 500
-
-
-@app.route('/api/stock_sentiment_words', methods=['GET'])
-def get_stock_sentiment_words():
-    """返回单只股票用于词云的关键词和情绪权重。"""
-    try:
-        from config.config import Config
-
-        symbol = request.args.get('symbol')
-        if not symbol:
-            return jsonify({"success": False, "error": "缺少 symbol 参数"}), 400
-
-        parquet_path = Path(Config.PARQUET_DIR) / 'guba_posts.parquet'
-        df = None
-
-        # 优先从 Parquet + DuckDB 读取该股票的帖子
-        if duckdb is not None and parquet_path.exists():
-            try:
-                parquet_str = str(parquet_path).replace('\\', '/')
-                sql = f"""
-                    SELECT
-                        symbol,
-                        stockbar_code,
-                        stockbar_name,
-                        post_title,
-                        post_click_count,
-                        post_comment_count,
-                        post_forward_count,
-                        post_publish_time,
-                        TRY_CAST(bullish_bearish AS DOUBLE) AS bullish_bearish
-                    FROM read_parquet('{parquet_str}')
-                    WHERE symbol = ?
-                """
-                con = duckdb.connect()
-                try:
-                    df = con.execute(sql, [symbol]).df()
-                finally:
-                    con.close()
-            except Exception:
-                df = None
-
-        # 回退：直接读取 spider/data/{symbol}_posts.csv
-        if df is None:
-            from config.config import Config
-            csv_path = Path(Config.SPIDER_DATA_DIR) / f'{symbol}_posts.csv'
-            if csv_path.exists():
-                try:
-                    df = pd.read_csv(csv_path, encoding='utf-8-sig')
-                    df = df.copy()
-                    df['symbol'] = symbol
-                except Exception:
-                    df = None
-
-        if df is None or df.empty:
-            return json_response({"success": True, "data": {
-                "symbol": symbol,
-                "stockCode": symbol[-6:],
-                "stockName": "",
-                "totalPosts": 0,
-                "totalClicks": 0,
-                "totalComments": 0,
-                "overallSentiment": None,
-                "words": [],
-            }})
-
-        # 规范化数值列
-        for col in ("post_click_count", "post_comment_count", "post_forward_count"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            else:
-                df[col] = 0
-
-        total_posts = int(len(df))
-        total_clicks = int(df["post_click_count"].sum())
-        total_comments = int(df["post_comment_count"].sum())
-
-        # 情绪与分词库（若不可用则降级）
-        try:
-            from snownlp import SnowNLP  # type: ignore[import]
-            # 使用延迟初始化的 jieba
-            _init_jieba()
-            sentiment_available = True
-        except Exception:
-            SnowNLP = None  # type: ignore[assignment]
-            sentiment_available = False
-
-        import math
-
-        word_stats: Dict[str, Dict[str, float]] = {}
-        total_sentiment = 0.0
-        sentiment_weight_sum = 0.0
-
-        def tokenize(text: str):
-            """
-            改进的分词函数，确保细粒度分词，避免出现完整句子
-            1. 使用精确模式分词，避免长词
-            2. 对分词结果进行二次切分，确保词长度合理
-            3. 只保留2-4个字的词（避免5-6字的短语被当作一个词）
-            """
-            if not text:
-                return []
-            
-            words = []
-            
-            # 优先使用 jieba 精确模式分词（cut_all=False）
-            if sentiment_available:
-                # 确保 jieba 已初始化
-                _init_jieba()
-                if jieba is not None:
-                    try:
-                        # 使用精确模式，避免过度合并
-                        seg_list = jieba.cut(text, cut_all=False)
-                    
-                        for word in seg_list:
-                            word = word.strip()
-                            if not word or word.isspace():
-                                continue
-                            
-                            word_len = len(word)
-                            
-                            # 只保留2-4个字的词（避免出现长短语）
-                            if word_len < 2 or word_len > 4:
-                                # 如果词太长（>4），尝试进一步切分
-                                if word_len > 4:
-                                    # 对长词进行二次切分
-                                    sub_words = jieba.cut(word, cut_all=False)
-                                    for sub_word in sub_words:
-                                        sub_word = sub_word.strip()
-                                        sub_len = len(sub_word)
-                                        if 2 <= sub_len <= 4 and sub_word not in STOPWORDS:
-                                            words.append(sub_word)
-                                continue
-                            
-                            # 过滤停用词
-                            if word in STOPWORDS:
-                                continue
-                            
-                            # 过滤纯数字
-                            if word.isdigit():
-                                continue
-                            
-                            words.append(word)
-                    except Exception:
-                        # 如果分词失败，使用简单切分
-                        words = [w.strip() for w in re.findall(r"[\u4e00-\u9fff]{2,4}", text)
-                                if w.strip() and w.strip() not in STOPWORDS and not w.strip().isdigit()]
-            else:
-                # 简单回退：按中文连续字符切分，只保留2-4个字
-                words = [w.strip() for w in re.findall(r"[\u4e00-\u9fff]{2,4}", text)
-                        if w.strip() and w.strip() not in STOPWORDS and not w.strip().isdigit()]
-            
-            # 去重但保持顺序
-            seen = set()
-            unique_words = []
-            for w in words:
-                if w not in seen:
-                    seen.add(w)
-                    unique_words.append(w)
-            
-            return unique_words
-
-        def should_filter_title(title: str) -> bool:
-            """在分词前过滤长句子和广告语"""
-            if not title:
-                return True
-            
-            # 过滤过长的标题（超过35个字符，可能是公告或广告）
-            if len(title) > 35:
-                return True
-            
-            # 过滤包含公告模式的标题
-            for pattern in ANNOUNCEMENT_PATTERNS:
-                if re.search(pattern, title):
-                    return True
-            
-            # 过滤包含广告关键词的标题
-            for keyword in AD_KEYWORDS:
-                if keyword in title:
-                    return True
-            
-            # 过滤包含过多标点符号的标题（可能是格式化文本）
-            punctuation_count = len(re.findall(r'[，。、；：！？]', title))
-            if punctuation_count > 3:
-                return True
-            
-            return False
-
-        for _, row in df.iterrows():
-            title = str(row.get("post_title") or "").strip()
-            if not title:
-                continue
-            
-            # 在分词前过滤长句子和广告语
-            if should_filter_title(title):
-                continue
-
-            clicks = float(row.get("post_click_count") or 0.0)
-            comments = float(row.get("post_comment_count") or 0.0)
-            forwards = float(row.get("post_forward_count") or 0.0)
-
-            # 将帖子数、评论数、点击数综合为权重（对大数取 log 减少极端值影响）
-            weight = 1.0 + math.log1p(clicks) + 2.0 * math.log1p(comments) + 1.5 * math.log1p(forwards)
-
-            # 优先使用数据库中已计算好的 bullish_bearish 字段（与散点图保持一致）
-            # 如果不存在，再使用 SnowNLP 实时计算
-            score = None
-            if 'bullish_bearish' in df.columns:
-                try:
-                    bb_value = row.get("bullish_bearish")
-                    if bb_value is not None and pd.notna(bb_value):
-                        # bullish_bearish 已经是 -1 到 1 之间的值，需要转换为 0-1 范围用于分类
-                        # 但我们可以直接使用它来判断正负面
-                        bb_float = float(bb_value)
-                        if bb_float > 0:
-                            # 正面：将 -1到1 映射到 0.5到1
-                            score = 0.5 + (bb_float * 0.5)
-                        elif bb_float < 0:
-                            # 负面：将 -1到0 映射到 0到0.5
-                            score = 0.5 + (bb_float * 0.5)
-                        else:
-                            # 中性
-                            score = 0.5
-                except (ValueError, TypeError):
-                    score = None
-            
-            # 如果数据库中没有 bullish_bearish，回退到 SnowNLP
-            if score is None and sentiment_available and SnowNLP is not None:
-                try:
-                    score = float(SnowNLP(title).sentiments)
-                except Exception:
-                    score = None
-
-            if score is not None:
-                total_sentiment += score * weight
-                sentiment_weight_sum += weight
-
-            # 改进情感分类阈值：使用更严格的阈值，提高区分度
-            # 个股评论情感通常更极端，使用 0.55/0.45 作为阈值
-            if score is None:
-                label = "neutral"
-            elif score >= 0.55:  # 从0.6降低到0.55，提高正面识别率
-                label = "positive"
-            elif score <= 0.45:  # 从0.4提高到0.45，提高负面识别率
-                label = "negative"
-            else:
-                label = "neutral"
-
-            # 分词处理（tokenize 内部已经处理了过滤）
-            for token in tokenize(title):
-                info = word_stats.setdefault(token, {
-                    "weight": 0.0,
-                    "positiveWeight": 0.0,
-                    "negativeWeight": 0.0,
-                    "count": 0.0,
-                })
-                info["weight"] += weight
-                info["count"] += 1.0
-                
-                # 如果有 bullish_bearish 值，直接使用它来计算情绪权重
-                # 这样可以更准确地反映情绪，与散点图保持一致
-                if bb_value is not None and pd.notna(bb_value):
-                    bb_float = float(bb_value)
-                    if bb_float > 0:
-                        info["positiveWeight"] += weight * bb_float  # 正面权重 = weight * 情绪强度
-                    elif bb_float < 0:
-                        info["negativeWeight"] += weight * abs(bb_float)  # 负面权重 = weight * |情绪强度|
-                    # bb_float == 0 时，不累加正负面权重（保持为0，表示中性）
-                else:
-                    # 如果没有 bullish_bearish，使用 label 分类（回退方案）
-                    if label == "positive":
-                        info["positiveWeight"] += weight
-                    elif label == "negative":
-                        info["negativeWeight"] += weight
-
-        words = []
-        for token, info in word_stats.items():
-            weight = float(info.get("weight", 0.0))
-            positive_weight = float(info.get("positiveWeight", 0.0))
-            negative_weight = float(info.get("negativeWeight", 0.0))
-            count = int(info.get("count", 0.0))
-            
-            # 计算情绪倾向（-1 到 1，-1=完全负面，0=中性，1=完全正面）
-            # 改进：使用更敏感的计算方式，提高区分度
-            sentiment_score = 0.0
-            if weight > 0:
-                # 情绪得分 = (正面权重 - 负面权重) / 总权重
-                sentiment_score = (positive_weight - negative_weight) / weight
-                # 放大差异：如果正负面权重差异明显，增强信号
-                if abs(sentiment_score) > 0.3:
-                    # 对极端情绪进行放大（但不超过±1）
-                    sentiment_score = sentiment_score * 1.2
-                # 限制在 -1 到 1 之间
-                sentiment_score = max(-1.0, min(1.0, sentiment_score))
-            
-            words.append({
-                "word": token,
-                "weight": weight,  # 词的总权重，用于控制词云中词的大小（weight 越大，词越大）
-                "positiveWeight": positive_weight,  # 正面情绪权重
-                "negativeWeight": negative_weight,  # 负面情绪权重
-                "count": count,  # 词出现的次数
-                "sentiment": sentiment_score,  # 情绪得分（-1到1），用于控制词的颜色
-                # 前端使用建议：
-                # - 词大小：根据 weight 值按比例缩放（weight 越大，字体越大）
-                # - 词颜色：根据 sentiment 值设置颜色
-                #   * sentiment > 0.2: 正面情绪，使用暖色（如绿色、橙色）
-                #   * sentiment < -0.2: 负面情绪，使用冷色（如红色、蓝色）
-                #   * -0.2 <= sentiment <= 0.2: 中性情绪，使用中性色（如灰色）
-            })
-
-        # 按权重排序，确保词大小与出现程度正相关（权重高的词排在前面）
-        words.sort(key=lambda x: x["weight"], reverse=True)
-        words = words[:150]
-
-        if sentiment_weight_sum > 0:
-            overall_sentiment = total_sentiment / sentiment_weight_sum
-        else:
-            overall_sentiment = None
-
-        stock_code = str(df.get("stockbar_code").iloc[0]) if "stockbar_code" in df.columns and len(df) > 0 else symbol[-6:]
-        stock_name = str(df.get("stockbar_name").iloc[0]) if "stockbar_name" in df.columns and len(df) > 0 else ""
-
-        return jsonify({
-            "success": True,
-            "data": {
-                "symbol": symbol,
-                "stockCode": stock_code,
-                "stockName": stock_name,
-                "totalPosts": total_posts,
-                "totalClicks": total_clicks,
-                "totalComments": total_comments,
-                "overallSentiment": overall_sentiment,
-                "words": words,
-            },
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e), "data": None}), 500
-
-
-@app.route('/api/stock_sentiment_timeline', methods=['GET'])
-def get_stock_sentiment_timeline():
-    """获取个股多空博弈时间序列数据（按时间分组，显示看多、看空、中立三条线）"""
-    try:
-        symbol = request.args.get('symbol')
-        if not symbol:
-            return jsonify({"success": False, "error": "缺少 symbol 参数", "data": []}), 400
-        
-        from config.config import Config
-        parquet_path = Path(Config.PARQUET_DIR) / 'guba_posts.parquet'
-        
-        if duckdb is None or not parquet_path.exists():
-            return jsonify({"success": False, "error": "Parquet 数据文件不存在", "data": []}), 500
-        
-        parquet_str = str(parquet_path).replace('\\', '/')
-        
-        # 提取6位数字代码
-        if symbol.startswith('sz') or symbol.startswith('sh'):
-            code_6 = symbol[2:] if len(symbol) > 2 else symbol
-            full_symbol = symbol
-        else:
-            code_6 = symbol[-6:] if len(symbol) >= 6 else symbol.zfill(6)
-            full_symbol = symbol
-        
-        # 构建多种匹配条件
-        symbol_conditions = [
-            f"symbol = '{full_symbol}'",
-            f"symbol = '{code_6}'",
-            f"RIGHT(symbol, 6) = '{code_6}'",
-            f"stockbar_code = '{code_6}'",
-            f"symbol LIKE '%{code_6}%'"
-        ]
-        where_clause = ' OR '.join(symbol_conditions)
-        
-        # 按时间分组（按小时），统计看多、看空、中立的数量
-        sql = f"""
-            SELECT
-                DATE_TRUNC('hour', TRY_CAST(post_publish_time AS TIMESTAMP)) AS time_hour,
-                SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) > 0 THEN 1 ELSE 0 END) AS bullishCount,
-                SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) < 0 THEN 1 ELSE 0 END) AS bearishCount,
-                SUM(CASE WHEN TRY_CAST(bullish_bearish AS DOUBLE) = 0 OR bullish_bearish IS NULL THEN 1 ELSE 0 END) AS neutralCount,
-                COUNT(*) AS totalCount,
-                COALESCE(CAST(stockbar_name AS VARCHAR), '') AS stockName
-            FROM read_parquet('{parquet_str}')
-            WHERE ({where_clause})
-                AND TRY_CAST(post_publish_time AS TIMESTAMP) IS NOT NULL
-            GROUP BY time_hour, stockbar_name
-            ORDER BY time_hour ASC
-        """
-        
-        con = duckdb.connect()
-        try:
-            con.execute("SET threads TO 4")
-            con.execute("SET memory_limit='2GB'")
-            df = con.execute(sql).df()
-        finally:
-            con.close()
-        
-        if df.empty:
-            return json_response({"success": True, "data": [], "stockName": ""})
-        
-        # 获取股票名称（从第一条记录）
-        stock_name = str(df.iloc[0].get('stockName', '')) if 'stockName' in df.columns else ''
-        
-        # 转换为前端需要的格式
-        results = []
-        for _, row in df.iterrows():
-            time_hour = row.get('time_hour')
-            if pd.isna(time_hour):
-                continue
-            
-            # 格式化时间为字符串（如 "2024-01-01 09:00"）
-            if isinstance(time_hour, pd.Timestamp):
-                time_str = time_hour.strftime('%Y-%m-%d %H:%M')
-            else:
-                time_str = str(time_hour)
-            
-            results.append({
-                'time': time_str,
-                'bullishCount': int(row.get('bullishCount', 0)),
-                'bearishCount': int(row.get('bearishCount', 0)),
-                'neutralCount': int(row.get('neutralCount', 0)),
-                'totalCount': int(row.get('totalCount', 0))
-            })
-        
-        return jsonify({
-            "success": True,
-            "data": results,
-            "stockName": stock_name
-        })
-    except Exception as e:
-        from config.logger import get_logger
-        logger = get_logger(__name__)
-        logger.error(f"获取个股多空博弈时间序列数据失败: {e}", exc_info=True)
-        return jsonify({"success": False, "error": str(e), "data": []}), 500
-
-
-@app.route('/api/strategies/<strategy_name>/profiles', methods=['GET'])
-def api_list_strategy_profiles(strategy_name: str):
-    """
-    列出某个策略下的所有参数预设（Profile）。
-    """
-    try:
-        # 允许前端使用 URL 编码后的名称
-        resolved_name = unquote(strategy_name)
-        profiles = list_strategy_profiles(resolved_name)
-        return json_response({"success": True, "data": profiles})
-    except Exception as e:
-        print(f"[ERROR] 获取策略预设列表失败: {e}")
-        return jsonify({"success": False, "error": str(e), "data": []}), 500
-
-
-@app.route('/api/strategies/<strategy_name>/profiles', methods=['POST'])
-def api_create_strategy_profile(strategy_name: str):
-    """
-    为指定策略创建一个新的参数预设。
-    """
-    try:
-        from core.strategies.strategy_factory import get_factory
-
-        data = request.get_json() or {}
-        profile_name = data.get("profile_name")
-        description = data.get("description")
-        params = data.get("params") or {}
-        source = data.get("source", "optimization")
-
-        if not profile_name:
-            return jsonify({"success": False, "error": "profile_name 不能为空"}), 400
-        if not isinstance(params, dict):
-            return jsonify({"success": False, "error": "params 必须是对象"}), 400
-
-        # 校验策略是否存在
-        factory = get_factory()
-        available = {s.get("name") for s in factory.list_strategies()}
-        resolved_name = unquote(strategy_name)
-        if resolved_name not in available:
-            return jsonify({"success": False, "error": f"策略 {resolved_name} 不存在"}), 400
-
-        profile = create_strategy_profile(
-            strategy_name=resolved_name,
-            profile_name=profile_name,
-            description=description,
-            params_dict=params,
-            source=source,
-        )
-        return json_response({"success": True, "data": profile}), 201
-    except Exception as e:
-        print(f"[ERROR] 创建策略预设失败: {e}")
-        return json_response({"success": False, "error": str(e)}, status_code=500)
-
-
-@app.route('/api/strategy-profiles/<int:profile_id>', methods=['GET'])
-def api_get_strategy_profile(profile_id: int):
-    """
-    获取单个参数预设详情。
-    """
-    try:
-        profile = get_strategy_profile(profile_id)
-        if profile is None:
-            return jsonify({"success": False, "error": "Profile 不存在"}), 404
-        return json_response({"success": True, "data": profile})
-    except Exception as e:
-        print(f"[ERROR] 获取策略预设详情失败: {e}")
-        return json_response({"success": False, "error": str(e)}, status_code=500)
+# - /api/strategies -> server/routes/strategy_routes.py
+# - /api/test_strategies -> server/routes/strategy_routes.py
+# - /api/strategies/<strategy_id>/params -> server/routes/strategy_routes.py
+# - /api/strategies/<strategy_name>/profiles -> server/routes/strategy_routes.py
+# - /api/strategy-profiles/<int:profile_id> -> server/routes/strategy_routes.py
+
+# 以下路由尚未迁移，保留在 app.py 中
 
 @app.route('/api/strategy/<version_id>', methods=['GET'])
 def get_strategy_detail(version_id):
@@ -1655,11 +771,6 @@ def handle_disconnect():
         logger = get_logger(__name__)
         logger.error(f"Socket.IO 断开处理失败: {e}")
 
-# ---------------- 大数据传输优化工具函数 ---------------- #
-# 注意：这些函数已移动到 server.logic.backtest 模块
-# 保留导入以保持向后兼容（如果其他地方直接导入）
-from server.logic.backtest import _emit_large_data
-
 # ---------------- 前端触发回测的事件处理handler ---------------- #
 
 @socketio.on('run_streaming_backtest')
@@ -1715,10 +826,17 @@ def handle_streaming_backtest(data):
         from server.logic.backtest import run_backtest_background
         socketio.start_background_task(
             run_backtest_background,
-            socketio,  # 传递 socketio 实例
-            sid, strategy_name, start_date, end_date, benchmark_code, stop_event, effective_params,
-            get_api,  # 传递 get_api 函数
-            active_backtests  # 传递 active_backtests 字典
+            socketio,  # socketio_instance
+            sid,  # sid
+            strategy_name,  # strategy_name
+            start_date,  # start_date
+            end_date,  # end_date
+            benchmark_code,  # benchmark_code
+            stop_event,  # stop_event
+            effective_params,  # params
+            None,  # backtest_config
+            get_api,  # get_api_func
+            active_backtests  # active_backtests_dict
         )
 
     except Exception as e:
@@ -2092,272 +1210,6 @@ def handle_run_optimization(data):
         traceback.print_exc()
         emit('optimization_error', {"message": str(e)})
 
-# ---------------- GA 优化异步任务处理 ---------------- #
-# 注意：ga_worker 和 ga_tasks 已移动到 server.logic.optimization
-# 保留导入以保持向后兼容
-
-@app.route("/api/ga_optimize/start", methods=["POST"])
-def api_ga_start():
-    """
-    开始GA优化任务
-    返回task_id供前端轮询
-    """
-    data = request.get_json(force=True) or {}
-    
-    # 获取必要参数
-    strategy_id = data.get("strategy_id", "聚宽量比市值策略V3_严格趋势")
-    start_date = data.get("start_date")
-    end_date = data.get("end_date")
-    pop_size = int(data.get("pop_size", 20))
-    generations = int(data.get("generations", 20))
-    
-    # 参数验证
-    if not start_date or not end_date:
-        return jsonify({"error": "start_date / end_date 必填"}), 400
-    
-    # 生成任务ID并初始化任务
-    task_id = str(uuid.uuid4())
-    ga_tasks[task_id] = {
-        "status": "pending",
-        "result": None,
-        "error": None,
-    }
-    
-    # 构建GA优化参数
-    args = dict(
-        strategy_id=strategy_id,
-        start_date=start_date,
-        end_date=end_date,
-        pop_size=pop_size,
-        generations=generations,
-        db_path=None,
-        keys=None  # 使用全部参数进行优化
-    )
-    
-    # 启动后台线程执行GA优化
-    t = threading.Thread(target=ga_worker, args=(task_id, args), daemon=True)
-    t.start()
-    
-    from config.logger import get_logger
-    logger = get_logger(__name__)
-    logger.info(f"启动GA优化任务 (task_id: {task_id}, strategy: {strategy_id})")
-    
-    # 返回任务ID给前端
-    return jsonify({"ok": True, "task_id": task_id})
-
-
-@app.route("/api/ga_optimize/status/<task_id>", methods=["GET"])
-def api_ga_status(task_id: str):
-    """
-    查询GA优化任务状态
-    """
-    # 查找任务
-    task = ga_tasks.get(task_id)
-    if not task:
-        return jsonify({"error": "unknown task_id"}), 404
-    
-    # 返回任务状态
-    return jsonify(task)
-
-# ========== 高级情感分析API路由 ==========
-@app.route('/api/sentiment_trends', methods=['GET'])
-def get_sentiment_trends():
-    """获取情感趋势数据（从真实数据库查询）"""
-    try:
-        symbol = request.args.get('symbol')
-        days = int(request.args.get('days', 7))
-        
-        from config.config import Config
-        parquet_path = Path(Config.PARQUET_DIR) / 'guba_posts.parquet'
-        
-        if duckdb is None or not parquet_path.exists():
-            return jsonify({
-                'success': False,
-                'error': 'Parquet 数据文件不存在',
-                'data': []
-            }), 500
-        
-        parquet_str = str(parquet_path).replace('\\', '/')
-        
-        # 计算日期范围
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days-1)
-        start_date_str = start_date.strftime('%Y-%m-%d')
-        end_date_str = end_date.strftime('%Y-%m-%d')
-        
-        # 构建 WHERE 条件
-        where_conditions = [
-            "TRY_CAST(post_publish_time AS TIMESTAMP) IS NOT NULL",
-            f"CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE) >= '{start_date_str}'",
-            f"CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE) <= '{end_date_str}'"
-        ]
-        
-        # 如果提供了 symbol，添加股票过滤条件
-        if symbol:
-            # 提取6位数字代码
-            if symbol.startswith('sz') or symbol.startswith('sh'):
-                code_6 = symbol[2:] if len(symbol) > 2 else symbol
-                full_symbol = symbol
-            else:
-                code_6 = symbol[-6:] if len(symbol) >= 6 else symbol.zfill(6)
-                full_symbol = symbol
-            
-            symbol_conditions = [
-                f"symbol = '{full_symbol}'",
-                f"symbol = '{code_6}'",
-                f"RIGHT(symbol, 6) = '{code_6}'",
-                f"stockbar_code = '{code_6}'",
-                f"symbol LIKE '%{code_6}%'"
-            ]
-            where_conditions.append(f"({' OR '.join(symbol_conditions)})")
-        
-        where_clause = ' AND '.join(where_conditions)
-        
-        # 按日期分组，统计每天的帖子数量和平均情感得分
-        sql = f"""
-            SELECT
-                CAST(TRY_CAST(post_publish_time AS TIMESTAMP) AS DATE) AS date,
-                COUNT(*) AS post_count,
-                COALESCE(AVG(TRY_CAST(bullish_bearish AS DOUBLE)), 0.0) AS avg_sentiment
-            FROM read_parquet('{parquet_str}')
-            WHERE {where_clause}
-            GROUP BY date
-            ORDER BY date ASC
-        """
-        
-        con = duckdb.connect()
-        try:
-            con.execute("SET threads TO 4")
-            con.execute("SET memory_limit='2GB'")
-            df = con.execute(sql).df()
-        finally:
-            con.close()
-        
-        # 转换为前端需要的格式
-        data = []
-        if not df.empty:
-            for _, row in df.iterrows():
-                date_val = row.get('date')
-                if pd.isna(date_val):
-                    continue
-                
-                # 格式化日期
-                if isinstance(date_val, pd.Timestamp):
-                    date_str = date_val.strftime('%Y-%m-%d')
-                else:
-                    date_str = str(date_val)
-                
-                data.append({
-                    'date': date_str,
-                    'post_count': int(row.get('post_count', 0)),
-                    'avg_sentiment': round(float(row.get('avg_sentiment', 0.0)), 3)
-                })
-        
-        # 确保按日期排序（虽然 SQL 已经排序了，但这里再确保一次）
-        data.sort(key=lambda x: x['date'])
-        
-        return jsonify({
-            'success': True,
-            'data': data,
-            'message': f'Successfully retrieved sentiment trend for {symbol or "all stocks"}'
-        })
-    except Exception as e:
-        from config.logger import get_logger
-        logger = get_logger(__name__)
-        logger.error(f"获取情感趋势数据失败: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'data': []
-        }), 500
-
-@app.route('/api/lda_topics', methods=['GET'])
-def get_lda_topics():
-    """获取LDA主题分布数据"""
-    try:
-        symbol = request.args.get('symbol')
-        
-        # 模拟5个主题及其分布
-        topics = [
-            {'topic': '短期炒作', 'weight': random.uniform(0.1, 0.4)},
-            {'topic': '业绩利好', 'weight': random.uniform(0.1, 0.3)},
-            {'topic': '主力出货', 'weight': random.uniform(0.05, 0.25)},
-            {'topic': '重组传闻', 'weight': random.uniform(0.05, 0.2)},
-            {'topic': '散户被套', 'weight': random.uniform(0.05, 0.2)}
-        ]
-        
-        # 归一化权重
-        total = sum(t['weight'] for t in topics)
-        for t in topics:
-            t['weight'] = round(t['weight'] / total, 2)
-        
-        # 按权重排序
-        topics_sorted = sorted(topics, key=lambda x: x['weight'], reverse=True)
-        
-        # 转换为前端期望的格式
-        topic_names = [t['topic'] for t in topics_sorted]
-        topic_scores = [t['weight'] for t in topics_sorted]
-        
-        return jsonify({
-            'success': True,
-            'data': {
-                'topics': topic_names,
-                'scores': topic_scores
-            }
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
-
-@app.route('/api/scatter_data', methods=['GET'])
-def get_scatter_data():
-    """获取情感-热度散点图数据 - 重构后：委托给 visualization_api"""
-    from config.logger import get_logger
-    logger = get_logger(__name__)
-    
-    try:
-        symbol = request.args.get('symbol')
-        logger.info(f"开始获取散点图数据: symbol={symbol}")
-        
-        # 【性能优化】使用异步执行，避免阻塞主线程
-        # 注意：Flask 本身不支持真正的异步，但使用线程池可以避免阻塞
-        import concurrent.futures
-        
-        def execute_query():
-            """在单独线程中执行查询"""
-            return get_api().get_scatter_data(symbol)
-        
-        # 【性能优化】使用线程池执行，设置超时控制
-        # 优化：使用更小的超时时间（30秒），因为已经优化了查询逻辑
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(execute_query)
-            try:
-                result = future.result(timeout=30.0)  # 30秒超时（已优化查询，应该更快）
-                logger.info(f"散点图数据获取成功: {len(result.get('data', []))} 条记录")
-                return jsonify(result)
-            except concurrent.futures.TimeoutError:
-                logger.warning("散点图数据查询超时（超过30秒）")
-                return jsonify({
-                    'success': False,
-                    'error': '查询超时，数据量较大，请稍后重试或指定具体股票代码',
-                    'data': []
-                }), 504
-    except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError) as e:
-        # CHANGED: 特别处理连接错误，这是客户端超时关闭连接导致的
-        logger.debug(f"客户端连接已关闭（散点图数据）: {type(e).__name__}")
-        # 连接已关闭，无法返回响应，返回 None 让 Flask 正常处理
-        return None
-    except Exception as e:
-        logger.error(f"获取散点图数据失败: {e}", exc_info=True)
-        return jsonify({
-            'success': False,
-            'error': str(e),
-            'data': []
-        }), 500
-
-
 if __name__ == '__main__':
     print('🚀 启动量化回测数据可视化API服务...')
     # 在启动服务前预先初始化 API（替代 @app.before_first_request）
@@ -2365,4 +1217,4 @@ if __name__ == '__main__':
     # 启动 Redis 订阅线程（用于接收 Worker 进程的进度消息）
     start_redis_subscriber()
     # 必须使用 socketio.run 才能启用 Socket.IO 事件
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True, use_reloader=False)

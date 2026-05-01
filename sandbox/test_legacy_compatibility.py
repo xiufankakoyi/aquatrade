@@ -1,6 +1,6 @@
 import pandas as pd
 from core.strategies.strategy_framework import StrategyBase
-from core.backtest.flexible_backtest_engine import FlexibleBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
 import tqdm
 
@@ -28,7 +28,7 @@ def test_compatibility():
     print("=" * 80)
     
     query = OptimizedStockDataQuery()
-    engine = FlexibleBacktestEngine(data_query=query, initial_capital=100000)
+    engine = UnifiedBacktestEngine(data_query=query)
     strategy = PurePandasStrategy()
     
     # 运行简短回测

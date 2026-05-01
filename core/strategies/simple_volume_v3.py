@@ -227,35 +227,54 @@ class SimpleVolumeStrategyV3(StrategyBase):
         if stock_pool_today is None or stock_pool_today.empty:
             return {}
 
-        # 1) 卖出逻辑
-        sell_codes = self._get_sell_signals(stock_pool_today, current_date, data_query)
+        prev_date = self._get_previous_trading_date(current_date, data_query)
+        if prev_date is None:
+            return {}
+        
+        stock_pool_prev = data_query.get_stock_pool(prev_date)
+        if stock_pool_prev is None or stock_pool_prev.empty:
+            return {}
+
+        sell_codes = self._get_sell_signals(stock_pool_prev, prev_date, data_query)
         for code in sell_codes:
             final_signals[code] = "sell"
 
-        # 2) 预筛
-        pre_screened = self._pre_screen_stocks(stock_pool_today, current_date, data_query)
+        pre_screened = self._pre_screen_stocks(stock_pool_prev, prev_date, data_query)
         
-        # 3) 寻找主升浪强势股 (Strict Mode)
         buy_candidates = []
         if pre_screened:
             buy_candidates = self._evaluate_buy_candidates_strict(
-                pre_screened, stock_pool_today, current_date, data_query
+                pre_screened, stock_pool_prev, prev_date, data_query
             )
 
-        # 4) 决策分支
         if buy_candidates:
-            # A计划：只有确认为真·主升浪，才买入
             limited = buy_candidates[: self.config.max_stocks_per_day]
             for code in limited:
                 if final_signals.get(code) != "sell":
                     final_signals.setdefault(code, "buy")
-            print(f"[Simple策略] {current_date} 发现主升浪强势股，买入: {limited}")
+            print(f"[Simple策略] {current_date} 基于{prev_date}数据发现主升浪，买入: {limited}")
         else:
-            # B计划：没有完美的主升浪，进入银行防守
-            # print(f"[Simple策略] {current_date} 无主升浪标的，执行银行防守检查...")
-            self._apply_bank_defense_optimized(current_date, final_signals, stock_pool_today)
+            self._apply_bank_defense_optimized(current_date, final_signals, stock_pool_prev)
 
         return final_signals
+    
+    def _get_previous_trading_date(self, current_date: str, data_query) -> str | None:
+        """获取前一个交易日"""
+        import pandas as pd
+        from datetime import datetime, timedelta
+        
+        try:
+            current = pd.to_datetime(current_date)
+            for i in range(1, 10):
+                prev = current - timedelta(days=i)
+                prev_str = prev.strftime("%Y-%m-%d")
+                df = data_query.get_stock_pool(prev_str)
+                if df is not None and not df.empty:
+                    return prev_str
+            return None
+        except Exception as e:
+            print(f"[Simple策略] 获取前一交易日失败: {e}")
+            return None
 
     def _evaluate_buy_candidates_strict(
         self,
@@ -420,7 +439,9 @@ class SimpleVolumeStrategyV3(StrategyBase):
             print(f"[Simple策略] {current_date} 启动银行防守，买入: {', '.join(buys)}")
 
     def _pre_screen_stocks(self, stock_pool: pd.DataFrame, date: str, data_query) -> List[str]:
-        # 基础筛选：市值、ST等
+        if stock_pool is None or stock_pool.empty:
+            return []
+        
         sort_col = "amount" if "amount" in stock_pool.columns else "total_mv"
         if len(stock_pool) > self.config.max_candidates:
             stock_pool = stock_pool.nlargest(self.config.max_candidates, sort_col)
@@ -429,16 +450,16 @@ class SimpleVolumeStrategyV3(StrategyBase):
         
         mask = ((stock_pool["total_mv"] >= self.config.market_cap_min) & 
                 (stock_pool["total_mv"] <= self.config.market_cap_max))
-        mask &= stock_pool["is_st"].eq(0)
+        
+        if "is_st" in stock_pool.columns:
+            mask &= stock_pool["is_st"].eq(0)
         
         df = stock_pool[mask].copy()
         if df.empty: return []
         
-        # 简单的初筛：必须有量，且收盘价高于MA5
         if "volume" in df.columns:
             df = df[df["volume"].fillna(0) > 0]
         
-        # 初筛阶段也稍微严格一点：收盘价必须站上MA5
         if "ma5" in df.columns:
             df = df[df["close"] > df["ma5"]]
             

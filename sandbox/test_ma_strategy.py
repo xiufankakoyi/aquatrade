@@ -2,7 +2,7 @@
 
 import sys
 import pandas as pd
-from core.backtest.flexible_backtest_engine import FlexibleBacktestEngine
+from core.backtest.unified_engine import UnifiedBacktestEngine
 from data_svc.database.optimized_data_query import OptimizedStockDataQuery
 from core.strategies.ma_comparison_strategy import MAComparisonStrategy
 
@@ -17,11 +17,8 @@ def run_test():
     data_query = OptimizedStockDataQuery()
     
     # 严格配置：初始资金 100,000，手续费 0，最小手续费 0
-    engine = FlexibleBacktestEngine(
+    engine = UnifiedBacktestEngine(
         data_query=data_query,
-        initial_capital=100000.0,
-        commission_rate=0.0,
-        min_commission=0.0
     )
     
     # 初始化策略
