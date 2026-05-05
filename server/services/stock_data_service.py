@@ -605,13 +605,23 @@ class StockDataService:
             table = db.open_table('stock_info')
             ds = table.to_lance()
             
+            schema_names = {field.name for field in table.schema}
+            name_col = 'stock_name' if 'stock_name' in schema_names else 'name' if 'name' in schema_names else None
+            code_col = 'stock_code' if 'stock_code' in schema_names else 'ts_code' if 'ts_code' in schema_names else None
+            if not code_col or not name_col:
+                return {}
+
             if hasattr(ds, 'scanner'):
-                scanner = ds.scanner(columns=['stock_code', 'stock_name'])
+                scanner = ds.scanner(columns=[code_col, name_col])
                 arrow_table = scanner.to_table()
             else:
                 arrow_table = table.to_arrow()
             
             df = pl.from_arrow(arrow_table)
+            if code_col != 'stock_code':
+                df = df.rename({code_col: 'stock_code'})
+            if name_col != 'stock_name':
+                df = df.rename({name_col: 'stock_name'})
             
             if 'stock_code' not in df.columns or 'stock_name' not in df.columns:
                 return {}

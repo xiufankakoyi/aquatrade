@@ -16,7 +16,7 @@ module.exports = {
             interpreter: 'none', // granian 是可执行文件
             cwd: './',
             env: {
-                DB_BACKEND: 'questdb',
+                DB_BACKEND: 'lancedb',
                 GRANIAN_LOG_LEVEL: 'info'
             },
             autorestart: true,
@@ -32,7 +32,7 @@ module.exports = {
             interpreter: 'python',
             cwd: './',
             env: {
-                DB_BACKEND: 'questdb'
+                DB_BACKEND: 'lancedb'
             },
             autorestart: true,
             watch: false,

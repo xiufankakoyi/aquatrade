@@ -56,16 +56,8 @@ flask_asgi_app = WsgiToAsgi(flask_app)
 
 app_asgi = socketio.ASGIApp(sio, other_asgi_app=flask_asgi_app, socketio_path='socket.io')
 
-try:
-    from core.strategies.hot_reload import get_watcher
-    watcher = get_watcher()
-    watcher.start()
-    print("[OK] Strategy file watcher started (Hot-reload enabled)")
-except Exception as e:
-    print(f"[WARNING] File watcher startup failed: {e}")
-
-print("\n" + "="*80)
-print("[Startup] Starting background data preload (non-blocking)...")
+_startup_lock = threading.Lock()
+_startup_tasks_started = False
 
 def background_preload():
     """后台预加载线程：不阻塞服务器启动"""
@@ -88,15 +80,6 @@ def background_preload():
         import traceback
         traceback.print_exc()
 
-preload_thread = threading.Thread(target=background_preload, daemon=True)
-preload_thread.start()
-print("[Startup] Background preload thread started (server ready immediately)")
-print("="*80 + "\n")
-
-print("\n" + "="*80)
-print("[Startup] Scheduling background data sync...")
-import threading
-
 def background_sync_data():
     """
     后台线程：检查数据是否过期
@@ -106,7 +89,7 @@ def background_sync_data():
     time.sleep(5)
 
     try:
-        from datetime import datetime
+        from datetime import datetime, timedelta
         from data_svc.unified_data_manager import get_unified_manager
 
         manager = get_unified_manager()
@@ -139,7 +122,7 @@ def background_sync_data():
                 # 获取最近几个交易日期
                 cal_df = pro.trade_cal(
                     exchange='SSE',
-                    start_date=(datetime.now() - datetime.timedelta(days=10)).strftime('%Y%m%d'),
+                    start_date=(datetime.now() - timedelta(days=10)).strftime('%Y%m%d'),
                     end_date=today_str
                 )
 
@@ -189,9 +172,57 @@ def background_sync_data():
         import traceback
         traceback.print_exc()
 
-sync_thread = threading.Thread(target=background_sync_data, daemon=True)
-sync_thread.start()
-print("[Startup] Background sync thread started (non-blocking)")
-print("="*80 + "\n")
+def _start_post_startup_tasks():
+    """Start non-critical services after the ASGI server enters startup."""
+    global _startup_tasks_started
 
-asgi_app = app_asgi
+    with _startup_lock:
+        if _startup_tasks_started:
+            return
+        _startup_tasks_started = True
+
+    print("\n" + "="*80)
+    print("[Startup] Starting post-startup background services...")
+
+    try:
+        from core.strategies.hot_reload import get_watcher
+        watcher = get_watcher()
+        watcher.start()
+        print("[OK] Strategy file watcher started (Hot-reload enabled)")
+    except Exception as e:
+        print(f"[WARNING] File watcher startup failed: {e}")
+
+    preload_thread = threading.Thread(
+        target=background_preload,
+        name="aquatrade-background-preload",
+        daemon=True,
+    )
+    preload_thread.start()
+    print("[Startup] Background preload thread started")
+
+    sync_thread = threading.Thread(
+        target=background_sync_data,
+        name="aquatrade-background-sync",
+        daemon=True,
+    )
+    sync_thread.start()
+    print("[Startup] Background sync thread started")
+    print("="*80 + "\n")
+
+
+async def _lifespan_app(scope, receive, send):
+    if scope["type"] != "lifespan":
+        await app_asgi(scope, receive, send)
+        return
+
+    while True:
+        message = await receive()
+        if message["type"] == "lifespan.startup":
+            _start_post_startup_tasks()
+            await send({"type": "lifespan.startup.complete"})
+        elif message["type"] == "lifespan.shutdown":
+            await send({"type": "lifespan.shutdown.complete"})
+            return
+
+
+asgi_app = _lifespan_app

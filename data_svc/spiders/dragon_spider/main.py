@@ -349,7 +349,7 @@ class StealthCrawler:
             resp = self.session.get(url)
             
             # Token 过期处理
-            if resp.status_code == 401:
+            if resp.status_code in (401, 403):
                 if retry_count >= 1:
                     print("\n❌ Token 获取后依然无效，退出。")
                     sys.exit(1)

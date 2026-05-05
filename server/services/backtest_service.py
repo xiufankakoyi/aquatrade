@@ -1,4 +1,4 @@
-"""
+﻿"""
 回测服务
 负责回测执行和结果处理
 """
@@ -46,7 +46,7 @@ class BacktestService:
                         result[code_6] = name
                 return result
         except Exception as e:
-            logger.warning(f"从 ArcticDB 获取股票信息失败: {e}")
+            logger.warning(f"Failed to get stock info from current data backend: {e}")
         
         return {}
     
@@ -178,7 +178,7 @@ class BacktestService:
             return []
     
     def _get_stock_name(self, symbol_code: str) -> str:
-        """获取股票名称，优先从缓存获取"""
+        """获取股票名称，优先 缓存获取"""
         symbol_name = self.stock_info_map.get(symbol_code)
         if symbol_name and symbol_name != symbol_code:
             return symbol_name
@@ -204,7 +204,7 @@ class BacktestService:
             creation_kwargs: Dict[str, Any] = params or {}
             strategy = StrategyFactory.create_strategy(strategy_name, use_simple=True, **creation_kwargs)
             
-            # 从策略读取配置，创建引擎配置
+            #  策略读取配置，创建引擎配置
             from core.backtest.unified_engine import BacktestConfig
             engine_config = BacktestConfig()
             

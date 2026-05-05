@@ -3,7 +3,20 @@ import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 import { createConnection } from 'net'
 
-async function hasStockName(port: number): Promise<boolean> {
+function readPortEnv(): number | null {
+  const raw = process.env.AQUATRADE_PROXY_PORT || process.env.VITE_PROXY_PORT
+  if (!raw) return null
+
+  const port = Number(raw)
+  return Number.isInteger(port) && port > 0 ? port : null
+}
+
+function readPositiveIntEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isInteger(value) && value > 0 ? value : fallback
+}
+
+async function hasStockName(port: number, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     const body = '{"page":1,"page_size":1}'
     const req = [
@@ -16,7 +29,7 @@ async function hasStockName(port: number): Promise<boolean> {
       body
     ].join('\r\n')
 
-    const socket = createConnection({ port, host: '127.0.0.1', timeout: 2000 }, () => {
+    const socket = createConnection({ port, host: '127.0.0.1', timeout: timeoutMs }, () => {
       socket.write(req, () => {})
     })
 
@@ -32,20 +45,35 @@ async function hasStockName(port: number): Promise<boolean> {
   })
 }
 
-async function findAvailableProxyPort(startPort: number, maxRetries: number = 5): Promise<number> {
+async function findAvailableProxyPort(startPort: number, maxRetries: number, timeoutMs: number): Promise<number> {
   for (let port = startPort; port < startPort + maxRetries; port++) {
-    const ok = await hasStockName(port)
+    const ok = await hasStockName(port, timeoutMs)
     if (ok) {
       return port
     }
   }
-  console.warn(`[proxy] 端口 ${startPort}~${startPort + maxRetries - 1} 均不可用，强制使用 ${startPort}`)
+
+  console.warn(`[proxy] backend probe failed for ports ${startPort}~${startPort + maxRetries - 1}; using ${startPort}. API requests may fail until backend is ready.`)
   return startPort
 }
 
 export default defineConfig(async () => {
-  const proxyPort = await findAvailableProxyPort(5000, 5)
-  console.log(`[proxy] 目标后端端口: ${proxyPort}`)
+  const configuredProxyPort = readPortEnv()
+  const probeTimeoutMs = readPositiveIntEnv('AQUATRADE_PROXY_PROBE_TIMEOUT_MS', 1000)
+  const maxRetries = readPositiveIntEnv('AQUATRADE_PROXY_PROBE_RETRIES', 3)
+  let proxyPort: number
+
+  if (configuredProxyPort) {
+    proxyPort = configuredProxyPort
+    const ok = await hasStockName(proxyPort, probeTimeoutMs)
+    if (!ok) {
+      console.warn(`[proxy] configured backend port ${proxyPort} is not ready; Vite will still start and proxy requests to it.`)
+    }
+  } else {
+    proxyPort = await findAvailableProxyPort(5000, maxRetries, probeTimeoutMs)
+  }
+
+  console.log(`[proxy] backend target port: ${proxyPort}`)
 
   return {
     plugins: [vue()],
@@ -70,14 +98,14 @@ export default defineConfig(async () => {
           ws: true,
           configure: (proxy, _options) => {
             proxy.on('error', (err, _req, _res) => {
-              console.log('proxy error', err);
-            });
-            proxy.on('proxyReq', (proxyReq, req, _res) => {
-              console.log('Sending Request to the Target:', req.url);
-            });
+              console.log('proxy error', err)
+            })
+            proxy.on('proxyReq', (_proxyReq, req, _res) => {
+              console.log('Sending Request to the Target:', req.url)
+            })
             proxy.on('proxyRes', (proxyRes, req, _res) => {
-              console.log('Received Response from the Target:', proxyRes.statusCode, req.url);
-            });
+              console.log('Received Response from the Target:', proxyRes.statusCode, req.url)
+            })
           },
         }
       }

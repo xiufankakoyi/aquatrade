@@ -58,7 +58,7 @@ taskkill /F /IM node.exe /T
 - 📈 **因子库** - 统一的因子计算和加载系统
 
 ### 🔧 配置文件
-- `.env` - 环境变量（数据库后端：questdb）
+- `.env` - 环境变量（数据库后端：lancedb）
 - `Procfile` - Honcho 进程配置
 - `core/strategies/configs/*.json` - 策略参数配置
 

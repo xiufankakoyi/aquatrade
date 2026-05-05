@@ -7,16 +7,22 @@ import json
 import time
 import queue
 import threading
-import polars as pl
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 from datetime import datetime
 from config.logger import get_logger
-from core.dragon_eye.service import DragonEyeService
 from core.dragon_eye.job_manager import job_manager
 
 logger = get_logger(__name__)
 dragon_bp = Blueprint('dragon', __name__, url_prefix='/api/dragon')
-service = DragonEyeService()
+_dragon_service = None
+
+
+def get_dragon_service():
+    global _dragon_service
+    if _dragon_service is None:
+        from core.dragon_eye.service import DragonEyeService
+        _dragon_service = DragonEyeService()
+    return _dragon_service
 
 
 # ==========================================
@@ -42,6 +48,7 @@ def trigger_crawl():
     sync = data.get('sync', False)
     
     try:
+        service = get_dragon_service()
         job_id = service.run_crawler(target_date)
         
         if sync:
@@ -94,6 +101,7 @@ def trigger_clean():
         return jsonify({"error": "Missing date parameter"}), 400
     
     try:
+        service = get_dragon_service()
         job_id = service.process_and_persist(target_date)
         return jsonify({
             "job_id": job_id,
@@ -123,6 +131,7 @@ def trigger_pipeline():
     push_feishu = data.get('push_feishu', True)
     
     try:
+        service = get_dragon_service()
         job_id = service.run_full_pipeline(target_date, push_feishu)
         return jsonify({
             "job_id": job_id,
@@ -219,6 +228,7 @@ def stream_logs(job_id):
             log_queue.put(log_entry)
         
         # 订阅日志更新
+        service = get_dragon_service()
         service.subscribe_job_logs(job_id, on_log)
         
         # 持续发送新日志
@@ -274,6 +284,9 @@ def get_dragon_stocks():
         return jsonify({"error": "Missing start_date or end_date"}), 400
     
     try:
+        import polars as pl
+
+        service = get_dragon_service()
         df = service.manager.get_historical_dragon(start_date, end_date)
         
         # 处理日期格式
@@ -314,6 +327,7 @@ def get_market_sentiment():
         return jsonify({"error": "Missing start_date or end_date"}), 400
     
     try:
+        service = get_dragon_service()
         df = service.manager.get_market_sentiment(start_date, end_date)
         return jsonify(df.to_dicts())
     except Exception as e:
@@ -337,6 +351,7 @@ def get_ai_brief():
     if not date:
         return jsonify({"error": "Missing date parameter"}), 400
     
+    service = get_dragon_service()
     brief = service.get_latest_brief(date)
     return jsonify({
         "date": date,
@@ -368,6 +383,7 @@ def push_to_feishu():
         return jsonify({"error": "Missing date parameter"}), 400
     
     try:
+        service = get_dragon_service()
         success, msg = service.send_to_feishu(date)
         if not success:
             return jsonify({"error": msg}), 500
@@ -421,6 +437,7 @@ def get_limit_up_trend():
         return jsonify({"error": "Missing start_date or end_date"}), 400
     
     try:
+        service = get_dragon_service()
         df = service.manager.get_market_sentiment(start_date, end_date)
         
         if df.is_empty():
@@ -473,6 +490,7 @@ def get_bubble_matrix():
     
     try:
         # 从原始数据文件读取更完整的信息
+        service = get_dragon_service()
         bubbles = service.get_bubble_matrix_data(target_date)
         return jsonify(bubbles)
     except Exception as e:
@@ -500,6 +518,7 @@ def get_theme_flow():
         return jsonify({"error": "Missing start_date or end_date"}), 400
     
     try:
+        service = get_dragon_service()
         flow_data = service.get_theme_flow_data(start_date, end_date)
         return jsonify(flow_data)
     except Exception as e:
@@ -522,6 +541,7 @@ def get_latest_date():
         end = datetime.now()
         start = end - timedelta(days=30)
         
+        service = get_dragon_service()
         df = service.manager.get_market_sentiment(
             start.strftime('%Y-%m-%d'),
             end.strftime('%Y-%m-%d')
