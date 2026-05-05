@@ -1,75 +1,59 @@
-# ============================================
-# AquaTrade 量化交易平台 - Git忽略配置
-# ============================================
-
-# ============================================
-# Python 相关
-# ============================================
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
-*.manifest
-*.spec
-pip-log.txt
-pip-delete-this-directory.txt
 .pytest_cache/
+.pytest_tmp/
+cache/pytest_tmp/
 .coverage
+coverage.xml
 htmlcov/
 .tox/
 .hypothesis/
-*.cover
-*.py,cover
-.cache
-nosetests.xml
-coverage.xml
-*.mo
-*.pot
 
-# 虚拟环境
+# Python virtual environments
 venv/
-ENV/
-env/
-.env/
 .venv/
-env.bak/
-venv.bak/
+env/
+ENV/
 
-# ============================================
-# Node.js 相关
-# ============================================
+# Node.js
 node_modules/
+**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-lerna-debug.log*
-.pnpm-debug.log*
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
 
-# ============================================
-# 数据库文件 (大文件，不上传)
-# ============================================
+# Build outputs
+dist/
+dist-ssr/
+build/
+out/
+*.local
+myapp/.vite/
+myapp/dist/
+
+# Logs
+*.log
+*.log.*
+logs/
+log/
+
+# Environment and local secrets
+.env
+.env.local
+.env.*.local
+!.env.template
+myapp/.env.development
+config/secrets.py
+!config/secrets_template.py
+quant/config.json
+data/*webhook*.json
+
+# Databases and local services
 *.db
 *.db-shm
 *.db-wal
@@ -77,40 +61,60 @@ pnpm-lock.yaml
 *.sqlite3
 *.duckdb
 *.duckdb.wal
-
-# ============================================
-# 数据文件 (超大文件，不上传)
-# ============================================
-# QuestDB 数据目录
-data/questdb/db/
-data/questdb/import/
 qdb_data/
+redis_data/
+Redis/
+*.rdb
+*.aof
 
-# Parquet 数据文件
+# Data and generated caches
 *.parquet
-parquet_data/
-
-# CSV 数据文件
-*.csv
-
-# LanceDB 文件
 *.lance
 *.txn
 *.manifest
-
-# JSONL 大文件
 *.jsonl
+*.csv
+*.npy
+*.npz
+*.pkl
+*.prof
+*.zip
+parquet_data/
+data/marketdata/
+data/questdb/db/
+data/questdb/import/
+data/factor_matrix_cache/
+data/migration_report_*.json
+data/migration_documentation_*.md
+data/reports/
+data/database/perf_report_*.json
+myapp/data/
+quant/data/cleaned_data/
+quant/data_lake/
+data_lake/
+data/spider_data/
 
-# Redis 数据
-*.rdb
-*.aof
-Redis/
-redis_data/
+# Test and browser artifacts
+playwright-report/
+test-results/
+**/test-results/
+**/screenshots/
+**/*screenshot*.png
+**/test-result*.png
+**/toolbar_test_*.png
+portfolio-test.png
 
-# ============================================
-# AI 模型权重文件 (超大，不上传)
-# ============================================
-# GGUF 模型文件
+# Sandbox generated artifacts
+sandbox/reports/
+sandbox/backtest_results/
+sandbox/leader_resilience_outputs/
+sandbox/**/*.png
+sandbox/**/*.prof
+sandbox/**/*results.json
+sandbox/verify_output*.txt
+sandbox/*.txt
+
+# Model weights
 *.gguf
 *.bin
 *.safetensors
@@ -120,29 +124,30 @@ redis_data/
 *.h5
 *.onnx
 *.mlmodel
-
-# 模型目录
 models/weights/
 models/finetune_hub/venv/
-models/finetune_hub/node_modules/
 
-# ============================================
-# 日志文件
-# ============================================
-*.log
-logs/
-*.log.*
-log/
+# IDE, editor, and local assistant state
+.vscode/
+.idea/
 .cursor/
+.trae/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
 
-# ============================================
-# 报告和临时文件
-# ============================================
-# 性能报告
-data/reports/*.json
-data/database/perf_report_*.json
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# 临时文件
+# Local process files
+.honcho
+*.pid
+*.seed
+*.pid.lock
+
+# Temporary files
 tmp/
 temp/
 *.tmp
@@ -150,78 +155,3 @@ temp/
 *.swp
 *.swo
 *~
-
-# 爬虫临时数据
-data/spider_data/
-data_lake/
-quant/data_lake/
-
-# ============================================
-# 构建产物
-# ============================================
-dist/
-dist-ssr/
-build/
-*.local
-out/
-
-# ============================================
-# IDE 和编辑器
-# ============================================
-.vscode/
-.idea/
-*.sublime-project
-*.sublime-workspace
-*.code-workspace
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-
-# ============================================
-# 操作系统文件
-# ============================================
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-desktop.ini
-
-# ============================================
-# 环境配置文件 (包含敏感信息)
-# ============================================
-# 注意: .env 文件包含API密钥，不应该上传
-# 但是 .env.template 是模板，应该上传
-.env
-.env.local
-.env.*.local
-!.env.template
-
-# 敏感配置文件 (包含所有密钥)
-config/secrets.py
-!config/secrets_template.py
-
-# QuickTiny 爬虫配置 (包含 Token 和密码)
-quant/config.json
-
-# ============================================
-# 测试和沙盒
-# ============================================
-sandbox/*.txt
-sandbox/verify_output*.txt
-
-# ============================================
-# Git 相关
-# ============================================
-.git/
-
-# ============================================
-# 其他
-# ============================================
-*.pid
-*.seed
-*.pid.lock
