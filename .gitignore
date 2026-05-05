@@ -93,6 +93,7 @@ quant/data/cleaned_data/
 quant/data_lake/
 data_lake/
 data/spider_data/
+data/spider/
 
 # Test and browser artifacts
 playwright-report/

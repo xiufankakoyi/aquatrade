@@ -11,7 +11,9 @@ This repository keeps durable source files separate from generated runtime files
 - `config/`: non-secret configuration templates and defaults.
 - `scripts/`: maintained operational scripts.
 - `scripts/start/`: launchers for local backend, frontend, and data-service modes.
+- `scripts/update/`: reusable data update scripts.
 - `scripts/legacy/`: older entry points kept for reference or manual migration.
+- `integrations/`: standalone integration packages, such as MCP connectors.
 - `docs/`: durable project documentation.
 - `test/`: maintained test fixtures and test suites.
 
@@ -20,8 +22,8 @@ This repository keeps durable source files separate from generated runtime files
 - `data/`: local runtime data only. Large datasets, matrix caches, reports, and local secrets stay untracked.
 - `cache/`: local generated cache only.
 - `sandbox/`: one-off experiments, diagnostics, and scratch scripts. Do not duplicate production modules here.
-- `update/`: update jobs and ad hoc update helpers.
-- `profiles/`: local profiling output.
+- `quant/`: standalone quant research/briefing subproject.
+- `models/`: local model and fine-tuning subprojects.
 
 ## Directory hygiene
 

@@ -9,6 +9,8 @@ Use this file as the first stop when looking for a module.
 - `Procfile`: process definitions for Honcho.
 - `ecosystem.config.js`: PM2 process definitions.
 - `scripts/start/`: local launch scripts for LanceDB, no-docker, production, mock, and DragonEye modes.
+- `scripts/update/`: reusable data update scripts.
+- `integrations/mcp-aquatrade/`: standalone MCP integration package.
 
 ## Main application layers
 
@@ -17,6 +19,8 @@ Use this file as the first stop when looking for a module.
 - `core/`: domain logic that should not depend on web framework details.
 - `data_svc/`: data ingestion, storage, loading, query, and data update services.
 - `config/`: configuration modules and templates.
+- `scripts/`: maintained operational scripts and launch/update helpers.
+- `integrations/`: standalone integration packages and connector projects.
 
 ## Domain modules
 
@@ -51,13 +55,14 @@ Use this file as the first stop when looking for a module.
 - `myapp/e2e/`: frontend E2E specs.
 - `sandbox/`: scratch investigations, one-off scripts, generated analysis, and temporary reproductions.
 - `sandbox/root-scripts/`: scripts moved out of the repository root because they are one-off helpers.
+- `quant/`: standalone quant research/briefing subproject. Move reusable logic into `core/` or `data_svc/`.
+- `models/`: local model and fine-tuning subprojects.
 
 ## Local data and generated output
 
 - `data/`: local market/runtime data. Do not import application code from here.
 - `cache/`: generated cache.
-- `quant/`: quant data snapshots and research artifacts. Move reusable logic into `core/` or `data_svc/`.
-- `spider/`: crawler datasets/artifacts. Move reusable ingestion logic into `data_svc/ingestion/`.
+- `data/spider/`: local crawler datasets/artifacts. Move reusable ingestion logic into `data_svc/ingestion/`.
 - `.trae/`: local assistant/IDE state.
 
 ## Placement rules
@@ -69,3 +74,4 @@ Use this file as the first stop when looking for a module.
 - New data reader/updater: `data_svc/storage/` or `data_svc/ingestion/`.
 - New temporary diagnosis: `sandbox/`.
 - New durable script: `scripts/`.
+- New external integration package: `integrations/<name>/`.
