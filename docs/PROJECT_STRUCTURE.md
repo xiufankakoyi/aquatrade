@@ -29,3 +29,4 @@ This repository keeps durable source files separate from generated runtime files
 - Keep reusable operational scripts under `scripts/`; keep startup launchers under `scripts/start/`; keep temporary investigation scripts under `sandbox/`.
 - Do not create root-level debug scripts or screenshots. Put temporary files under `sandbox/` or let the ignored report directories hold them.
 - Do not commit dependency directories, virtual environments, browser reports, coverage output, matrix caches, or local data files.
+- Use `docs/MODULE_MAP.md` when deciding where a new module belongs.
