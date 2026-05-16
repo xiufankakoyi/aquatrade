@@ -1,22 +1,4 @@
-"""
-StockEnricher
-
-合并多源数据，输出给前端的 stock rows。
-
-数据源:
-1. concept_stock_mapping.csv (本地正宗映射)
-2. manual_concept_members.csv (手工维护)
-3. Tushare/AKShare concept_members (外部候选)
-4. company_evidence.csv (本地证据)
-5. stock_market_snapshot (行情确认)
-
-规则:
-- 本地 concept_stock_mapping 和 company_evidence 标记为 verified
-- Tushare/AKShare/东方财富来源标记为 candidate
-- candidate 不得显示为"正宗"，只能显示为"外部候选"
-- final_score 对 candidate 默认较低，除非有 evidence
-- 如果没有行情数据，行情字段显示 null
-"""
+"""Merge verified mappings, manual overrides and auto candidates for a node."""
 
 from __future__ import annotations
 
@@ -36,16 +18,11 @@ DEFAULT_KNOWLEDGE_DIR = project_root() / "knowledge"
 
 
 class StockEnricher:
-    """个股数据富化器。"""
+    """Build frontend stock rows without presenting auto candidates as verified."""
 
-    def __init__(
-        self,
-        output_dir: Path | None = None,
-        knowledge_dir: Path | None = None,
-    ) -> None:
+    def __init__(self, output_dir: Path | None = None, knowledge_dir: Path | None = None) -> None:
         self.output_dir = output_dir or DEFAULT_OUTPUT_DIR
         self.knowledge_dir = knowledge_dir or DEFAULT_KNOWLEDGE_DIR
-        self.mapping_loader = MappingLoader(mapping_path=self.knowledge_dir / "stock_concept_mapping.csv")
 
     def get_node_stocks(
         self,
@@ -53,263 +30,305 @@ class StockEnricher:
         node_id: str,
         include_candidates: bool = True,
         verified_only: bool = False,
-        sort_by: str = "final_score",
+        sort_by: str = "system_relevance_score",
     ) -> list[dict[str, Any]]:
-        """
-        获取 enriched 后的节点个股列表。
-
-        Args:
-            chain_id: 产业链 ID
-            node_id: 节点 ID
-            include_candidates: 是否包含外部候选
-            verified_only: 是否只看已验证
-            sort_by: 排序字段 (final_score/hot_score/pct_chg/amount)
-
-        Returns:
-            enriched stock rows 列表
-        """
-        rows: list[dict[str, Any]] = []
         symbol_map: dict[str, dict[str, Any]] = {}
+        self._merge_verified_mappings(symbol_map, chain_id, node_id)
+        self._merge_manual_overrides(symbol_map, chain_id, node_id)
+        if include_candidates:
+            self._merge_auto_candidates(symbol_map, chain_id, node_id)
+        self._merge_evidence(symbol_map, chain_id, node_id)
+        self._merge_market(symbol_map)
+        self._merge_limit_up(symbol_map)
+        self._merge_fund_flow(symbol_map)
 
-        # 1. 加载本地 mapping (verified)
-        try:
-            local_mappings = self.mapping_loader.load_mappings(chain_id=chain_id, node_id=node_id)
-            for m in local_mappings:
-                sym = m.symbol
-                if not sym:
-                    continue
-                symbol_map[sym] = {
-                    "symbol": sym,
-                    "stock_name": m.stock_name,
-                    "chain_id": chain_id,
-                    "node_id": node_id,
-                    "source": "local_mapping",
-                    "source_concept_name": "",
-                    "is_verified": True,
-                    "is_candidate": False,
-                    "relevance_score": m.relevance_score,
-                    "purity_score": m.purity_score,
-                    "evidence_score": m.evidence_score,
-                    "market_confirm_score": m.market_confirm_score,
-                    "final_score": m.final_score,
-                    "evidence_type": m.evidence_type,
-                    "evidence_text": m.evidence_text,
-                    "evidence_source": m.evidence_source,
-                    "updated_at": m.updated_at,
-                    "pct_chg": None,
-                    "return_5d": None,
-                    "amount": None,
-                    "amount_change_ratio": None,
-                    "limit_status": None,
-                    "pattern_signal": None,
-                }
-        except Exception as exc:
-            logger.warning(f"加载本地 mapping 失败: {exc}")
-
-        # 2. 加载 manual_concept_members (verified)
-        manual_df = self._load_manual_concept_members()
-        if not manual_df.empty:
-            try:
-                filtered = manual_df[
-                    (manual_df.get("chain_id") == chain_id) &
-                    (manual_df.get("node_id") == node_id)
-                ]
-                for _, row in filtered.iterrows():
-                    sym = str(row.get("symbol", ""))
-                    if not sym:
-                        continue
-                    if sym in symbol_map:
-                        # 合并更新
-                        symbol_map[sym]["source"] = "manual"
-                        symbol_map[sym]["source_concept_name"] = str(row.get("source_concept_name", ""))
-                        symbol_map[sym]["is_verified"] = True
-                        symbol_map[sym]["is_candidate"] = False
-                        if row.get("updated_at"):
-                            symbol_map[sym]["updated_at"] = str(row["updated_at"])
-                    else:
-                        symbol_map[sym] = {
-                            "symbol": sym,
-                            "stock_name": str(row.get("stock_name", "")),
-                            "chain_id": chain_id,
-                            "node_id": node_id,
-                            "source": "manual",
-                            "source_concept_name": str(row.get("source_concept_name", "")),
-                            "is_verified": True,
-                            "is_candidate": False,
-                            "relevance_score": 0.0,
-                            "purity_score": 0.0,
-                            "evidence_score": 0.0,
-                            "market_confirm_score": 0.0,
-                            "final_score": 0.3,
-                            "evidence_type": "",
-                            "evidence_text": str(row.get("notes", "")),
-                            "evidence_source": str(row.get("source", "")),
-                            "updated_at": str(row.get("updated_at", "")),
-                            "pct_chg": None,
-                            "return_5d": None,
-                            "amount": None,
-                            "amount_change_ratio": None,
-                            "limit_status": None,
-                            "pattern_signal": None,
-                        }
-            except Exception as exc:
-                logger.warning(f"加载 manual_concept_members 失败: {exc}")
-
-        # 3. 加载外部候选 (candidate)
-        concept_df = self._load_concept_members()
-        if not concept_df.empty and include_candidates:
-            try:
-                filtered = concept_df[
-                    (concept_df.get("chain_id") == chain_id) &
-                    (concept_df.get("node_id") == node_id)
-                ]
-                for _, row in filtered.iterrows():
-                    sym = str(row.get("symbol", ""))
-                    if not sym:
-                        continue
-                    if sym in symbol_map:
-                        # 已有本地证据，不覆盖 verified 状态，但可补充来源
-                        continue
-                    symbol_map[sym] = {
-                        "symbol": sym,
-                        "stock_name": str(row.get("stock_name", "")),
-                        "chain_id": chain_id,
-                        "node_id": node_id,
-                        "source": str(row.get("source", "external")),
-                        "source_concept_name": str(row.get("source_concept_name", "")),
-                        "is_verified": False,
-                        "is_candidate": True,
-                        "relevance_score": 0.0,
-                        "purity_score": 0.0,
-                        "evidence_score": 0.0,
-                        "market_confirm_score": 0.0,
-                        "final_score": 0.1,
-                        "evidence_type": "",
-                        "evidence_text": "",
-                        "evidence_source": str(row.get("source", "")),
-                        "updated_at": str(row.get("updated_at", "")),
-                        "pct_chg": None,
-                        "return_5d": None,
-                        "amount": None,
-                        "amount_change_ratio": None,
-                        "limit_status": None,
-                        "pattern_signal": None,
-                    }
-            except Exception as exc:
-                logger.warning(f"加载外部候选失败: {exc}")
-
-        # 4. 加载证据并合并分数
-        evidence_df = self._load_evidence()
-        if not evidence_df.empty:
-            try:
-                ev_filtered = evidence_df[
-                    (evidence_df.get("chain_id") == chain_id) &
-                    (evidence_df.get("node_id") == node_id)
-                ]
-                for _, row in ev_filtered.iterrows():
-                    sym = str(row.get("symbol", ""))
-                    if not sym or sym not in symbol_map:
-                        continue
-                    item = symbol_map[sym]
-                    item["is_verified"] = True
-                    item["is_candidate"] = False
-                    item["evidence_type"] = str(row.get("evidence_type", ""))
-                    item["evidence_text"] = str(row.get("evidence_text", ""))
-                    item["evidence_source"] = str(row.get("evidence_source", ""))
-                    confidence = pd.to_numeric(row.get("confidence"), errors="coerce")
-                    if confidence and confidence > 0:
-                        item["evidence_score"] = float(confidence)
-                        item["final_score"] = max(item["final_score"], float(confidence))
-                    if row.get("updated_at"):
-                        item["updated_at"] = str(row["updated_at"])
-            except Exception as exc:
-                logger.warning(f"合并证据失败: {exc}")
-
-        # 5. 合并行情数据
-        market_df = self._load_market_snapshot()
-        if not market_df.empty:
-            try:
-                for sym, item in symbol_map.items():
-                    row = market_df[market_df["symbol"] == sym]
-                    if row.empty:
-                        continue
-                    r = row.iloc[0]
-                    item["pct_chg"] = float(r["pct_chg"]) if pd.notna(r.get("pct_chg")) else None
-                    item["amount"] = float(r["amount"]) if pd.notna(r.get("amount")) else None
-                    item["return_5d"] = None
-                    item["amount_change_ratio"] = None
-                    if item["pct_chg"] is not None and item["pct_chg"] >= 9.5:
-                        item["limit_status"] = "涨停"
-                    elif item["pct_chg"] is not None and item["pct_chg"] <= -9.5:
-                        item["limit_status"] = "跌停"
-                    else:
-                        item["limit_status"] = None
-            except Exception as exc:
-                logger.warning(f"合并行情失败: {exc}")
-
-        # 6. 过滤与排序
         rows = list(symbol_map.values())
         if verified_only:
-            rows = [r for r in rows if r["is_verified"]]
+            rows = [row for row in rows if row.get("is_verified")]
         if not include_candidates:
-            rows = [r for r in rows if not r["is_candidate"]]
-
-        reverse_sort = True
-        if sort_by == "final_score":
-            rows.sort(key=lambda x: x["final_score"] or 0, reverse=True)
-        elif sort_by == "hot_score":
-            rows.sort(key=lambda x: x.get("hot_score", 0) or 0, reverse=True)
-        elif sort_by == "pct_chg":
-            rows.sort(key=lambda x: x["pct_chg"] if x["pct_chg"] is not None else -9999, reverse=True)
-        elif sort_by == "amount":
-            rows.sort(key=lambda x: x["amount"] if x["amount"] is not None else 0, reverse=True)
-        else:
-            rows.sort(key=lambda x: x["final_score"] or 0, reverse=True)
-
+            rows = [row for row in rows if not row.get("is_candidate")]
+        rows.sort(key=lambda item: _sort_value(item, sort_by), reverse=True)
         return rows
 
-    def _load_manual_concept_members(self) -> pd.DataFrame:
-        """加载手工概念成员。"""
-        parquet_path = self.output_dir / "concept_members.parquet"
-        csv_path = self.knowledge_dir / "data_sources" / "manual_concept_members.csv"
-        try:
-            if parquet_path.exists():
-                return pd.read_parquet(parquet_path)
-            if csv_path.exists():
-                return pd.read_csv(csv_path, dtype=str)
-        except Exception as exc:
-            logger.warning(f"加载 manual_concept_members 失败: {exc}")
-        return pd.DataFrame()
+    def _merge_verified_mappings(self, symbol_map: dict[str, dict[str, Any]], chain_id: str, node_id: str) -> None:
+        for filename in ("stock_concept_mapping.csv", "concept_stock_mapping.csv"):
+            mapping_path = self.knowledge_dir / filename
+            if not mapping_path.exists():
+                continue
+            try:
+                mappings = MappingLoader(mapping_path=mapping_path).load_mappings(chain_id=chain_id, node_id=node_id)
+                for mapping in mappings:
+                    if not mapping.symbol:
+                        continue
+                    item = _default_row(chain_id, node_id, mapping.symbol, mapping.stock_name)
+                    item.update(
+                        {
+                            "source": "local_mapping",
+                            "data_source": filename,
+                            "is_verified": True,
+                            "is_candidate": False,
+                            "flag_label": "已验证",
+                            "chain_position": mapping.chain_position,
+                            "relevance_score": mapping.relevance_score,
+                            "purity_score": mapping.purity_score,
+                            "evidence_score": mapping.evidence_score,
+                            "market_confirm_score": mapping.market_confirm_score,
+                            "final_score": mapping.final_score,
+                            "system_relevance_score": mapping.final_score,
+                            "evidence_type": mapping.evidence_type,
+                            "evidence_text": mapping.evidence_text,
+                            "evidence_source": mapping.evidence_source,
+                            "updated_at": mapping.updated_at,
+                        }
+                    )
+                    symbol_map[mapping.symbol] = item
+            except Exception as exc:
+                logger.warning("Load local mapping %s failed: %s", mapping_path, exc)
 
-    def _load_concept_members(self) -> pd.DataFrame:
-        """加载概念成员（含外部候选）。"""
-        parquet_path = self.output_dir / "concept_members.parquet"
+    def _merge_manual_overrides(self, symbol_map: dict[str, dict[str, Any]], chain_id: str, node_id: str) -> None:
+        manual_path = self.knowledge_dir / "data_sources" / "manual_concept_members.csv"
+        if not manual_path.exists():
+            return
         try:
-            if parquet_path.exists():
-                return pd.read_parquet(parquet_path)
+            df = pd.read_csv(manual_path, dtype=str)
+            if "symbol" in df.columns:
+                df["symbol"] = normalize_symbols(df["symbol"])
+            filtered = df[(df.get("chain_id") == chain_id) & (df.get("node_id") == node_id)]
+            for _, row in filtered.iterrows():
+                symbol = str(row.get("symbol", ""))
+                if not symbol:
+                    continue
+                item = symbol_map.get(symbol, _default_row(chain_id, node_id, symbol, str(row.get("stock_name", ""))))
+                item.update(
+                    {
+                        "source": "manual_override",
+                        "data_source": "manual_concept_members.csv",
+                        "source_concept_name": str(row.get("source_concept_name", "")),
+                        "matched_board_name": str(row.get("source_concept_name", "")),
+                        "is_verified": True,
+                        "is_candidate": False,
+                        "is_manual_override": True,
+                        "flag_label": "人工 override",
+                        "final_score": max(_to_float(item.get("final_score")), 0.8),
+                        "system_relevance_score": max(_to_float(item.get("system_relevance_score")), 0.8),
+                        "evidence_text": str(row.get("notes", item.get("evidence_text", ""))),
+                        "updated_at": str(row.get("updated_at", item.get("updated_at", ""))),
+                    }
+                )
+                symbol_map[symbol] = item
         except Exception as exc:
-            logger.warning(f"加载 concept_members 失败: {exc}")
+            logger.warning("Load manual overrides failed: %s", exc)
+
+    def _merge_auto_candidates(self, symbol_map: dict[str, dict[str, Any]], chain_id: str, node_id: str) -> None:
+        candidates = self._load_parquet("industry_node_candidates.parquet")
+        if candidates.empty:
+            return
+        filtered = candidates[(candidates.get("chain_id") == chain_id) & (candidates.get("node_id") == node_id)]
+        for _, row in filtered.iterrows():
+            symbol = str(row.get("symbol", ""))
+            if not symbol:
+                continue
+            score = _to_float(row.get("auto_relevance_score"))
+            item = symbol_map.get(symbol, _default_row(chain_id, node_id, symbol, str(row.get("stock_name", ""))))
+            if not item.get("is_verified"):
+                item.update(
+                    {
+                        "source": str(row.get("candidate_source", "auto_concept_board")),
+                        "data_source": str(row.get("provider", "")),
+                        "is_verified": False,
+                        "is_candidate": True,
+                        "flag_label": "自动候选",
+                        "final_score": score,
+                        "system_relevance_score": score,
+                    }
+                )
+            item.update(
+                {
+                    "source_concept_name": str(row.get("matched_board_name", "")),
+                    "matched_board_name": str(row.get("matched_board_name", "")),
+                    "matched_keyword": str(row.get("matched_keyword", "")),
+                    "candidate_source": str(row.get("candidate_source", "")),
+                    "source_confidence": _to_float(row.get("source_confidence")),
+                    "auto_relevance_score": score,
+                    "provider": str(row.get("provider", "")),
+                    "updated_at": str(row.get("updated_at", item.get("updated_at", ""))),
+                }
+            )
+            symbol_map[symbol] = item
+
+    def _merge_evidence(self, symbol_map: dict[str, dict[str, Any]], chain_id: str, node_id: str) -> None:
+        evidence = self._load_evidence()
+        if evidence.empty:
+            return
+        filtered = evidence[(evidence.get("chain_id") == chain_id) & (evidence.get("node_id") == node_id)]
+        for _, row in filtered.iterrows():
+            symbol = str(row.get("symbol", ""))
+            if not symbol:
+                continue
+            item = symbol_map.get(symbol, _default_row(chain_id, node_id, symbol, str(row.get("stock_name", ""))))
+            confidence = _to_float(row.get("confidence"))
+            item.update(
+                {
+                    "is_verified": True,
+                    "is_candidate": False,
+                    "flag_label": "已验证",
+                    "evidence_type": str(row.get("evidence_type", "")),
+                    "evidence_text": str(row.get("evidence_text", "")),
+                    "evidence_source": str(row.get("evidence_source", "")),
+                    "evidence_score": max(_to_float(item.get("evidence_score")), confidence),
+                    "final_score": max(_to_float(item.get("final_score")), confidence),
+                    "system_relevance_score": max(_to_float(item.get("system_relevance_score")), confidence),
+                    "updated_at": str(row.get("updated_at", item.get("updated_at", ""))),
+                }
+            )
+            symbol_map[symbol] = item
+
+    def _merge_market(self, symbol_map: dict[str, dict[str, Any]]) -> None:
+        market = self._load_parquet("market_snapshot.parquet")
+        if market.empty:
+            market = self._load_parquet("stock_market_snapshot.parquet")
+        if market.empty:
+            return
+        market_map = {str(row.get("symbol", "")): row for _, row in market.iterrows()}
+        for symbol, item in symbol_map.items():
+            row = market_map.get(symbol)
+            if row is None:
+                continue
+            item["pct_chg"] = _nullable_float(row.get("pct_chg"))
+            item["amount"] = _nullable_float(row.get("amount"))
+            item["turnover_rate"] = _nullable_float(row.get("turnover_rate"))
+            item["volume_ratio"] = _nullable_float(row.get("volume_ratio"))
+            if row.get("provider"):
+                item["market_provider"] = str(row.get("provider", ""))
+
+    def _merge_limit_up(self, symbol_map: dict[str, dict[str, Any]]) -> None:
+        limit_pool = self._load_parquet("limit_up_pool.parquet")
+        if limit_pool.empty:
+            return
+        limit_map = {str(row.get("symbol", "")): row for _, row in limit_pool.iterrows()}
+        for symbol, item in symbol_map.items():
+            row = limit_map.get(symbol)
+            if row is None:
+                item["is_limit_up"] = False
+                continue
+            item["is_limit_up"] = True
+            item["limit_status"] = "涨停"
+            item["consecutive_limit_count"] = int(_to_float(row.get("consecutive_limit_count")))
+            item["limit_up_reason"] = str(row.get("limit_up_reason", ""))
+
+    def _merge_fund_flow(self, symbol_map: dict[str, dict[str, Any]]) -> None:
+        flow = self._load_parquet("stock_fund_flow.parquet")
+        if flow.empty:
+            return
+        flow_map = {str(row.get("symbol", "")): row for _, row in flow.iterrows()}
+        for symbol, item in symbol_map.items():
+            row = flow_map.get(symbol)
+            if row is None:
+                continue
+            item["main_net_inflow"] = _nullable_float(row.get("main_net_inflow"))
+            item["fund_flow_provider"] = str(row.get("provider", ""))
+
+    def _load_parquet(self, filename: str) -> pd.DataFrame:
+        path = self.output_dir / filename
+        try:
+            if path.exists():
+                return pd.read_parquet(path)
+        except Exception as exc:
+            logger.warning("Load %s failed: %s", path, exc)
         return pd.DataFrame()
 
     def _load_evidence(self) -> pd.DataFrame:
-        """加载证据数据。"""
-        parquet_path = self.output_dir / "company_evidence.parquet"
+        parquet = self._load_parquet("company_evidence.parquet")
+        if not parquet.empty:
+            return parquet
         csv_path = self.knowledge_dir / "data_sources" / "company_evidence.csv"
         try:
-            if parquet_path.exists():
-                return pd.read_parquet(parquet_path)
             if csv_path.exists():
-                return pd.read_csv(csv_path, dtype=str)
+                df = pd.read_csv(csv_path, dtype=str)
+                if "symbol" in df.columns:
+                    df["symbol"] = normalize_symbols(df["symbol"])
+                return df
         except Exception as exc:
-            logger.warning(f"加载 evidence 失败: {exc}")
+            logger.warning("Load company evidence failed: %s", exc)
         return pd.DataFrame()
 
-    def _load_market_snapshot(self) -> pd.DataFrame:
-        """加载行情快照。"""
-        parquet_path = self.output_dir / "stock_market_snapshot.parquet"
-        try:
-            if parquet_path.exists():
-                return pd.read_parquet(parquet_path)
-        except Exception as exc:
-            logger.warning(f"加载 market_snapshot 失败: {exc}")
-        return pd.DataFrame()
+
+def _default_row(chain_id: str, node_id: str, symbol: str, stock_name: str) -> dict[str, Any]:
+    return {
+        "chain_id": chain_id,
+        "node_id": node_id,
+        "symbol": symbol,
+        "stock_name": stock_name,
+        "chain_position": "",
+        "source": "",
+        "data_source": "",
+        "source_concept_name": "",
+        "matched_board_name": "",
+        "matched_keyword": "",
+        "candidate_source": "",
+        "provider": "",
+        "is_verified": False,
+        "is_candidate": False,
+        "is_manual_override": False,
+        "flag_label": "自动候选",
+        "relevance_score": 0.0,
+        "purity_score": 0.0,
+        "evidence_score": 0.0,
+        "market_confirm_score": 0.0,
+        "final_score": 0.0,
+        "system_relevance_score": 0.0,
+        "source_confidence": 0.0,
+        "auto_relevance_score": 0.0,
+        "evidence_type": "",
+        "evidence_text": "",
+        "evidence_source": "",
+        "updated_at": "",
+        "pct_chg": None,
+        "return_5d": None,
+        "amount": None,
+        "amount_change_ratio": None,
+        "turnover_rate": None,
+        "volume_ratio": None,
+        "limit_status": None,
+        "is_limit_up": False,
+        "consecutive_limit_count": 0,
+        "limit_up_reason": "",
+        "main_net_inflow": None,
+        "market_provider": "",
+        "fund_flow_provider": "",
+        "pattern_signal": None,
+    }
+
+
+def _sort_value(item: dict[str, Any], sort_by: str) -> float:
+    if sort_by in {"final_score", "system_relevance_score"}:
+        return _to_float(item.get("system_relevance_score", item.get("final_score")))
+    if sort_by == "hot_score":
+        return _to_float(item.get("pct_chg")) + min(max(_to_float(item.get("main_net_inflow")) / 1e8, -5), 5)
+    if sort_by == "pct_chg":
+        return _to_float(item.get("pct_chg"), -9999)
+    if sort_by == "amount":
+        return _to_float(item.get("amount"))
+    if sort_by == "main_net_inflow":
+        return _to_float(item.get("main_net_inflow"))
+    return _to_float(item.get("system_relevance_score", item.get("final_score")))
+
+
+def _to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        if pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _nullable_float(value: Any) -> float | None:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None

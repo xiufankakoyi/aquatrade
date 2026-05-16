@@ -26,12 +26,17 @@ export interface ChainNode {
   hot_score_source?: string;
   market_strength: string;
   stock_count: number;
+  candidate_count: number;
   verified_stock_count: number;
   candidate_stock_count: number;
   limit_up_count: number;
   avg_return_1d: number;
+  avg_pct_chg: number;
   avg_return_5d: number;
   total_amount: number;
+  main_net_inflow?: number;
+  updated_at?: string;
+  provider_summary?: string;
   symbolSize: number | [number, number];
   itemStyle: Record<string, any>;
   label: Record<string, any>;
@@ -65,6 +70,7 @@ export interface ChainSummary {
   turnover_change: number;
   node_count: number;
   stock_count: number;
+  updated_at?: string;
 }
 
 export interface ChainGraphData {
@@ -101,14 +107,24 @@ export interface ChainStock {
   stock_name: string;
   chain_position: string;
   source: string;
+  data_source: string;
   source_concept_name: string;
+  matched_board_name: string;
+  matched_keyword: string;
+  candidate_source: string;
+  provider: string;
   is_verified: boolean;
   is_candidate: boolean;
+  is_manual_override: boolean;
+  flag_label: string;
   relevance_score: number;
   purity_score: number;
   evidence_score: number;
   market_confirm_score: number;
   final_score: number;
+  system_relevance_score: number;
+  source_confidence: number;
+  auto_relevance_score: number;
   evidence_type: string;
   evidence_text: string;
   evidence_source: string;
@@ -117,7 +133,15 @@ export interface ChainStock {
   return_5d: number | null;
   amount: number | null;
   amount_change_ratio: number | null;
+  turnover_rate?: number | null;
+  volume_ratio?: number | null;
   limit_status: string | null;
+  is_limit_up: boolean;
+  consecutive_limit_count: number;
+  limit_up_reason: string;
+  main_net_inflow: number | null;
+  market_provider?: string;
+  fund_flow_provider?: string;
   pattern_signal: string | null;
 }
 
@@ -136,32 +160,11 @@ export interface NodeStocksResponse {
 }
 
 export interface DataSourceStatus {
-  manual_provider: {
-    name: string;
-    available: boolean;
-    concept_members_exists?: boolean;
-    evidence_exists?: boolean;
-  };
-  tushare: {
-    name: string;
-    available: boolean;
-    token_exists: boolean;
-  };
-  akshare: {
-    name: string;
-    available: boolean;
-    installed: boolean;
-  };
+  providers: Record<string, Record<string, any>>;
   last_sync: string | null;
   parquet_files: Record<string, boolean>;
-  project_root?: string;
-  knowledge_path?: string;
-  industry_chain_files?: string[];
-  loaded_chains?: string[];
-  optical_communication_exists?: boolean;
-  node_count?: number;
-  edge_count?: number;
-  stock_mapping_count?: number;
+  recent_source_log?: Record<string, any>[];
+  empty_hint?: string;
 }
 
 export interface IndustryChainDebug {
@@ -228,15 +231,9 @@ export async function getNodeStocks(
   }
 ): Promise<NodeStocksResponse> {
   const params: Record<string, string> = { chain_id: chainId };
-  if (options?.include_candidates !== undefined) {
-    params.include_candidates = String(options.include_candidates);
-  }
-  if (options?.verified_only !== undefined) {
-    params.verified_only = String(options.verified_only);
-  }
-  if (options?.sort_by) {
-    params.sort_by = options.sort_by;
-  }
+  if (options?.include_candidates !== undefined) params.include_candidates = String(options.include_candidates);
+  if (options?.verified_only !== undefined) params.verified_only = String(options.verified_only);
+  if (options?.sort_by) params.sort_by = options.sort_by;
   const response = await service.get<ApiResponse<NodeStocksResponse>>(
     `/api/industry-chain/node/${encodeURIComponent(nodeId)}/stocks`,
     { params }
@@ -245,9 +242,7 @@ export async function getNodeStocks(
 }
 
 export async function searchIndustryChain(q: string): Promise<SearchResult> {
-  const response = await service.get<ApiResponse<SearchResult>>('/api/industry-chain/search', {
-    params: { q },
-  });
+  const response = await service.get<ApiResponse<SearchResult>>('/api/industry-chain/search', { params: { q } });
   return response.data.data;
 }
 

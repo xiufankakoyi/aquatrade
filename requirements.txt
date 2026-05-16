@@ -4,6 +4,9 @@ flask==2.3.3
 flask-cors==4.0.0
 pandas>=2.2.0
 numpy>=1.26.0
+efinance>=0.5.3
+akshare>=1.16.0
+baostock>=0.8.9
 
 # Data processing
 pyarrow>=15.0.0
