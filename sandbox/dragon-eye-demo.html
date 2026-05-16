@@ -1,0 +1,2271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DragonEye - TradingView Style Demo</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+  <style>
+    /**
+     * Borderless Design System - 无边框极简风格
+     */
+    :root {
+      --tv-bg-primary: #0a0a0a;
+      --tv-bg-secondary: #111111;
+      --tv-bg-tertiary: #1a1a1a;
+      --tv-bg-hover: #222222;
+      --tv-bg-active: #2a2a2a;
+      --tv-border: transparent;
+      --tv-border-hover: #2a2a2a;
+      --tv-text-primary: #e0e0e0;
+      --tv-text-secondary: #666666;
+      --tv-text-muted: #444444;
+      --tv-up: #00d084;
+      --tv-down: #ff4757;
+      --tv-accent: #3b82f6;
+      --tv-accent-hover: #2563eb;
+      --tv-warning: #ffa502;
+      --tv-radius-sm: 6px;
+      --tv-radius-md: 12px;
+      --tv-space-xs: 4px;
+      --tv-space-sm: 8px;
+      --tv-space-md: 12px;
+      --tv-space-lg: 16px;
+      --tv-text-xs: 11px;
+      --tv-text-sm: 12px;
+      --tv-text-base: 13px;
+      --tv-text-lg: 16px;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: var(--tv-bg-primary);
+      color: var(--tv-text-primary);
+      font-family: 'JetBrains Mono', 'Roboto Mono', 'SF Mono', 'Consolas', monospace;
+      font-size: var(--tv-text-sm);
+      line-height: 1.5;
+      min-height: 100vh;
+      padding: var(--tv-space-md);
+    }
+
+    /* 全局等宽字体设置 */
+    .tv-text-mono {
+      font-family: 'JetBrains Mono', 'Roboto Mono', 'SF Mono', 'Consolas', monospace;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+
+    /* Header Bar - 无边框风格 */
+    .tv-header-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--tv-space-sm) var(--tv-space-md);
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      margin-bottom: var(--tv-space-sm);
+    }
+
+    .tv-header-left {
+      display: flex;
+      align-items: center;
+      gap: var(--tv-space-sm);
+    }
+
+    .tv-page-title {
+      font-size: var(--tv-text-base);
+      font-weight: 600;
+      color: var(--tv-text-primary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tv-page-title i {
+      color: var(--tv-warning);
+    }
+
+    .tv-page-subtitle {
+      font-size: var(--tv-text-xs);
+      color: var(--tv-text-secondary);
+      padding-left: var(--tv-space-sm);
+      border-left: 1px solid var(--tv-bg-tertiary);
+    }
+
+    .tv-header-center {
+      display: flex;
+      align-items: center;
+      gap: var(--tv-space-md);
+    }
+
+    .tv-header-right {
+      display: flex;
+      align-items: center;
+      gap: var(--tv-space-sm);
+    }
+
+    /* Form Controls */
+    .tv-date-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tv-label {
+      font-size: var(--tv-text-xs);
+      color: var(--tv-text-secondary);
+    }
+
+    .tv-input {
+      height: 28px;
+      padding: 0 var(--tv-space-sm);
+      font-size: var(--tv-text-xs);
+      color: var(--tv-text-primary);
+      background: var(--tv-bg-tertiary);
+      border: none;
+      border-radius: var(--tv-radius-sm);
+      outline: none;
+    }
+
+    .tv-input:focus {
+      background: var(--tv-bg-hover);
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+    }
+
+    .tv-input-date {
+      width: 120px;
+    }
+
+    /* Buttons - 无边框胶囊风格 */
+    .tv-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--tv-space-xs);
+      padding: 6px 14px;
+      font-size: var(--tv-text-xs);
+      font-weight: 500;
+      border-radius: 20px;
+      border: none;
+      cursor: pointer;
+      transition: all 150ms ease;
+      white-space: nowrap;
+      height: 28px;
+    }
+
+    .tv-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .tv-btn-primary {
+      background: var(--tv-accent);
+      color: white;
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    }
+
+    .tv-btn-primary:hover:not(:disabled) {
+      background: var(--tv-accent-hover);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .tv-btn-secondary {
+      background: var(--tv-bg-tertiary);
+      color: var(--tv-text-primary);
+    }
+
+    .tv-btn-secondary:hover:not(:disabled) {
+      background: var(--tv-bg-hover);
+      transform: translateY(-1px);
+    }
+
+    .tv-btn-active {
+      background: var(--tv-up) !important;
+      color: white !important;
+    }
+
+    .tv-btn-group {
+      display: flex;
+      gap: var(--tv-space-xs);
+    }
+
+    .tv-icon-btn {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: var(--tv-radius-sm);
+      color: var(--tv-text-secondary);
+      cursor: pointer;
+      transition: all 150ms ease;
+    }
+
+    .tv-icon-btn:hover {
+      background: var(--tv-bg-tertiary);
+      color: var(--tv-text-primary);
+    }
+
+    /* Status */
+    .tv-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: var(--tv-text-xs);
+    }
+
+    .tv-status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--tv-up);
+      animation: tv-pulse 2s infinite;
+    }
+
+    @keyframes tv-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    /* Progress Bar */
+    .tv-progress {
+      height: 4px;
+      background: var(--tv-bg-tertiary);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: var(--tv-space-sm);
+    }
+
+    .tv-progress-bar {
+      height: 100%;
+      background: var(--tv-accent);
+      border-radius: 2px;
+      transition: width 250ms ease;
+    }
+
+    /* Grid Layout */
+    .tv-grid {
+      display: grid;
+      gap: var(--tv-space-sm);
+    }
+
+    .tv-grid-2 {
+      grid-template-columns: repeat(2, 1fr);
+    }
+
+    .tv-grid-4 {
+      grid-template-columns: repeat(4, 1fr);
+    }
+
+    /* Panel - 无边框卡片风格 */
+    .tv-panel {
+      background: var(--tv-bg-secondary);
+      border: none;
+      border-radius: var(--tv-radius-md);
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      transition: transform 150ms ease, box-shadow 150ms ease;
+    }
+
+    .tv-panel:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .tv-panel-header {
+      position: absolute;
+      top: var(--tv-space-sm);
+      left: var(--tv-space-md);
+      right: var(--tv-space-md);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    .tv-panel-header > * {
+      pointer-events: auto;
+    }
+
+    .tv-panel-header-static {
+      position: relative;
+      padding: var(--tv-space-sm) var(--tv-space-md);
+      border-bottom: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .tv-panel-label {
+      font-size: var(--tv-text-xs);
+      font-weight: 600;
+      color: var(--tv-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    .tv-panel-tools {
+      display: flex;
+      gap: var(--tv-space-xs);
+      opacity: 0;
+      transition: opacity 150ms ease;
+    }
+
+    .tv-panel:hover .tv-panel-tools {
+      opacity: 1;
+    }
+
+    .tv-tool-btn {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--tv-bg-tertiary);
+      border: none;
+      border-radius: var(--tv-radius-sm);
+      color: var(--tv-text-secondary);
+      cursor: pointer;
+      font-size: var(--tv-text-xs);
+      transition: all 150ms ease;
+    }
+
+    .tv-tool-btn:hover {
+      background: var(--tv-bg-hover);
+      color: var(--tv-text-primary);
+    }
+
+    .tv-chart-wrapper {
+      width: 100%;
+      height: 100%;
+      min-height: 200px;
+    }
+
+    /* Metric Card */
+    .tv-metric-card {
+      padding: var(--tv-space-md);
+      display: flex;
+      align-items: center;
+    }
+
+    .tv-metric {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .tv-metric-label {
+      font-size: 10px;
+      color: var(--tv-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .tv-metric-value {
+      font-family: 'JetBrains Mono', 'Roboto Mono', 'Consolas', monospace;
+      font-variant-numeric: tabular-nums;
+      font-size: var(--tv-text-lg);
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .tv-metric-value-up {
+      color: var(--tv-up);
+    }
+
+    .tv-metric-value-down {
+      color: var(--tv-down);
+    }
+
+    /* Legend */
+    .tv-legend {
+      display: flex;
+      gap: var(--tv-space-md);
+    }
+
+    .tv-legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--tv-text-secondary);
+    }
+
+    .tv-legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+    }
+
+    /* Flow Chart Legend */
+    .tv-flow-legend {
+      display: flex;
+      gap: var(--tv-space-md);
+    }
+
+    .tv-flow-legend-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--tv-text-secondary);
+    }
+
+    .tv-flow-legend-item i {
+      font-size: 6px;
+    }
+
+    /* Table - 无边框风格 */
+    .tv-table-container {
+      overflow: auto;
+      flex: 1;
+    }
+
+    .tv-table {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: var(--tv-text-xs);
+    }
+
+    .tv-table th {
+      padding: var(--tv-space-sm) var(--tv-space-md);
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--tv-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: transparent;
+      border-bottom: none;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .tv-table td {
+      padding: 10px var(--tv-space-md);
+      border-bottom: none;
+      color: var(--tv-text-primary);
+      transition: background 150ms ease;
+    }
+
+    .tv-table tbody tr {
+      border-radius: var(--tv-radius-sm);
+    }
+
+    .tv-table tbody tr:hover td {
+      background: var(--tv-bg-tertiary);
+    }
+
+    .tv-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .tv-table-row-up {
+      border-left: 2px solid var(--tv-up);
+    }
+
+    /* Badge */
+    .tv-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 6px;
+      font-size: 10px;
+      font-weight: 600;
+      border-radius: var(--tv-radius-sm);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .tv-badge-up {
+      background: rgba(8, 153, 129, 0.15);
+      color: var(--tv-up);
+    }
+
+    .tv-badge-neutral {
+      background: var(--tv-bg-tertiary);
+      color: var(--tv-text-secondary);
+    }
+
+    /* Text utilities */
+    .tv-text-mono {
+      font-family: 'JetBrains Mono', 'Roboto Mono', 'Consolas', monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .tv-text-primary {
+      color: var(--tv-text-primary);
+    }
+
+    .tv-text-secondary {
+      color: var(--tv-text-secondary);
+    }
+
+    .tv-text-muted {
+      color: var(--tv-text-muted);
+    }
+
+    .tv-text-up {
+      color: var(--tv-up);
+    }
+
+    .tv-text-down {
+      color: var(--tv-down);
+    }
+
+    .tv-truncate {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Flex utilities */
+    .tv-flex {
+      display: flex;
+    }
+
+    .tv-flex-col {
+      flex-direction: column;
+    }
+
+    .tv-flex-1 {
+      flex: 1;
+      min-height: 0;
+    }
+
+    .tv-items-center {
+      align-items: center;
+    }
+
+    .tv-justify-between {
+      justify-content: space-between;
+    }
+
+    .tv-gap-sm {
+      gap: var(--tv-space-sm);
+    }
+
+    /* Empty State */
+    .tv-empty-cell {
+      padding: 40px;
+    }
+
+    .tv-empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: var(--tv-space-sm);
+      color: var(--tv-text-secondary);
+      font-size: var(--tv-text-sm);
+    }
+
+    .tv-empty-state i {
+      font-size: 24px;
+      opacity: 0.5;
+    }
+
+    /* Divider - 无边框风格 */
+    .tv-divider-vertical {
+      width: 1px;
+      background: var(--tv-bg-tertiary);
+      margin: 0 var(--tv-space-md);
+      height: 20px;
+    }
+
+    /* Floating Panels */
+    .tv-ai-panel,
+    .tv-logs-panel {
+      position: fixed;
+      background: var(--tv-bg-secondary);
+      border: 1px solid var(--tv-border);
+      border-radius: var(--tv-radius-md);
+      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.6);
+      z-index: 100;
+      display: none;
+    }
+
+    .tv-ai-panel {
+      right: var(--tv-space-md);
+      top: 60px;
+      width: 320px;
+    }
+
+    .tv-logs-panel {
+      right: var(--tv-space-md);
+      bottom: 60px;
+      width: 480px;
+      height: 240px;
+      flex-direction: column;
+    }
+
+    .tv-ai-panel.visible,
+    .tv-logs-panel.visible {
+      display: flex;
+    }
+
+    .tv-ai-content {
+      padding: var(--tv-space-md);
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .tv-ai-text {
+      margin: 0;
+      font-size: var(--tv-text-sm);
+      line-height: 1.6;
+      color: var(--tv-text-primary);
+      white-space: pre-wrap;
+      font-family: inherit;
+    }
+
+    .tv-logs-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--tv-space-sm) var(--tv-space-md);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: var(--tv-text-xs);
+    }
+
+    .tv-log-line {
+      display: flex;
+      gap: var(--tv-space-sm);
+      padding: 2px 0;
+    }
+
+    .tv-log-time {
+      color: var(--tv-text-muted);
+      flex-shrink: 0;
+    }
+
+    .tv-log-level {
+      flex-shrink: 0;
+      width: 50px;
+      text-align: center;
+      border-radius: 2px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    .tv-log-level-info { color: var(--tv-accent); }
+    .tv-log-level-success { color: var(--tv-up); }
+    .tv-log-level-warning { color: var(--tv-warning); }
+    .tv-log-level-error { color: var(--tv-down); }
+
+    .tv-log-message {
+      color: var(--tv-text-primary);
+      word-break: break-all;
+    }
+
+    /* FAB */
+    .tv-fab {
+      position: fixed;
+      right: var(--tv-space-md);
+      bottom: var(--tv-space-md);
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--tv-accent);
+      color: white;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
+      transition: all 150ms ease;
+      z-index: 50;
+    }
+
+    .tv-fab:hover {
+      background: var(--tv-accent-hover);
+      transform: scale(1.05);
+    }
+
+    .tv-fab.hidden {
+      display: none;
+    }
+
+    /* AI Brief Panel */
+    .tv-ai-brief-panel {
+      background: var(--tv-bg-secondary);
+      border: 1px solid var(--tv-border);
+      border-radius: var(--tv-radius-md);
+      overflow: hidden;
+      flex-shrink: 0;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      transition: transform 150ms ease, box-shadow 150ms ease;
+    }
+
+    .tv-ai-brief-panel:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    }
+
+    .tv-ai-brief-panel.collapsed {
+      max-height: 48px;
+    }
+
+    .tv-ai-brief-panel.collapsed .tv-ai-brief-content,
+    .tv-ai-brief-panel.collapsed .tv-ai-brief-actions {
+      display: none;
+    }
+
+    .tv-ai-brief-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--tv-space-sm) var(--tv-space-md);
+      background: transparent;
+      border-bottom: none;
+    }
+
+    .tv-ai-brief-title {
+      display: flex;
+      align-items: center;
+      gap: var(--tv-space-sm);
+      font-size: var(--tv-text-sm);
+      font-weight: 600;
+      color: var(--tv-text-primary);
+    }
+
+    .tv-ai-brief-title i {
+      color: var(--tv-accent);
+      font-size: 14px;
+    }
+
+    .tv-ai-brief-date {
+      font-size: var(--tv-text-xs);
+      color: var(--tv-text-secondary);
+    }
+
+    .tv-ai-brief-content {
+      padding: var(--tv-space-md);
+    }
+
+    .tv-ai-brief-section {
+      margin-bottom: var(--tv-space-md);
+    }
+
+    .tv-ai-brief-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .tv-ai-brief-section-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: var(--tv-text-xs);
+      font-weight: 600;
+      color: var(--tv-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: var(--tv-space-sm);
+    }
+
+    .tv-ai-brief-section-title i {
+      font-size: 10px;
+    }
+
+    .tv-ai-brief-text {
+      font-size: var(--tv-text-xs);
+      line-height: 1.7;
+      color: var(--tv-text-primary);
+    }
+
+    .tv-ai-brief-metrics {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--tv-space-sm);
+      margin-bottom: var(--tv-space-md);
+    }
+
+    .tv-ai-brief-metric {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: var(--tv-space-sm);
+      background: var(--tv-bg-tertiary);
+      border-radius: var(--tv-radius-sm);
+    }
+
+    .tv-ai-brief-metric-label {
+      font-size: 10px;
+      color: var(--tv-text-secondary);
+      margin-bottom: 2px;
+    }
+
+    .tv-ai-brief-metric-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: var(--tv-text-base);
+      font-weight: 600;
+    }
+
+    .tv-ai-brief-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--tv-space-xs);
+    }
+
+    .tv-ai-brief-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      font-size: 10px;
+      border-radius: 20px;
+      background: var(--tv-bg-tertiary);
+      color: var(--tv-text-secondary);
+      cursor: pointer;
+      transition: all 150ms ease;
+      border: none;
+    }
+
+    .tv-ai-brief-tag:hover {
+      background: var(--tv-bg-hover);
+      transform: translateY(-1px);
+    }
+
+    .tv-ai-brief-tag.active-filter {
+      background: rgba(41, 98, 255, 0.2);
+      border-color: var(--tv-accent);
+      color: var(--tv-accent);
+    }
+
+    /* 题材颜色映射 */
+    .tv-ai-brief-tag[data-theme="AI"] {
+      background: rgba(0, 210, 255, 0.1);
+      color: #00D2FF;
+    }
+
+    .tv-ai-brief-tag[data-theme="AI"].active-filter {
+      background: rgba(0, 210, 255, 0.25);
+      border-color: #00D2FF;
+      box-shadow: 0 0 8px rgba(0, 210, 255, 0.3);
+    }
+
+    .tv-ai-brief-tag[data-theme="新能源"] {
+      background: rgba(0, 255, 136, 0.1);
+      color: #00FF88;
+    }
+
+    .tv-ai-brief-tag[data-theme="新能源"].active-filter {
+      background: rgba(0, 255, 136, 0.25);
+      border-color: #00FF88;
+      box-shadow: 0 0 8px rgba(0, 255, 136, 0.3);
+    }
+
+    .tv-ai-brief-tag[data-theme="半导体"] {
+      background: rgba(255, 107, 53, 0.1);
+      color: #FF6B35;
+    }
+
+    .tv-ai-brief-tag[data-theme="半导体"].active-filter {
+      background: rgba(255, 107, 53, 0.25);
+      border-color: #FF6B35;
+      box-shadow: 0 0 8px rgba(255, 107, 53, 0.3);
+    }
+
+    .tv-ai-brief-tag[data-theme="其他"] {
+      background: rgba(120, 123, 134, 0.1);
+      color: #787B86;
+    }
+
+    .tv-ai-brief-tag[data-theme="其他"].active-filter {
+      background: rgba(120, 123, 134, 0.25);
+      border: none;
+      box-shadow: 0 0 8px rgba(120, 123, 134, 0.3);
+    }
+
+    .tv-ai-brief-actions {
+      display: flex;
+      gap: var(--tv-space-sm);
+      padding: var(--tv-space-sm) var(--tv-space-md);
+      border-top: none;
+      background: transparent;
+    }
+
+    .tv-ai-brief-btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 6px 14px;
+      font-size: var(--tv-text-xs);
+      border-radius: 20px;
+      border: none;
+      background: var(--tv-bg-tertiary);
+      color: var(--tv-text-primary);
+      cursor: pointer;
+      transition: all 150ms ease;
+    }
+
+    .tv-ai-brief-btn:hover {
+      background: var(--tv-bg-hover);
+      transform: translateY(-1px);
+    }
+
+    .tv-ai-brief-btn.primary {
+      background: var(--tv-accent);
+      color: white;
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+    }
+
+    .tv-ai-brief-btn.primary:hover {
+      background: var(--tv-accent-hover);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--tv-bg-tertiary);
+      border-radius: 3px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--tv-bg-hover);
+    }
+
+    /* Main Layout */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--tv-space-sm);
+      height: calc(100vh - 100px);
+    }
+
+    .left-column,
+    .right-column {
+      display: flex;
+      flex-direction: column;
+      gap: var(--tv-space-sm);
+      min-height: 0;
+    }
+
+    .chart-panel {
+      flex: 1;
+      min-height: 200px;
+    }
+
+    .chart-panel-fixed {
+      height: 240px;
+      flex: none;
+    }
+
+    .chart-panel-tall {
+      height: 280px;
+      flex: none;
+    }
+
+    .chart-panel-short {
+      height: 200px;
+      flex: none;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header class="tv-header-bar">
+    <div class="tv-header-left">
+      <h1 class="tv-page-title">
+        <i class="fas fa-dragon"></i>
+        DragonEye
+      </h1>
+      <span class="tv-page-subtitle">龙虎榜监控</span>
+    </div>
+    
+    <div class="tv-header-center">
+      <div class="tv-date-control">
+        <span class="tv-label">日期</span>
+        <input type="date" class="tv-input tv-input-date" value="2024-01-21">
+      </div>
+      
+      <div class="tv-divider-vertical"></div>
+      
+      <div class="tv-btn-group">
+        <button class="tv-btn tv-btn-secondary" onclick="startCrawl()">
+          <i class="fas fa-spider"></i>
+          <span>启动抓取</span>
+        </button>
+        <button class="tv-btn tv-btn-primary" onclick="startPipeline()">
+          <i class="fas fa-magic"></i>
+          <span>一键全流程</span>
+        </button>
+      </div>
+    </div>
+    
+    <div class="tv-header-right">
+      <div class="tv-status" id="statusIndicator" style="display: none;">
+        <span class="tv-status-dot"></span>
+        <span id="statusText">运行中 0%</span>
+      </div>
+      <button class="tv-icon-btn" onclick="toggleLogs()">
+        <i class="fas fa-terminal"></i>
+      </button>
+      <button class="tv-icon-btn">
+        <i class="fas fa-cog"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Progress Bar -->
+  <div class="tv-progress" id="progressBar" style="display: none;">
+    <div class="tv-progress-bar" id="progressFill" style="width: 0%;"></div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main-grid">
+    <!-- Left Column -->
+    <div class="left-column">
+      <!-- Metrics -->
+      <div class="tv-grid tv-grid-4">
+        <div class="tv-panel tv-metric-card">
+          <div class="tv-metric">
+            <span class="tv-metric-label">涨停家数</span>
+            <span class="tv-metric-value tv-metric-value-up" id="metricLimitUp">72</span>
+          </div>
+        </div>
+        <div class="tv-panel tv-metric-card">
+          <div class="tv-metric">
+            <span class="tv-metric-label">跌停家数</span>
+            <span class="tv-metric-value tv-metric-value-down" id="metricLimitDown">8</span>
+          </div>
+        </div>
+        <div class="tv-panel tv-metric-card">
+          <div class="tv-metric">
+            <span class="tv-metric-label">最高连板</span>
+            <span class="tv-metric-value tv-metric-value-up" id="metricMaxHeight">8板</span>
+          </div>
+        </div>
+        <div class="tv-panel tv-metric-card">
+          <div class="tv-metric">
+            <span class="tv-metric-label">炸板率</span>
+            <span class="tv-metric-value" id="metricBrokenRatio" style="color: var(--tv-warning);">15.0%</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Stock Table -->
+      <div class="tv-panel chart-panel">
+        <div class="tv-panel-header-static">
+          <span class="tv-panel-label">龙头股实时因子</span>
+          <div class="tv-panel-tools" style="opacity: 1;">
+            <button class="tv-tool-btn"><i class="fas fa-filter"></i></button>
+            <button class="tv-tool-btn"><i class="fas fa-download"></i></button>
+          </div>
+        </div>
+        <div class="tv-table-container">
+          <table class="tv-table" id="stockTable">
+            <thead>
+              <tr>
+                <th>个股</th>
+                <th>连板</th>
+                <th>封单额</th>
+                <th>换手</th>
+                <th>监管</th>
+                <th>机构</th>
+                <th>题材</th>
+              </tr>
+            </thead>
+            <tbody id="stockTableBody">
+              <tr class="tv-table-row-up">
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="tv-text-primary tv-text-mono">平安银行</span>
+                    <span class="tv-text-secondary" style="font-size: 10px;">000001</span>
+                  </div>
+                </td>
+                <td><span class="tv-badge tv-badge-up">5板</span></td>
+                <td class="tv-text-mono">25.00亿</td>
+                <td class="tv-text-mono">15.50%</td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><i class="fas fa-university tv-text-up"></i></td>
+                <td><span class="tv-truncate" style="max-width: 120px; display: block;">金融科技+区块链</span></td>
+              </tr>
+              <tr class="tv-table-row-up">
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="tv-text-primary tv-text-mono">中兴通讯</span>
+                    <span class="tv-text-secondary" style="font-size: 10px;">000063</span>
+                  </div>
+                </td>
+                <td><span class="tv-badge tv-badge-up">4板</span></td>
+                <td class="tv-text-mono">32.00亿</td>
+                <td class="tv-text-mono">12.80%</td>
+                <td><i class="fas fa-exclamation-triangle tv-text-down"></i></td>
+                <td><i class="fas fa-university tv-text-up"></i></td>
+                <td><span class="tv-truncate" style="max-width: 120px; display: block;">5G+芯片+华为</span></td>
+              </tr>
+              <tr class="tv-table-row-up">
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="tv-text-primary tv-text-mono">万科A</span>
+                    <span class="tv-text-secondary" style="font-size: 10px;">000002</span>
+                  </div>
+                </td>
+                <td><span class="tv-badge tv-badge-neutral">3板</span></td>
+                <td class="tv-text-mono">18.00亿</td>
+                <td class="tv-text-mono">8.20%</td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><span class="tv-truncate" style="max-width: 120px; display: block;">房地产+物业管理</span></td>
+              </tr>
+              <tr class="tv-table-row-up">
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="tv-text-primary tv-text-mono">泸州老窖</span>
+                    <span class="tv-text-secondary" style="font-size: 10px;">000568</span>
+                  </div>
+                </td>
+                <td><span class="tv-badge tv-badge-neutral">3板</span></td>
+                <td class="tv-text-mono">21.00亿</td>
+                <td class="tv-text-mono">7.50%</td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><i class="fas fa-university tv-text-up"></i></td>
+                <td><span class="tv-truncate" style="max-width: 120px; display: block;">白酒+消费</span></td>
+              </tr>
+              <tr class="tv-table-row-up">
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="tv-text-primary tv-text-mono">TCL科技</span>
+                    <span class="tv-text-secondary" style="font-size: 10px;">000100</span>
+                  </div>
+                </td>
+                <td><span class="tv-badge tv-badge-neutral">2板</span></td>
+                <td class="tv-text-mono">9.00亿</td>
+                <td class="tv-text-mono">6.50%</td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><span class="tv-truncate" style="max-width: 120px; display: block;">面板+半导体</span></td>
+              </tr>
+              <tr class="tv-table-row-up">
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="tv-text-primary tv-text-mono">云南白药</span>
+                    <span class="tv-text-secondary" style="font-size: 10px;">000538</span>
+                  </div>
+                </td>
+                <td><span class="tv-badge tv-badge-neutral">2板</span></td>
+                <td class="tv-text-mono">8.00亿</td>
+                <td class="tv-text-mono">3.80%</td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><span class="tv-truncate" style="max-width: 120px; display: block;">中药+医美</span></td>
+              </tr>
+              <tr class="tv-table-row-up">
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="tv-text-primary tv-text-mono">美的集团</span>
+                    <span class="tv-text-secondary" style="font-size: 10px;">000333</span>
+                  </div>
+                </td>
+                <td><span class="tv-badge tv-badge-neutral">1板</span></td>
+                <td class="tv-text-mono">15.00亿</td>
+                <td class="tv-text-mono">4.20%</td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><i class="fas fa-university tv-text-up"></i></td>
+                <td><span class="tv-truncate" style="max-width: 120px; display: block;">家电+智能制造</span></td>
+              </tr>
+              <tr class="tv-table-row-up">
+                <td>
+                  <div style="display: flex; flex-direction: column;">
+                    <span class="tv-text-primary tv-text-mono">格力电器</span>
+                    <span class="tv-text-secondary" style="font-size: 10px;">000651</span>
+                  </div>
+                </td>
+                <td><span class="tv-badge tv-badge-neutral">1板</span></td>
+                <td class="tv-text-mono">12.00亿</td>
+                <td class="tv-text-mono">5.20%</td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><span class="tv-text-muted">-</span></td>
+                <td><span class="tv-truncate" style="max-width: 120px; display: block;">家电+新能源</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Sentiment Chart -->
+      <div class="tv-panel chart-panel-fixed">
+        <div class="tv-panel-header">
+          <span class="tv-panel-label">市场情绪走势</span>
+          <div class="tv-panel-tools">
+            <button class="tv-tool-btn"><i class="fas fa-expand"></i></button>
+          </div>
+        </div>
+        <div id="sentimentChart" class="tv-chart-wrapper"></div>
+      </div>
+    </div>
+
+    <!-- Right Column -->
+    <div class="right-column">
+      <!-- AI Daily Brief Panel -->
+      <div class="tv-ai-brief-panel" id="aiBriefPanel">
+        <div class="tv-ai-brief-header" onclick="toggleAiBrief()" style="cursor: pointer;">
+          <div class="tv-ai-brief-title">
+            <i class="fas fa-robot"></i>
+            <span>AI 每日复盘简报</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span class="tv-ai-brief-date">2024-01-21</span>
+            <i class="fas fa-chevron-down" id="aiBriefToggle" style="color: var(--tv-text-secondary); font-size: 10px; transition: transform 200ms;"></i>
+          </div>
+        </div>
+        
+        <div class="tv-ai-brief-content">
+          <!-- Key Metrics Summary -->
+          <div class="tv-ai-brief-metrics">
+            <div class="tv-ai-brief-metric">
+              <span class="tv-ai-brief-metric-label">市场情绪</span>
+              <span class="tv-ai-brief-metric-value" style="color: var(--tv-up);">偏暖</span>
+            </div>
+            <div class="tv-ai-brief-metric">
+              <span class="tv-ai-brief-metric-label">涨停家数</span>
+              <span class="tv-ai-brief-metric-value" style="color: var(--tv-up);">72</span>
+            </div>
+            <div class="tv-ai-brief-metric">
+              <span class="tv-ai-brief-metric-label">最高连板</span>
+              <span class="tv-ai-brief-metric-value" style="color: var(--tv-warning);">8板</span>
+            </div>
+          </div>
+          
+          <!-- Market Overview -->
+          <div class="tv-ai-brief-section">
+            <div class="tv-ai-brief-section-title">
+              <i class="fas fa-chart-line"></i>
+              <span>市场概况</span>
+            </div>
+            <p class="tv-ai-brief-text">
+              今日市场涨停家数72家，跌停8家，市场情绪偏暖。最高连板达到8板，为近期新高，显示短线资金活跃。炸板率15%，封板质量较好。
+            </p>
+          </div>
+          
+          <!-- Theme Analysis -->
+          <div class="tv-ai-brief-section">
+            <div class="tv-ai-brief-section-title">
+              <i class="fas fa-fire"></i>
+              <span>题材热点</span>
+            </div>
+            <div class="tv-ai-brief-tags">
+              <span class="tv-ai-brief-tag hot" data-theme="AI" onclick="filterByTheme('AI')"><i class="fas fa-arrow-up"></i> 人工智能</span>
+              <span class="tv-ai-brief-tag active" data-theme="新能源" onclick="filterByTheme('新能源')"><i class="fas fa-bolt"></i> 新能源</span>
+              <span class="tv-ai-brief-tag" data-theme="半导体" onclick="filterByTheme('半导体')"><i class="fas fa-microchip"></i> 半导体</span>
+              <span class="tv-ai-brief-tag" data-theme="其他" onclick="filterByTheme('其他')"><i class="fas fa-car"></i> 其他</span>
+            </div>
+          </div>
+          
+          <!-- Key Insights -->
+          <div class="tv-ai-brief-section">
+            <div class="tv-ai-brief-section-title">
+              <i class="fas fa-lightbulb"></i>
+              <span>关键洞察</span>
+            </div>
+            <p class="tv-ai-brief-text">
+              1. 人工智能板块持续发酵，龙头个股连板高度领先<br>
+              2. 新能源板块资金流入明显，机构参与度较高<br>
+              3. 半导体板块出现分化，部分个股炸板需警惕
+            </p>
+          </div>
+          
+          <!-- Risk Warning -->
+          <div class="tv-ai-brief-section">
+            <div class="tv-ai-brief-section-title">
+              <i class="fas fa-exclamation-triangle"></i>
+              <span>风险提示</span>
+            </div>
+            <p class="tv-ai-brief-text" style="color: var(--tv-down);">
+              连板高度超过5板的个股监管风险增加，建议关注机构买入信号的个股后续表现，注意题材轮动的节奏把握。
+            </p>
+          </div>
+        </div>
+        
+        <div class="tv-ai-brief-actions">
+          <button class="tv-ai-brief-btn" onclick="viewFullReport()">
+            <i class="fas fa-file-alt"></i>
+            <span>查看完整报告</span>
+          </button>
+          <button class="tv-ai-brief-btn primary" onclick="pushToFeishu()">
+            <i class="fas fa-paper-plane"></i>
+            <span>推送飞书</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Trend Chart -->
+      <div class="tv-panel chart-panel-tall">
+        <div class="tv-panel-header">
+          <span class="tv-panel-label">涨停趋势分析</span>
+          <div class="tv-legend tv-panel-tools" style="opacity: 1;">
+            <span class="tv-legend-item">
+              <span class="tv-legend-dot" style="background: #ef4444;"></span>
+              <span>涨停数</span>
+            </span>
+            <span class="tv-legend-item">
+              <span class="tv-legend-dot" style="background: #f59e0b;"></span>
+              <span>最高连板</span>
+            </span>
+          </div>
+        </div>
+        <div id="trendChart" class="tv-chart-wrapper"></div>
+      </div>
+
+      <!-- Bubble Chart -->
+      <div class="tv-panel chart-panel">
+        <div class="tv-panel-header">
+          <span class="tv-panel-label">涨停强度矩阵</span>
+          <div class="tv-legend tv-panel-tools" style="opacity: 1;">
+            <span class="tv-legend-item">
+              <span class="tv-legend-dot" style="background: #00D2FF;"></span>
+              <span>AI</span>
+            </span>
+            <span class="tv-legend-item">
+              <span class="tv-legend-dot" style="background: #00FF88;"></span>
+              <span>新能源</span>
+            </span>
+            <span class="tv-legend-item">
+              <span class="tv-legend-dot" style="background: #FF6B35;"></span>
+              <span>半导体</span>
+            </span>
+            <span class="tv-legend-item">
+              <span class="tv-legend-dot" style="background: #787B86;"></span>
+              <span>其他</span>
+            </span>
+          </div>
+        </div>
+        <div id="bubbleChart" class="tv-chart-wrapper"></div>
+      </div>
+
+      <!-- Flow Chart -->
+      <div class="tv-panel chart-panel-short">
+        <div class="tv-panel-header">
+          <div style="display:flex;align-items:center;gap:var(--tv-space-sm)">
+            <span class="tv-panel-label">题材流向路径图</span>
+            <span style="font-size:10px;color:var(--tv-text-secondary)">01-15 → 01-19</span>
+          </div>
+          <div class="tv-flow-legend">
+            <span class="tv-flow-legend-item"><i class="fas fa-circle" style="color:#00FF88"></i> 主流题材</span>
+            <span class="tv-flow-legend-item"><i class="fas fa-circle" style="color:#787B86"></i> 普通题材</span>
+          </div>
+        </div>
+        <div id="flowChart" class="tv-chart-wrapper"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Panel -->
+  <div class="tv-ai-panel" id="aiPanel">
+    <div class="tv-panel-header-static">
+      <span class="tv-panel-label">AI 每日复盘</span>
+      <div class="tv-panel-tools" style="opacity: 1;">
+        <button class="tv-tool-btn" onclick="fetchBrief()"><i class="fas fa-sync"></i></button>
+        <button class="tv-tool-btn" onclick="toggleAiPanel()"><i class="fas fa-times"></i></button>
+      </div>
+    </div>
+    <div class="tv-ai-content">
+      <pre class="tv-ai-text" id="aiContent">点击刷新获取AI分析</pre>
+    </div>
+  </div>
+
+  <!-- Logs Panel -->
+  <div class="tv-logs-panel" id="logsPanel">
+    <div class="tv-panel-header-static">
+      <span class="tv-panel-label">实时日志</span>
+      <div class="tv-panel-tools" style="opacity: 1;">
+        <button class="tv-tool-btn" onclick="clearLogs()"><i class="fas fa-trash"></i></button>
+        <button class="tv-tool-btn" onclick="toggleLogs()"><i class="fas fa-times"></i></button>
+      </div>
+    </div>
+    <div class="tv-logs-content" id="logsContent">
+      <div class="tv-empty-state">
+        <span>等待任务启动...</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- FAB -->
+  <button class="tv-fab" id="aiFab" onclick="toggleAiPanel()" title="AI复盘">
+    <i class="fas fa-brain"></i>
+  </button>
+
+  <script>
+    // Mock Data
+    const mockStocks = [
+      { code: '000001', name: '平安银行', limit: 5, amount: 25.0, turnover: 15.5, regulation: false, institution: true, tag: '金融科技+区块链' },
+      { code: '000002', name: '万科A', limit: 3, amount: 18.0, turnover: 8.2, regulation: false, institution: false, tag: '房地产+物业管理' },
+      { code: '000063', name: '中兴通讯', limit: 4, amount: 32.0, turnover: 12.8, regulation: true, institution: true, tag: '5G+芯片+华为' },
+      { code: '000100', name: 'TCL科技', limit: 2, amount: 9.0, turnover: 6.5, regulation: false, institution: false, tag: '面板+半导体' },
+      { code: '000333', name: '美的集团', limit: 1, amount: 15.0, turnover: 4.2, regulation: false, institution: true, tag: '家电+智能制造' },
+      { code: '000538', name: '云南白药', limit: 2, amount: 8.0, turnover: 3.8, regulation: false, institution: false, tag: '中药+医美' },
+      { code: '000568', name: '泸州老窖', limit: 3, amount: 21.0, turnover: 7.5, regulation: false, institution: true, tag: '白酒+消费' },
+      { code: '000651', name: '格力电器', limit: 1, amount: 12.0, turnover: 5.2, regulation: false, institution: false, tag: '家电+新能源' }
+    ];
+
+    // Charts
+    let sentimentChart, trendChart, bubbleChart, flowChart;
+
+    function initCharts() {
+      // Sentiment Chart
+      sentimentChart = echarts.init(document.getElementById('sentimentChart'));
+      sentimentChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+          trigger: 'axis',
+          backgroundColor: 'rgba(19, 23, 34, 0.95)',
+          borderColor: '#2a2e39',
+          textStyle: { color: '#d1d4dc', fontSize: 11 }
+        },
+        grid: { left: '3%', right: '4%', bottom: '3%', top: '15%', containLabel: true },
+        xAxis: {
+          type: 'category',
+          data: ['01-15', '01-16', '01-17', '01-18', '01-19', '01-20', '01-21'],
+          axisLine: { lineStyle: { color: '#2a2e39' } },
+          axisLabel: { color: '#787b86', fontSize: 10 }
+        },
+        yAxis: [
+          {
+            type: 'value',
+            axisLine: { show: false },
+            axisLabel: { color: '#787b86', fontSize: 10 },
+            splitLine: { lineStyle: { color: '#2a2e39' } }
+          },
+          {
+            type: 'value',
+            max: 1,
+            axisLine: { show: false },
+            axisLabel: { color: '#787b86', fontSize: 10, formatter: v => (v * 100).toFixed(0) + '%' },
+            splitLine: { show: false }
+          }
+        ],
+        series: [
+          {
+            name: '最高板',
+            type: 'line',
+            data: [3, 4, 5, 4, 6, 5, 7],
+            smooth: true,
+            lineStyle: { color: '#089981', width: 2 },
+            symbol: 'none',
+            areaStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: 'rgba(8, 153, 129, 0.2)' },
+                { offset: 1, color: 'transparent' }
+              ])
+            }
+          },
+          {
+            name: '炸板率',
+            type: 'bar',
+            yAxisIndex: 1,
+            data: [0.15, 0.12, 0.18, 0.10, 0.22, 0.14, 0.20],
+            itemStyle: { color: '#f23645', borderRadius: [2, 2, 0, 0] },
+            barWidth: '30%'
+          }
+        ]
+      });
+
+      // Trend Chart
+      trendChart = echarts.init(document.getElementById('trendChart'));
+      trendChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+          trigger: 'axis',
+          backgroundColor: 'rgba(19, 23, 34, 0.95)',
+          borderColor: '#2a2e39',
+          textStyle: { color: '#d1d4dc', fontSize: 11 }
+        },
+        grid: { left: '3%', right: '4%', bottom: '3%', top: '10%', containLabel: true },
+        xAxis: {
+          type: 'category',
+          data: ['01-15', '01-16', '01-17', '01-18', '01-19', '01-20', '01-21'],
+          axisLine: { lineStyle: { color: '#2a2e39' } },
+          axisLabel: { color: '#787b86', fontSize: 10 }
+        },
+        yAxis: {
+          type: 'value',
+          axisLine: { show: false },
+          axisLabel: { color: '#787b86', fontSize: 10 },
+          splitLine: { lineStyle: { color: '#2a2e39' } }
+        },
+        series: [
+          {
+            name: '涨停数',
+            type: 'bar',
+            data: [45, 52, 38, 65, 48, 72, 55],
+            itemStyle: {
+              color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                { offset: 0, color: '#ef4444' },
+                { offset: 1, color: '#dc2626' }
+              ]),
+              borderRadius: [2, 2, 0, 0]
+            },
+            barWidth: '40%'
+          },
+          {
+            name: '最高连板',
+            type: 'line',
+            data: [3, 4, 5, 4, 6, 5, 7],
+            smooth: true,
+            lineStyle: { color: '#f59e0b', width: 2 },
+            symbol: 'circle',
+            symbolSize: 5,
+            itemStyle: { color: '#f59e0b' }
+          }
+        ]
+      });
+
+      // Bubble Chart - Divergence Meter Style
+      // 题材颜色映射：AI=#00D2FF, 新能源=#00FF88, 半导体=#FF6B35, 其他=#787B86
+      const themeColors = {
+        'AI': '#00D2FF',
+        '新能源': '#00FF88', 
+        '半导体': '#FF6B35',
+        '其他': '#787B86'
+      };
+      
+      bubbleChart = echarts.init(document.getElementById('bubbleChart'));
+      bubbleChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+          trigger: 'item',
+          backgroundColor: 'rgba(19, 23, 34, 0.95)',
+          borderColor: '#2a2e39',
+          textStyle: { color: '#d1d4dc', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' },
+          formatter: params => {
+            const d = params.data;
+            const v = d.value;
+            return `<div style="font-weight:600;margin-bottom:4px;color:${d.itemStyle.color}">${d.name}</div>
+                    <div style="font-family:JetBrains Mono,monospace">
+                    <span style="color:#787b86">封板:</span> ${v[0]}min | 
+                    <span style="color:#787b86">市值:</span> ${v[1]}亿<br>
+                    <span style="color:#787b86">强度:</span> ${v[2]} | 
+                    <span style="color:#787b86">题材:</span> ${d.theme}</div>`;
+          }
+        },
+        grid: { left: '10%', right: '10%', bottom: '15%', top: '12%', containLabel: true },
+        xAxis: {
+          type: 'value',
+          name: '封板时间(min)',
+          nameLocation: 'middle',
+          nameGap: 25,
+          nameTextStyle: { color: '#787b86', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+          axisLine: { lineStyle: { color: '#2a2e39' } },
+          axisLabel: { color: '#787b86', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+          splitLine: { lineStyle: { color: '#1e222d' } },
+          min: 0,
+          max: 150
+        },
+        yAxis: {
+          type: 'value',
+          name: '市值(亿)',
+          nameLocation: 'middle',
+          nameGap: 35,
+          nameTextStyle: { color: '#787b86', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+          axisLine: { lineStyle: { color: '#2a2e39' } },
+          axisLabel: { color: '#787b86', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' },
+          splitLine: { lineStyle: { color: '#1e222d' } },
+          min: 0,
+          max: 1000
+        },
+        dataZoom: [
+          {
+            type: 'inside',
+            xAxisIndex: 0,
+            start: 0,
+            end: 100,
+            zoomOnMouseWheel: true,
+            moveOnMouseWheel: true,
+            moveOnMouseMove: true
+          },
+          {
+            type: 'inside',
+            yAxisIndex: 0,
+            start: 0,
+            end: 100,
+            zoomOnMouseWheel: true,
+            moveOnMouseWheel: true,
+            moveOnMouseMove: true
+          }
+        ],
+        series: [{
+          type: 'scatter',
+          name: '涨停强度',
+          // 数据按题材分组，使用 Divergence Meter 风格的高对比度单色
+          data: [
+            // AI 题材 - 青色 #00D2FF
+            { name: '中兴通讯', value: [90, 200, 12], theme: 'AI', itemStyle: { color: '#00D2FF' } },
+            { name: '平安银行', value: [30, 500, 25], theme: 'AI', itemStyle: { color: '#00D2FF' } },
+            { name: 'TCL科技', value: [45, 300, 20], theme: 'AI', itemStyle: { color: '#00D2FF' } },
+            // 新能源 - 绿色 #00FF88
+            { name: '比亚迪', value: [15, 900, 35], theme: '新能源', itemStyle: { color: '#00FF88' } },
+            { name: '宁德时代', value: [35, 750, 28], theme: '新能源', itemStyle: { color: '#00FF88' } },
+            { name: '格力电器', value: [50, 400, 22], theme: '新能源', itemStyle: { color: '#00FF88' } },
+            // 半导体 - 橙色 #FF6B35
+            { name: '美的集团', value: [25, 150, 30], theme: '半导体', itemStyle: { color: '#FF6B35' } },
+            { name: '云南白药', value: [75, 600, 15], theme: '半导体', itemStyle: { color: '#FF6B35' } },
+            // 其他 - 灰色 #787B86
+            { name: '万科A', value: [60, 800, 18], theme: '其他', itemStyle: { color: '#787B86' } },
+            { name: '泸州老窖', value: [120, 250, 10], theme: '其他', itemStyle: { color: '#787B86' } },
+            { name: '贵州茅台', value: [85, 950, 14], theme: '其他', itemStyle: { color: '#787B86' } },
+            { name: '五粮液', value: [55, 650, 19], theme: '其他', itemStyle: { color: '#787B86' } }
+          ],
+          // Divergence Meter 风格：使用光晕深度而非颜色区分
+          symbolSize: d => Math.max(10, Math.min(35, d[2])),
+          itemStyle: { 
+            shadowBlur: 20,
+            shadowColor: (params) => {
+              // 根据强度调整光晕深度
+              const intensity = params.data.value[2];
+              const baseColor = params.data.itemStyle.color;
+              const alpha = Math.min(0.8, 0.3 + intensity / 50);
+              return baseColor + Math.floor(alpha * 255).toString(16).padStart(2, '0');
+            },
+            opacity: 0.9
+          },
+          emphasis: {
+            scale: 1.5,
+            itemStyle: {
+              shadowBlur: 40,
+              shadowColor: (params) => params.data.itemStyle.color,
+              opacity: 1
+            }
+          }
+        }]
+      });
+
+      // Flow Chart - 题材流向路径图
+      // 定义题材颜色映射
+      const flowThemeColors = {
+        'AI应用': '#00D2FF',
+        '算力': '#FF4757',
+        '机器人': '#FFA502',
+        '半导体': '#FF6B35',
+        '新能源': '#00FF88',
+        '光伏': '#A55EEA',
+        '化工': '#26DE81',
+        '公告': '#778CA3',
+        '其他': '#787B86',
+        '商业航天': '#FD79A8',
+        '光通信': '#74B9FF',
+        '玻璃纤维布': '#00CEC9',
+        '矿产资源': '#6C5CE7'
+      };
+      
+      flowChart = echarts.init(document.getElementById('flowChart'));
+      flowChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+          trigger: 'item',
+          triggerOn: 'mousemove',
+          backgroundColor: 'rgba(10, 10, 10, 0.95)',
+          borderColor: '#2a2a2a',
+          borderWidth: 1,
+          textStyle: { color: '#e0e0e0', fontSize: 11, fontFamily: 'JetBrains Mono, monospace' },
+          formatter: params => {
+            if (params.dataType === 'node') {
+              return `<div style="font-weight:600">${params.name}</div>`;
+            } else {
+              return `<div>${params.data.source} → ${params.data.target}</div>
+                      <div style="color:#666">强度: ${params.data.value}</div>`;
+            }
+          }
+        },
+        series: [{
+          type: 'sankey',
+          layout: 'none',
+          top: '5%',
+          bottom: '5%',
+          left: '2%',
+          right: '15%',
+          emphasis: { 
+            focus: 'adjacency',
+            itemStyle: { opacity: 1 },
+            lineStyle: { opacity: 0.8 }
+          },
+          blur: {
+            itemStyle: { opacity: 0.1 },
+            lineStyle: { opacity: 0.05 }
+          },
+          nodeAlign: 'left',
+          nodeGap: 12,
+          nodeWidth: 12,
+          layoutIterations: 32,
+          lineStyle: { 
+            color: 'source',
+            curveness: 0.6,
+            opacity: 0.3
+          },
+          itemStyle: {
+            borderWidth: 0,
+            borderColor: 'transparent'
+          },
+          label: { 
+            color: '#888',
+            fontSize: 10,
+            fontFamily: 'JetBrains Mono, monospace',
+            position: 'right',
+            distance: 8,
+            formatter: '{b}'
+          },
+          // 多层节点数据：展示5天的题材演变
+          data: [
+            // 第1天 (01-15)
+            { name: '01-15_AI应用', itemStyle: { color: flowThemeColors['AI应用'] }, depth: 0 },
+            { name: '01-15_算力', itemStyle: { color: flowThemeColors['算力'] }, depth: 0 },
+            { name: '01-15_机器人', itemStyle: { color: flowThemeColors['机器人'] }, depth: 0 },
+            { name: '01-15_半导体', itemStyle: { color: flowThemeColors['半导体'] }, depth: 0 },
+            { name: '01-15_新能源', itemStyle: { color: flowThemeColors['新能源'] }, depth: 0 },
+            { name: '01-15_光伏', itemStyle: { color: flowThemeColors['光伏'] }, depth: 0 },
+            { name: '01-15_化工', itemStyle: { color: flowThemeColors['化工'] }, depth: 0 },
+            { name: '01-15_公告', itemStyle: { color: flowThemeColors['公告'] }, depth: 0 },
+            { name: '01-15_其他', itemStyle: { color: flowThemeColors['其他'] }, depth: 0 },
+            // 第2天 (01-16)
+            { name: '01-16_AI应用', itemStyle: { color: flowThemeColors['AI应用'] }, depth: 1 },
+            { name: '01-16_算力', itemStyle: { color: flowThemeColors['算力'] }, depth: 1 },
+            { name: '01-16_机器人', itemStyle: { color: flowThemeColors['机器人'] }, depth: 1 },
+            { name: '01-16_半导体', itemStyle: { color: flowThemeColors['半导体'] }, depth: 1 },
+            { name: '01-16_新能源', itemStyle: { color: flowThemeColors['新能源'] }, depth: 1 },
+            { name: '01-16_商业航天', itemStyle: { color: flowThemeColors['商业航天'] }, depth: 1 },
+            { name: '01-16_光通信', itemStyle: { color: flowThemeColors['光通信'] }, depth: 1 },
+            { name: '01-16_化工', itemStyle: { color: flowThemeColors['化工'] }, depth: 1 },
+            { name: '01-16_公告', itemStyle: { color: flowThemeColors['公告'] }, depth: 1 },
+            { name: '01-16_其他', itemStyle: { color: flowThemeColors['其他'] }, depth: 1 },
+            // 第3天 (01-17)
+            { name: '01-17_AI应用', itemStyle: { color: flowThemeColors['AI应用'] }, depth: 2 },
+            { name: '01-17_算力', itemStyle: { color: flowThemeColors['算力'] }, depth: 2 },
+            { name: '01-17_机器人', itemStyle: { color: flowThemeColors['机器人'] }, depth: 2 },
+            { name: '01-17_半导体', itemStyle: { color: flowThemeColors['半导体'] }, depth: 2 },
+            { name: '01-17_新能源', itemStyle: { color: flowThemeColors['新能源'] }, depth: 2 },
+            { name: '01-17_光伏', itemStyle: { color: flowThemeColors['光伏'] }, depth: 2 },
+            { name: '01-17_化工', itemStyle: { color: flowThemeColors['化工'] }, depth: 2 },
+            { name: '01-17_公告', itemStyle: { color: flowThemeColors['公告'] }, depth: 2 },
+            { name: '01-17_其他', itemStyle: { color: flowThemeColors['其他'] }, depth: 2 },
+            // 第4天 (01-18)
+            { name: '01-18_AI应用', itemStyle: { color: flowThemeColors['AI应用'] }, depth: 3 },
+            { name: '01-18_算力', itemStyle: { color: flowThemeColors['算力'] }, depth: 3 },
+            { name: '01-18_机器人', itemStyle: { color: flowThemeColors['机器人'] }, depth: 3 },
+            { name: '01-18_半导体', itemStyle: { color: flowThemeColors['半导体'] }, depth: 3 },
+            { name: '01-18_新能源', itemStyle: { color: flowThemeColors['新能源'] }, depth: 3 },
+            { name: '01-18_商业航天', itemStyle: { color: flowThemeColors['商业航天'] }, depth: 3 },
+            { name: '01-18_光通信', itemStyle: { color: flowThemeColors['光通信'] }, depth: 3 },
+            { name: '01-18_化工', itemStyle: { color: flowThemeColors['化工'] }, depth: 3 },
+            { name: '01-18_公告', itemStyle: { color: flowThemeColors['公告'] }, depth: 3 },
+            { name: '01-18_其他', itemStyle: { color: flowThemeColors['其他'] }, depth: 3 },
+            // 第5天 (01-19)
+            { name: '01-19_AI应用', itemStyle: { color: flowThemeColors['AI应用'] }, depth: 4 },
+            { name: '01-19_算力', itemStyle: { color: flowThemeColors['算力'] }, depth: 4 },
+            { name: '01-19_机器人', itemStyle: { color: flowThemeColors['机器人'] }, depth: 4 },
+            { name: '01-19_半导体', itemStyle: { color: flowThemeColors['半导体'] }, depth: 4 },
+            { name: '01-19_新能源', itemStyle: { color: flowThemeColors['新能源'] }, depth: 4 },
+            { name: '01-19_光伏', itemStyle: { color: flowThemeColors['光伏'] }, depth: 4 },
+            { name: '01-19_化工', itemStyle: { color: flowThemeColors['化工'] }, depth: 4 },
+            { name: '01-19_公告', itemStyle: { color: flowThemeColors['公告'] }, depth: 4 },
+            { name: '01-19_其他', itemStyle: { color: flowThemeColors['其他'] }, depth: 4 }
+          ],
+          // 连接关系：展示题材演变路径
+          links: [
+            // AI应用主线
+            { source: '01-15_AI应用', target: '01-16_AI应用', value: 15 },
+            { source: '01-16_AI应用', target: '01-17_AI应用', value: 12 },
+            { source: '01-17_AI应用', target: '01-18_AI应用', value: 10 },
+            { source: '01-18_AI应用', target: '01-19_AI应用', value: 8 },
+            // 算力主线（强势）
+            { source: '01-15_算力', target: '01-16_算力', value: 20 },
+            { source: '01-16_算力', target: '01-17_算力', value: 18 },
+            { source: '01-17_算力', target: '01-18_算力', value: 22 },
+            { source: '01-18_算力', target: '01-19_算力', value: 25 },
+            // 机器人主线
+            { source: '01-15_机器人', target: '01-16_机器人', value: 12 },
+            { source: '01-16_机器人', target: '01-17_机器人', value: 10 },
+            { source: '01-17_机器人', target: '01-18_机器人', value: 8 },
+            { source: '01-18_机器人', target: '01-19_机器人', value: 6 },
+            // 半导体主线
+            { source: '01-15_半导体', target: '01-16_半导体', value: 10 },
+            { source: '01-16_半导体', target: '01-17_半导体', value: 12 },
+            { source: '01-17_半导体', target: '01-18_半导体', value: 15 },
+            { source: '01-18_半导体', target: '01-19_半导体', value: 18 },
+            // 新能源主线
+            { source: '01-15_新能源', target: '01-16_新能源', value: 8 },
+            { source: '01-16_新能源', target: '01-17_新能源', value: 10 },
+            { source: '01-17_新能源', target: '01-18_新能源', value: 12 },
+            { source: '01-18_新能源', target: '01-19_新能源', value: 10 },
+            // 光伏波动
+            { source: '01-15_光伏', target: '01-16_其他', value: 5 },
+            { source: '01-16_其他', target: '01-17_光伏', value: 6 },
+            { source: '01-17_光伏', target: '01-18_其他', value: 4 },
+            { source: '01-18_其他', target: '01-19_光伏', value: 7 },
+            // 化工
+            { source: '01-15_化工', target: '01-16_化工', value: 6 },
+            { source: '01-16_化工', target: '01-17_化工', value: 5 },
+            { source: '01-17_化工', target: '01-18_化工', value: 4 },
+            { source: '01-18_化工', target: '01-19_化工', value: 3 },
+            // 公告（持续）
+            { source: '01-15_公告', target: '01-16_公告', value: 8 },
+            { source: '01-16_公告', target: '01-17_公告', value: 7 },
+            { source: '01-17_公告', target: '01-18_公告', value: 6 },
+            { source: '01-18_公告', target: '01-19_公告', value: 5 },
+            // 跨题材转换
+            { source: '01-16_算力', target: '01-17_半导体', value: 5 },
+            { source: '01-17_半导体', target: '01-18_算力', value: 3 },
+            { source: '01-16_AI应用', target: '01-17_机器人', value: 4 },
+            { source: '01-17_机器人', target: '01-18_AI应用', value: 2 },
+            // 新题材涌现
+            { source: '01-15_其他', target: '01-16_商业航天', value: 6 },
+            { source: '01-16_商业航天', target: '01-17_其他', value: 4 },
+            { source: '01-17_其他', target: '01-18_商业航天', value: 5 },
+            { source: '01-16_其他', target: '01-17_光通信', value: 4 },
+            { source: '01-17_光通信', target: '01-18_其他', value: 3 }
+          ]
+        }]
+      });
+    }
+
+    // Actions
+    let isRunning = false;
+    let logs = [];
+
+    function startCrawl() {
+      if (isRunning) return;
+      isRunning = true;
+      
+      document.getElementById('progressBar').style.display = 'block';
+      document.getElementById('statusIndicator').style.display = 'flex';
+      toggleLogs(true);
+      addLog('info', '开始数据抓取...');
+      
+      let progress = 0;
+      const interval = setInterval(() => {
+        progress += 10;
+        updateProgress(progress);
+        addLog('info', `正在抓取数据... ${progress}%`);
+        
+        if (progress >= 100) {
+          clearInterval(interval);
+          isRunning = false;
+          addLog('success', '数据抓取完成');
+          updateMetrics({ limitUp: 55, limitDown: 12, maxHeight: '7板', brokenRatio: '18.0%' });
+          renderTable();
+        }
+      }, 300);
+    }
+
+    function startPipeline() {
+      if (isRunning) return;
+      isRunning = true;
+      
+      document.getElementById('progressBar').style.display = 'block';
+      document.getElementById('statusIndicator').style.display = 'flex';
+      toggleLogs(true);
+      addLog('info', '开始全流程处理...');
+      
+      let progress = 0;
+      const interval = setInterval(() => {
+        progress += 5;
+        updateProgress(progress);
+        addLog('info', `正在处理... ${progress}%`);
+        
+        if (progress >= 100) {
+          clearInterval(interval);
+          isRunning = false;
+          addLog('success', '全流程处理完成');
+          updateMetrics({ limitUp: 72, limitDown: 8, maxHeight: '8板', brokenRatio: '15.0%' });
+          renderTable();
+        }
+      }, 200);
+    }
+
+    function updateProgress(value) {
+      document.getElementById('progressFill').style.width = value + '%';
+      document.getElementById('statusText').textContent = `运行中 ${value}%`;
+    }
+
+    function updateMetrics(data) {
+      document.getElementById('metricLimitUp').textContent = data.limitUp;
+      document.getElementById('metricLimitDown').textContent = data.limitDown;
+      document.getElementById('metricMaxHeight').textContent = data.maxHeight;
+      document.getElementById('metricBrokenRatio').textContent = data.brokenRatio;
+    }
+
+    function renderTable() {
+      const tbody = document.getElementById('stockTableBody');
+      tbody.innerHTML = mockStocks.map(stock => `
+        <tr class="tv-table-row-up">
+          <td>
+            <div style="display: flex; flex-direction: column;">
+              <span class="tv-text-primary tv-text-mono">${stock.name}</span>
+              <span class="tv-text-secondary" style="font-size: 10px;">${stock.code}</span>
+            </div>
+          </td>
+          <td>
+            <span class="tv-badge ${stock.limit >= 4 ? 'tv-badge-up' : 'tv-badge-neutral'}">
+              ${stock.limit}板
+            </span>
+          </td>
+          <td class="tv-text-mono">${stock.amount.toFixed(2)}亿</td>
+          <td class="tv-text-mono">${stock.turnover.toFixed(2)}%</td>
+          <td>
+            ${stock.regulation ? '<i class="fas fa-exclamation-triangle tv-text-down"></i>' : '<span class="tv-text-muted">-</span>'}
+          </td>
+          <td>
+            ${stock.institution ? '<i class="fas fa-university tv-text-up"></i>' : '<span class="tv-text-muted">-</span>'}
+          </td>
+          <td>
+            <span class="tv-truncate" style="max-width: 120px; display: block;">${stock.tag}</span>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    function addLog(level, message) {
+      const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      logs.push({ time, level, message });
+      renderLogs();
+    }
+
+    function renderLogs() {
+      const container = document.getElementById('logsContent');
+      if (logs.length === 0) {
+        container.innerHTML = '<div class="tv-empty-state"><span>等待任务启动...</span></div>';
+        return;
+      }
+      
+      container.innerHTML = logs.map(log => `
+        <div class="tv-log-line">
+          <span class="tv-log-time">${log.time}</span>
+          <span class="tv-log-level tv-log-level-${log.level}">${log.level.toUpperCase()}</span>
+          <span class="tv-log-message">${log.message}</span>
+        </div>
+      `).join('');
+      
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function clearLogs() {
+      logs = [];
+      renderLogs();
+    }
+
+    function toggleLogs(forceShow) {
+      const panel = document.getElementById('logsPanel');
+      const isVisible = forceShow !== undefined ? !forceShow : panel.classList.contains('visible');
+      
+      if (isVisible) {
+        panel.classList.remove('visible');
+      } else {
+        panel.classList.add('visible');
+      }
+    }
+
+    function toggleAiPanel() {
+      const panel = document.getElementById('aiPanel');
+      const fab = document.getElementById('aiFab');
+      const isVisible = panel.classList.contains('visible');
+      
+      if (isVisible) {
+        panel.classList.remove('visible');
+        fab.classList.remove('hidden');
+      } else {
+        panel.classList.add('visible');
+        fab.classList.add('hidden');
+      }
+    }
+
+    function fetchBrief() {
+      const content = `【AI每日复盘】
+
+今日市场涨停家数72家，跌停8家，市场情绪偏暖。
+
+最高连板达到8板，为近期新高，显示短线资金活跃。
+
+主流题材方面：
+1. 人工智能板块持续发酵，龙头个股连板高度领先
+2. 新能源板块资金流入明显，机构参与度较高
+3. 半导体板块出现分化，部分个股炸板
+
+建议关注：
+- 连板高度超过5板的个股监管风险
+- 机构买入信号的个股后续表现
+- 题材轮动的节奏把握`;
+      
+      document.getElementById('aiContent').textContent = content;
+    }
+
+    // AI Brief Panel Functions
+    let activeThemeFilter = null;
+
+    function toggleAiBrief() {
+      const panel = document.getElementById('aiBriefPanel');
+      const toggle = document.getElementById('aiBriefToggle');
+      const isCollapsed = panel.classList.contains('collapsed');
+      
+      if (isCollapsed) {
+        panel.classList.remove('collapsed');
+        toggle.style.transform = 'rotate(0deg)';
+      } else {
+        panel.classList.add('collapsed');
+        toggle.style.transform = 'rotate(-90deg)';
+      }
+      
+      // Resize charts after layout change
+      setTimeout(() => {
+        trendChart?.resize();
+        bubbleChart?.resize();
+        flowChart?.resize();
+      }, 200);
+    }
+
+    /**
+     * 根据题材过滤全站数据
+     * 实现"全站响应"的交互叙事效果
+     * @param {string} theme - 题材名称
+     */
+    function filterByTheme(theme) {
+      const tags = document.querySelectorAll('.tv-ai-brief-tag');
+      
+      // 切换过滤状态
+      if (activeThemeFilter === theme) {
+        // 取消过滤
+        activeThemeFilter = null;
+        tags.forEach(tag => tag.classList.remove('active-filter'));
+        addLog('info', `已取消题材过滤`);
+      } else {
+        // 设置新过滤
+        activeThemeFilter = theme;
+        tags.forEach(tag => {
+          tag.classList.remove('active-filter');
+          if (tag.dataset.theme === theme) {
+            tag.classList.add('active-filter');
+          }
+        });
+        addLog('info', `已筛选题材: ${theme}`);
+      }
+      
+      // 1. 过滤散点图 - 高亮选中题材，其他淡化
+      filterBubbleChart(theme);
+      
+      // 2. 过滤股票表格 - 只显示相关题材
+      filterStockTable(theme);
+      
+      // 3. 更新题材流向图
+      filterFlowChart(theme);
+    }
+
+    /**
+     * 过滤散点图数据
+     */
+    function filterBubbleChart(theme) {
+      if (!bubbleChart) return;
+      
+      const option = bubbleChart.getOption();
+      const data = option.series[0].data;
+      
+      data.forEach(item => {
+        if (!theme || item.theme === theme) {
+          // 选中题材：正常显示
+          item.itemStyle.opacity = 0.9;
+          item.itemStyle.shadowBlur = 20;
+        } else {
+          // 未选中题材：淡化显示
+          item.itemStyle.opacity = 0.15;
+          item.itemStyle.shadowBlur = 0;
+        }
+      });
+      
+      bubbleChart.setOption({ series: [{ data }] });
+    }
+
+    /**
+     * 过滤股票表格
+     */
+    function filterStockTable(theme) {
+      const rows = document.querySelectorAll('#stockTableBody tr');
+      const themeMapping = {
+        'AI': ['金融科技', '5G', '芯片', '面板'],
+        '新能源': ['新能源', '智能制造'],
+        '半导体': ['半导体', '医美'],
+        '其他': ['房地产', '白酒', '家电', '中药']
+      };
+      
+      rows.forEach(row => {
+        const tagCell = row.querySelector('td:last-child span');
+        if (!tagCell) return;
+        
+        const tagText = tagCell.textContent;
+        
+        if (!theme) {
+          // 显示所有
+          row.style.display = '';
+          row.style.opacity = '1';
+        } else {
+          // 检查是否匹配当前题材
+          const keywords = themeMapping[theme] || [];
+          const isMatch = keywords.some(kw => tagText.includes(kw));
+          
+          if (isMatch) {
+            row.style.display = '';
+            row.style.opacity = '1';
+          } else {
+            row.style.display = 'none';
+          }
+        }
+      });
+    }
+
+    /**
+     * 过滤题材流向图
+     */
+    function filterFlowChart(theme) {
+      if (!flowChart) return;
+      
+      const option = flowChart.getOption();
+      const data = option.series[0].data;
+      const links = option.series[0].links;
+      
+      if (!theme) {
+        // 恢复所有
+        data.forEach(node => {
+          node.itemStyle.opacity = 1;
+          node.label = { color: '#888', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' };
+        });
+        links.forEach(link => {
+          link.lineStyle = { opacity: 0.3 };
+        });
+      } else {
+        // 高亮相关节点 - 匹配新的题材名称格式
+        const themeMap = {
+          'AI': ['AI应用', '算力'],
+          '新能源': ['新能源', '光伏'],
+          '半导体': ['半导体'],
+          '其他': ['其他', '公告', '化工']
+        };
+        const themeKeywords = themeMap[theme] || [];
+        
+        // 找出相关节点
+        const relatedNodes = new Set();
+        data.forEach(node => {
+          const isMatch = themeKeywords.some(kw => node.name.includes(kw));
+          if (isMatch) {
+            relatedNodes.add(node.name);
+            node.itemStyle.opacity = 1;
+            node.label = { color: '#fff', fontSize: 11, fontWeight: 'bold', fontFamily: 'JetBrains Mono, monospace' };
+          } else {
+            node.itemStyle.opacity = 0.15;
+            node.label = { color: '#444', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' };
+          }
+        });
+        
+        // 高亮相关连线
+        links.forEach(link => {
+          if (relatedNodes.has(link.source) || relatedNodes.has(link.target)) {
+            link.lineStyle = { opacity: 0.8 };
+          } else {
+            link.lineStyle = { opacity: 0.05 };
+          }
+        });
+      }
+      
+      flowChart.setOption({ series: [{ data, links }] });
+    }
+
+    function refreshBrief() {
+      const btn = event.target.closest('.tv-ai-brief-btn');
+      const icon = btn.querySelector('i');
+      icon.classList.add('fa-spin');
+      
+      // Simulate refresh
+      setTimeout(() => {
+        icon.classList.remove('fa-spin');
+        addLog('info', 'AI复盘简报已刷新');
+      }, 1000);
+    }
+
+    function viewFullReport() {
+      addLog('info', '正在生成完整复盘报告...');
+      
+      // Simulate loading
+      setTimeout(() => {
+        addLog('success', '完整复盘报告已生成');
+        alert('完整复盘报告功能演示：\n\n报告包含：\n- 市场情绪分析\n- 资金流向统计\n- 龙虎榜深度解读\n- 明日策略建议\n- 风险提示清单');
+      }, 800);
+    }
+
+    function pushToFeishu() {
+      addLog('info', '正在推送至飞书...');
+      
+      // Simulate API call
+      setTimeout(() => {
+        addLog('success', '已成功推送至飞书群');
+        
+        // Show notification
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          background: var(--tv-up);
+          color: white;
+          padding: 12px 20px;
+          border-radius: 4px;
+          font-size: 13px;
+          z-index: 1000;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          animation: slideIn 0.3s ease;
+        `;
+        notification.innerHTML = '<i class="fas fa-check-circle"></i><span>简报已推送至飞书</span>';
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+          notification.style.animation = 'slideOut 0.3s ease';
+          setTimeout(() => notification.remove(), 300);
+        }, 3000);
+      }, 1000);
+    }
+
+    // Add animation styles
+    const style = document.createElement('style');
+    style.textContent = `
+      @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes slideOut {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0; }
+      }
+    `;
+    document.head.appendChild(style);
+
+    // Resize handler
+    window.addEventListener('resize', () => {
+      sentimentChart?.resize();
+      trendChart?.resize();
+      bubbleChart?.resize();
+      flowChart?.resize();
+    });
+
+    // Init
+    initCharts();
+  </script>
+</body>
+</html>

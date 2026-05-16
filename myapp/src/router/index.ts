@@ -110,7 +110,27 @@ const routes: RouteRecordRaw[] = [
         name: 'Similarity',
         component: () => import('../views/SimilarityPage.vue'),
         meta: {
-          title: 'K线形态相似度'
+          title: 'K线形态研究'
+        }
+      },
+      {
+        path: 'pattern-radar',
+        redirect: (to) => ({
+          path: '/similarity',
+          query: { ...to.query, module: 'radar' }
+        })
+      },
+      {
+        path: 'concept-research',
+        redirect: '/industry-chain'
+      },
+      {
+        path: 'industry-chain',
+        name: 'IndustryChainRadar',
+        component: () => import('../views/IndustryChainRadar.vue'),
+        meta: {
+          title: '产业链雷达',
+          keepAlive: true
         }
       }
     ]

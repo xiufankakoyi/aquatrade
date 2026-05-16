@@ -1,0 +1,2266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票量化筛选器 - 筛选栏样板</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0c10;
+            --bg-secondary: #11141a;
+            --bg-tertiary: #1a1e27;
+            --bg-hover: #252a36;
+            --border-color: #252a36;
+            --border-hover: #3d4450;
+            --text-primary: #e6edf3;
+            --text-secondary: #7d8590;
+            --text-muted: #555c66;
+            --accent-blue: #2f81f7;
+            --accent-blue-hover: #58a6ff;
+            --accent-green: #238636;
+            --accent-green-hover: #3fb950;
+            --accent-red: #f85149;
+            --accent-orange: #d29922;
+            --accent-purple: #8957e5;
+            --accent-cyan: #39c5cf;
+            --accent-pink: #db61a2;
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.4);
+            --shadow-md: 0 4px 16px rgba(0,0,0,0.5);
+            --shadow-lg: 0 8px 32px rgba(0,0,0,0.6);
+            --radius-sm: 6px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        .page-header {
+            margin-bottom: 20px;
+        }
+
+        .page-header h1 {
+            font-size: 22px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .page-header h1::before {
+            content: '';
+            width: 4px;
+            height: 22px;
+            background: linear-gradient(180deg, var(--accent-blue), var(--accent-purple));
+            border-radius: 2px;
+        }
+
+        .page-header p {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        .main-layout {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            gap: 20px;
+        }
+
+        .filter-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .card:hover {
+            border-color: var(--border-hover);
+            box-shadow: var(--shadow-md);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border-color);
+            background: linear-gradient(90deg, var(--bg-secondary), var(--bg-tertiary));
+        }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .icon {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .icon svg {
+            width: 100%;
+            height: 100%;
+            fill: currentColor;
+        }
+
+        .card-body {
+            padding: 16px;
+        }
+
+        .date-card .icon { color: var(--accent-blue); }
+        .filter-card .icon { color: var(--accent-purple); }
+        .sort-card .icon { color: var(--accent-orange); }
+
+        .date-input-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .date-field {
+            position: relative;
+        }
+
+        .date-field label {
+            display: block;
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .date-input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .date-input {
+            width: 100%;
+            padding: 9px 12px 9px 36px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .date-input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 2px rgba(47, 129, 247, 0.15);
+        }
+
+        .date-input-wrapper .icon {
+            position: absolute;
+            left: 12px;
+            color: var(--text-secondary);
+        }
+
+        .date-presets {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 10px;
+        }
+
+        .preset-tag {
+            padding: 4px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .preset-tag:hover {
+            background: var(--bg-hover);
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        .preset-tag.active {
+            background: rgba(47, 129, 247, 0.12);
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        .filter-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn-icon {
+            width: 26px;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-icon:hover {
+            background: var(--bg-hover);
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        .btn-icon .icon {
+            width: 14px;
+            height: 14px;
+        }
+
+        .filter-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            position: relative;
+        }
+
+        .filter-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 6px 12px;
+            transition: all 0.2s;
+            position: relative;
+        }
+
+        .filter-item:hover {
+            border-color: var(--border-hover);
+            background: var(--bg-hover);
+        }
+
+        .filter-item.bullish {
+            border-color: rgba(35, 134, 54, 0.4);
+            background: rgba(35, 134, 54, 0.08);
+        }
+
+        .filter-item.bullish .filter-value {
+            color: var(--accent-green-hover);
+        }
+
+        .filter-item.bearish {
+            border-color: rgba(248, 81, 73, 0.4);
+            background: rgba(248, 81, 73, 0.08);
+        }
+
+        .filter-item.bearish .filter-value {
+            color: var(--accent-red);
+        }
+
+        .filter-field {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        .filter-operator {
+            font-size: 10px;
+            color: var(--text-muted);
+            padding: 0 2px;
+        }
+
+        .filter-value {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+            white-space: nowrap;
+        }
+
+        .filter-trend-icon {
+            width: 14px;
+            height: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .filter-trend-icon svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .filter-trend-up {
+            color: var(--accent-green-hover);
+        }
+
+        .filter-trend-down {
+            color: var(--accent-red);
+        }
+
+        .filter-remove {
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-radius: 50%;
+            transition: all 0.2s;
+            margin-left: 2px;
+        }
+
+        .filter-remove:hover {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--accent-red);
+        }
+
+        .filter-remove .icon {
+            width: 10px;
+            height: 10px;
+        }
+
+        /* 逻辑连接线 */
+        .filter-logic-chain {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-bottom: 12px;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logic-node {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .logic-operator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2px 8px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--accent-blue);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .logic-operator:hover {
+            border-color: var(--accent-blue);
+            background: rgba(47, 129, 247, 0.1);
+        }
+
+        .logic-line {
+            flex: 1;
+            height: 2px;
+            background: linear-gradient(90deg, var(--border-color), var(--accent-blue), var(--border-color));
+            border-radius: 1px;
+            position: relative;
+        }
+
+        .logic-line::before,
+        .logic-line::after {
+            content: '';
+            position: absolute;
+            width: 6px;
+            height: 6px;
+            background: var(--accent-blue);
+            border-radius: 50%;
+            top: 50%;
+            transform: translateY(-50%);
+        }
+
+        .logic-line::before {
+            left: 0;
+        }
+
+        .logic-line::after {
+            right: 0;
+        }
+
+        .filter-stats {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .filter-stats span {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .add-filter-btn {
+            width: 100%;
+            padding: 10px;
+            background: transparent;
+            border: 1.5px dashed var(--border-color);
+            border-radius: var(--radius-md);
+            color: var(--text-secondary);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .add-filter-btn:hover {
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+            background: rgba(47, 129, 247, 0.04);
+        }
+
+        .add-filter-btn .icon {
+            width: 14px;
+            height: 14px;
+        }
+
+        .sort-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .sort-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+        }
+
+        .sort-drag-handle {
+            color: var(--text-muted);
+            cursor: grab;
+            font-size: 11px;
+            letter-spacing: -1px;
+        }
+
+        .sort-select {
+            flex: 1;
+            padding: 5px 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+
+        .sort-direction {
+            padding: 5px 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .sort-direction:hover {
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        .sort-direction .icon {
+            width: 12px;
+            height: 12px;
+        }
+
+        .execute-btn {
+            width: 100%;
+            padding: 12px 20px;
+            background: linear-gradient(135deg, var(--accent-green), #3fb950);
+            border: none;
+            border-radius: var(--radius-md);
+            color: white;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-shadow: 0 4px 12px rgba(35, 134, 54, 0.25);
+        }
+
+        .execute-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(35, 134, 54, 0.35);
+        }
+
+        .execute-btn:active {
+            transform: translateY(0);
+        }
+
+        .execute-btn .icon {
+            width: 16px;
+            height: 16px;
+        }
+
+        .content-area {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .content-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .view-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .view-label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        .view-dropdown {
+            position: relative;
+        }
+
+        .view-dropdown-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 12px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            min-width: 140px;
+        }
+
+        .view-dropdown-btn:hover {
+            border-color: var(--accent-blue);
+        }
+
+        .view-dropdown-btn .icon {
+            width: 14px;
+            height: 14px;
+            color: var(--accent-blue);
+        }
+
+        .view-dropdown-btn .dropdown-arrow {
+            margin-left: auto;
+            width: 12px;
+            height: 12px;
+            color: var(--text-secondary);
+            transition: transform 0.2s;
+        }
+
+        .view-dropdown.active .view-dropdown-btn .dropdown-arrow {
+            transform: rotate(180deg);
+        }
+
+        .view-dropdown-menu {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            margin-top: 4px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-lg);
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-4px);
+            transition: all 0.2s;
+            z-index: 100;
+            overflow: hidden;
+        }
+
+        .view-dropdown.active .view-dropdown-menu {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
+        .view-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 12px;
+            font-size: 12px;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.15s;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .view-option:last-child {
+            border-bottom: none;
+        }
+
+        .view-option:hover {
+            background: var(--bg-hover);
+        }
+
+        .view-option.active {
+            background: rgba(47, 129, 247, 0.12);
+            color: var(--accent-blue);
+        }
+
+        .view-option .icon {
+            width: 14px;
+            height: 14px;
+        }
+
+        .view-option-desc {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-left: auto;
+        }
+
+        .view-option.active .view-option-desc {
+            color: var(--accent-blue);
+            opacity: 0.7;
+        }
+
+        .content-stats {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: var(--accent-blue);
+        }
+
+        .content-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-secondary {
+            padding: 7px 14px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-hover);
+            border-color: var(--border-hover);
+        }
+
+        .btn-secondary .icon {
+            width: 14px;
+            height: 14px;
+        }
+
+        .table-wrapper {
+            flex: 1;
+            overflow: auto;
+            position: relative;
+        }
+
+        .data-table {
+            width: max-content;
+            min-width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            font-size: 11px;
+        }
+
+        .data-table th:first-child,
+        .data-table td:first-child {
+            position: sticky;
+            left: 0;
+            z-index: 20;
+            background: var(--bg-tertiary);
+            border-right: 1px solid var(--border-color);
+        }
+
+        .data-table th:first-child {
+            z-index: 21;
+        }
+
+        .data-table thead tr:first-child th {
+            padding: 8px 10px;
+            text-align: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            letter-spacing: 0.5px;
+        }
+
+        .group-basic { border-top: 2px solid var(--accent-blue); }
+        .group-price { border-top: 2px solid var(--accent-green); }
+        .group-volume { border-top: 2px solid var(--accent-orange); }
+        .group-value { border-top: 2px solid var(--accent-purple); }
+        .group-ma { border-top: 2px solid var(--accent-cyan); }
+        .group-momentum { border-top: 2px solid var(--accent-pink); }
+        .group-boll { border-top: 2px solid #a371f7; }
+        .group-signal { border-top: 2px solid #3fb950; }
+        .group-return { border-top: 2px solid #f0883e; }
+        .group-risk { border-top: 2px solid #f85149; }
+        .group-stats { border-top: 2px solid #58a6ff; }
+
+        .data-table thead tr:last-child th {
+            padding: 10px 8px;
+            text-align: right;
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
+            position: sticky;
+            top: 31px;
+            z-index: 10;
+        }
+
+        .data-table td {
+            padding: 10px 8px;
+            border-bottom: 1px solid var(--border-color);
+            white-space: nowrap;
+            text-align: right;
+        }
+
+        .data-table td:first-child {
+            text-align: left;
+        }
+
+        .data-table tbody tr:hover td {
+            background: rgba(47, 129, 247, 0.04);
+        }
+
+        .data-table tbody tr:hover td:first-child {
+            background: var(--bg-hover);
+        }
+
+        .stock-code {
+            font-weight: 600;
+            color: var(--accent-blue);
+            font-size: 12px;
+        }
+
+        .stock-name {
+            color: var(--text-secondary);
+            font-size: 10px;
+            margin-left: 4px;
+        }
+
+        .price-up { color: var(--accent-green-hover); }
+        .price-down { color: var(--accent-red); }
+        .signal-yes { color: var(--accent-green-hover); font-weight: 600; }
+        .signal-no { color: var(--text-muted); }
+
+        .col-stock { min-width: 110px; }
+        .col-price { min-width: 60px; }
+        .col-pct { min-width: 60px; }
+        .col-volume { min-width: 70px; }
+        .col-turnover { min-width: 65px; }
+        .col-ratio { min-width: 55px; }
+        .col-ma { min-width: 60px; }
+        .col-rsi { min-width: 55px; }
+        .col-macd { min-width: 65px; }
+        .col-kdj { min-width: 55px; }
+        .col-boll { min-width: 65px; }
+        .col-signal { min-width: 50px; }
+        .col-return { min-width: 60px; }
+        .col-risk { min-width: 65px; }
+        .col-beta { min-width: 65px; }
+        .col-alpha { min-width: 65px; }
+        .col-corr { min-width: 75px; }
+
+        .table-wrapper::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        .table-wrapper::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+
+        .table-wrapper::-webkit-scrollbar-thumb {
+            background: var(--border-hover);
+            border-radius: 4px;
+        }
+
+        .table-wrapper::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+
+        .drawer-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }
+
+        .drawer-overlay.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .drawer {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: 480px;
+            height: 100vh;
+            background: var(--bg-secondary);
+            border-left: 1px solid var(--border-color);
+            transform: translateX(100%);
+            transition: transform 0.3s ease;
+            z-index: 1001;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .drawer.active {
+            transform: translateX(0);
+        }
+
+        .drawer-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+        }
+
+        .drawer-title {
+            font-size: 15px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .drawer-title .icon {
+            color: var(--accent-blue);
+            width: 18px;
+            height: 18px;
+        }
+
+        .drawer-close {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-radius: var(--radius-sm);
+            transition: all 0.2s;
+        }
+
+        .drawer-close:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .drawer-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0;
+        }
+
+        .drawer-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 20px;
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-tertiary);
+            gap: 12px;
+        }
+
+        .drawer-stats {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .drawer-stats span {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+
+        .drawer-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-text {
+            padding: 8px 16px;
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-text:hover {
+            color: var(--text-primary);
+        }
+
+        .btn-primary {
+            padding: 8px 20px;
+            background: var(--accent-blue);
+            border: none;
+            border-radius: var(--radius-md);
+            color: white;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-blue-hover);
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .tab {
+            padding: 12px 16px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .tab:hover {
+            color: var(--text-primary);
+            background: rgba(255,255,255,0.02);
+        }
+
+        .tab.active {
+            color: var(--accent-blue);
+            border-bottom-color: var(--accent-blue);
+            font-weight: 500;
+        }
+
+        .tab-content {
+            display: none;
+            padding: 16px 20px;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .column-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .column-category {
+            margin-bottom: 16px;
+        }
+
+        .column-category-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .column-category-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .link-btn {
+            font-size: 11px;
+            color: var(--accent-blue);
+            cursor: pointer;
+            background: none;
+            border: none;
+        }
+
+        .link-btn:hover {
+            text-decoration: underline;
+        }
+
+        .column-checkbox-list {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .column-checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .column-checkbox-item:hover {
+            border-color: var(--border-hover);
+        }
+
+        .column-checkbox-item.selected {
+            background: rgba(47, 129, 247, 0.08);
+            border-color: var(--accent-blue);
+        }
+
+        .column-checkbox-item input[type="checkbox"] {
+            width: 14px;
+            height: 14px;
+            accent-color: var(--accent-blue);
+            cursor: pointer;
+        }
+
+        .column-checkbox-item label {
+            font-size: 12px;
+            color: var(--text-primary);
+            cursor: pointer;
+            flex: 1;
+        }
+
+        .column-search {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .search-input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 8px 12px 8px 36px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            color: var(--text-primary);
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        .search-input-wrapper .icon {
+            position: absolute;
+            left: 12px;
+            color: var(--text-secondary);
+        }
+
+        @media (max-width: 1024px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+            
+            .filter-panel {
+                max-height: 50vh;
+                overflow-y: auto;
+            }
+
+            .drawer {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="page-header">
+            <h1>股票量化筛选器</h1>
+            <p>基于多维度技术指标的智能选股工具</p>
+        </div>
+
+        <div class="main-layout">
+            <div class="filter-panel">
+                <div class="card date-card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="icon">
+                                <svg viewBox="0 0 16 16"><path d="M4.75 0a.75.75 0 01.75.75V2h5V.75a.75.75 0 011.5 0V2h1.25c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0113.25 16H2.75A1.75 1.75 0 011 14.25V3.75C1 2.784 1.784 2 2.75 2H4V.75A.75.75 0 014.75 0zm0 3.5h8.5a.25.25 0 01.25.25V5h-11V3.75a.25.25 0 01.25-.25h2zm-2.25 3v7.75c0 .138.112.25.25.25h10.5a.25.25 0 00.25-.25V6.5h-11z"/></svg>
+                            </span>
+                            交易日期
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="date-input-group">
+                            <div class="date-field">
+                                <label>选择日期</label>
+                                <div class="date-input-wrapper">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M4.75 0a.75.75 0 01.75.75V2h5V.75a.75.75 0 011.5 0V2h1.25c.966 0 1.75.784 1.75 1.75v10.5A1.75 1.75 0 0113.25 16H2.75A1.75 1.75 0 011 14.25V3.75C1 2.784 1.784 2 2.75 2H4V.75A.75.75 0 014.75 0zm0 3.5h8.5a.25.25 0 01.25.25V5h-11V3.75a.25.25 0 01.25-.25h2zm-2.25 3v7.75c0 .138.112.25.25.25h10.5a.25.25 0 00.25-.25V6.5h-11z"/></svg>
+                                    </span>
+                                    <input type="date" class="date-input" value="2024-11-25">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="date-presets">
+                            <span class="preset-tag active">今天</span>
+                            <span class="preset-tag">昨天</span>
+                            <span class="preset-tag">近一周</span>
+                            <span class="preset-tag">近一月</span>
+                            <span class="preset-tag">本季度</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card filter-card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="icon">
+                                <svg viewBox="0 0 16 16"><path d="M1.75 2.5a.75.75 0 000 1.5h6.5a.75.75 0 000-1.5h-6.5zm0 5a.75.75 0 000 1.5h4.5a.75.75 0 000-1.5h-4.5zm0 5a.75.75 0 000 1.5h2.5a.75.75 0 000-1.5h-2.5zm10.56-6.78a.75.75 0 10-1.06 1.06L13.44 8l-2.19 2.19a.75.75 0 101.06 1.06l2.72-2.72a.75.75 0 000-1.06l-2.72-2.72z"/></svg>
+                            </span>
+                            筛选条件
+                            <span style="font-size: 11px; color: var(--text-muted); font-weight: normal;">(3)</span>
+                        </div>
+                        <div class="filter-actions">
+                            <button class="btn-icon" title="清空条件">
+                                <span class="icon">
+                                    <svg viewBox="0 0 16 16"><path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zm-8.5 3v9.25c0 .966.784 1.75 1.75 1.75h7.5a1.75 1.75 0 001.75-1.75V4.75h-11zm3.5 2.75a.75.75 0 011.5 0v5a.75.75 0 01-1.5 0v-5zm3 0a.75.75 0 011.5 0v5a.75.75 0 01-1.5 0v-5z"/></svg>
+                                </span>
+                            </button>
+                            <button class="btn-icon" title="保存模板">
+                                <span class="icon">
+                                    <svg viewBox="0 0 16 16"><path d="M2.5 1.75a.75.75 0 00-1.5 0v12.5c0 .966.784 1.75 1.75 1.75h10.5A1.75 1.75 0 0015.25 14.25V4.78a.75.75 0 00-.22-.53L11.75.72a.75.75 0 00-.53-.22H4.25A1.75 1.75 0 002.5 2.25v-.5zm1.75 0h6.5v3.5a.75.75 0 01-.75.75h-5a.75.75 0 01-.75-.75v-3.5z"/></svg>
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <!-- 逻辑关系链 -->
+                        <div class="filter-logic-chain">
+                            <div class="logic-node">
+                                <span class="icon" style="width: 14px; height: 14px; color: var(--accent-blue);">
+                                    <svg viewBox="0 0 16 16"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm0 14.5a6.5 6.5 0 110-13 6.5 6.5 0 010 13z"/></svg>
+                                </span>
+                                <span>条件组合</span>
+                            </div>
+                            <div class="logic-line"></div>
+                            <button class="logic-operator" onclick="toggleLogicOperator(this)">AND</button>
+                        </div>
+
+                        <!-- 筛选统计 -->
+                        <div class="filter-stats">
+                            <span>已选条件: <span>3</span></span>
+                            <span>预估结果: <span>128</span> 只</span>
+                        </div>
+
+                        <!-- 筛选标签云 -->
+                        <div class="filter-list">
+                            <div class="filter-item bullish" data-field="change">
+                                <span class="filter-field">涨跌幅</span>
+                                <span class="filter-operator">&gt;</span>
+                                <span class="filter-value">
+                                    <span class="filter-trend-icon filter-trend-up">
+                                        <svg viewBox="0 0 16 16"><path d="M8 4a.75.75 0 01.75.75v4.69l1.78-1.78a.75.75 0 111.06 1.06l-3.06 3.06a.75.75 0 01-1.06 0L4.41 8.72a.75.75 0 011.06-1.06l1.78 1.78V4.75A.75.75 0 018 4z"/></svg>
+                                    </span>
+                                    5%
+                                </span>
+                                <button class="filter-remove" title="删除条件">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
+                                    </span>
+                                </button>
+                            </div>
+                            <div class="filter-item" data-field="volume">
+                                <span class="filter-field">成交量</span>
+                                <span class="filter-operator">&gt;</span>
+                                <span class="filter-value">1000万</span>
+                                <button class="filter-remove" title="删除条件">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
+                                    </span>
+                                </button>
+                            </div>
+                            <div class="filter-item" data-field="turnover">
+                                <span class="filter-field">换手率</span>
+                                <span class="filter-operator">∈</span>
+                                <span class="filter-value">3% - 15%</span>
+                                <button class="filter-remove" title="删除条件">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                        <button class="add-filter-btn" style="margin-top: 10px;">
+                            <span class="icon">
+                                <svg viewBox="0 0 16 16"><path d="M7.75 2a.75.75 0 01.75.75V7h4.25a.75.75 0 110 1.5H8.5v4.25a.75.75 0 11-1.5 0V8.5H2.75a.75.75 0 010-1.5H7V2.75A.75.75 0 017.75 2z"/></svg>
+                            </span>
+                            添加筛选条件
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card sort-card">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span class="icon">
+                                <svg viewBox="0 0 16 16"><path d="M8 1.75a.75.75 0 01.75.75v9.48l2.38-2.38a.75.75 0 111.06 1.06l-3.75 3.75a.75.75 0 01-1.06 0L3.63 10.71a.75.75 0 111.06-1.06l2.38 2.38V2.5A.75.75 0 018 1.75zM3.25 4.5a.75.75 0 01.75-.75h8a.75.75 0 010 1.5H4a.75.75 0 01-.75-.75z"/></svg>
+                            </span>
+                            排序设置
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="sort-list">
+                            <div class="sort-item">
+                                <span class="sort-drag-handle">::</span>
+                                <select class="sort-select">
+                                    <option>涨跌幅</option>
+                                    <option>成交量</option>
+                                    <option>换手率</option>
+                                    <option>市盈率</option>
+                                    <option>总市值</option>
+                                </select>
+                                <button class="sort-direction">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M13.03 8.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.47 9.28a.75.75 0 011.06-1.06L8 11.69l3.47-3.47a.75.75 0 011.06 0zM8.53 4.72a.75.75 0 00-1.06 0L3.22 9.22a.75.75 0 001.06 1.06L8 6.56l3.72 3.72a.75.75 0 101.06-1.06L8.53 4.72z"/></svg>
+                                    </span>
+                                    降序
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="execute-btn">
+                    <span class="icon">
+                        <svg viewBox="0 0 16 16"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zM6.5 4.5a.75.75 0 011.17-.627l4.5 3.25a.75.75 0 010 1.254l-4.5 3.25A.75.75 0 016.5 11.5v-7z"/></svg>
+                    </span>
+                    执行筛选
+                </button>
+            </div>
+
+            <div class="content-area">
+                <div class="content-header">
+                    <div class="view-selector">
+                        <span class="view-label">当前视图:</span>
+                        <div class="view-dropdown" id="viewDropdown">
+                            <button class="view-dropdown-btn" onclick="toggleViewDropdown()">
+                                <span class="icon">
+                                    <svg viewBox="0 0 16 16"><path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0114.25 16H1.75A1.75 1.75 0 010 14.25V1.75zM1.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25H1.75zM5.5 5a.5.5 0 000 1h5a.5.5 0 000-1h-5zM5 8a.5.5 0 01.5-.5h5a.5.5 0 010 1h-5A.5.5 0 015 8zm.5 3a.5.5 0 000 1h5a.5.5 0 000-1h-5z"/></svg>
+                                </span>
+                                <span id="currentViewName">默认基础视图</span>
+                                <span class="icon dropdown-arrow">
+                                    <svg viewBox="0 0 16 16"><path d="M12.78 5.22a.75.75 0 010 1.06l-4.25 4.25a.75.75 0 01-1.06 0L3.22 6.28a.75.75 0 011.06-1.06L8 8.94l3.72-3.72a.75.75 0 011.06 0z"/></svg>
+                                </span>
+                            </button>
+                            <div class="view-dropdown-menu">
+                                <div class="view-option active" data-view="default" onclick="switchView('default')">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0114.25 16H1.75A1.75 1.75 0 010 14.25V1.75zM1.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25H1.75zM5.5 5a.5.5 0 000 1h5a.5.5 0 000-1h-5zM5 8a.5.5 0 01.5-.5h5a.5.5 0 010 1h-5A.5.5 0 015 8zm.5 3a.5.5 0 000 1h5a.5.5 0 000-1h-5z"/></svg>
+                                    </span>
+                                    默认基础视图
+                                    <span class="view-option-desc">常用指标组合</span>
+                                </div>
+                                <div class="view-option" data-view="fundamental" onclick="switchView('fundamental')">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M8 16A8 8 0 108 0a8 8 0 000 16zm.25-11.25h1.5v6h-1.5V6.5h-2v-1.5h2v-1h-2v-1h2v1.25z"/></svg>
+                                    </span>
+                                    基本面视图
+                                    <span class="view-option-desc">估值与财务指标</span>
+                                </div>
+                                <div class="view-option" data-view="volume" onclick="switchView('volume')">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M8 1a.75.75 0 01.75.75v10.5a.75.75 0 01-1.5 0V1.75A.75.75 0 018 1zm-3.25.75a.75.75 0 011.5 0v10.5a.75.75 0 01-1.5 0V1.75zM2.5 4a.75.75 0 01.75.75v7.5a.75.75 0 01-1.5 0v-7.5A.75.75 0 012.5 4zm10 0a.75.75 0 01.75.75v7.5a.75.75 0 01-1.5 0v-7.5A.75.75 0 0112.5 4z"/></svg>
+                                    </span>
+                                    量价视图
+                                    <span class="view-option-desc">成交量与资金流向</span>
+                                </div>
+                                <div class="view-option" data-view="technical" onclick="switchView('technical')">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M3.75 0a.75.75 0 01.75.75V3h2.75a.75.75 0 010 1.5H4.5v2.75a.75.75 0 01-1.5 0V4.5H.25a.75.75 0 010-1.5H3V.75A.75.75 0 013.75 0zm8.5 8a.75.75 0 01.75.75V12h2.75a.75.75 0 010 1.5H13v2.75a.75.75 0 01-1.5 0V13.5H8.75a.75.75 0 010-1.5H11V8.75a.75.75 0 01.75-.75zM8 4a.75.75 0 01.75.75V8h2.75a.75.75 0 010 1.5H8.75v2.75a.75.75 0 01-1.5 0V9.5H4.5a.75.75 0 010-1.5h2.75V4.75A.75.75 0 018 4z"/></svg>
+                                    </span>
+                                    RSI/MACD技术视图
+                                    <span class="view-option-desc">动量与趋势指标</span>
+                                </div>
+                                <div class="view-option" data-view="signal" onclick="switchView('signal')">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm0 14.5a6.5 6.5 0 110-13 6.5 6.5 0 010 13zM6.5 7A1.5 1.5 0 008 5.5h1A1.5 1.5 0 009.5 7v2a1.5 1.5 0 01-1.5 1.5H7A1.5 1.5 0 015.5 9V7zm1.5-.5a.5.5 0 00-.5.5v2a.5.5 0 00.5.5h1a.5.5 0 00.5-.5V7a.5.5 0 00-.5-.5H8z"/></svg>
+                                    </span>
+                                    交易信号视图
+                                    <span class="view-option-desc">买入卖出信号</span>
+                                </div>
+                                <div class="view-option" data-view="risk" onclick="switchView('risk')">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm.75 4.75a.75.75 0 00-1.5 0v5a.75.75 0 001.5 0v-5zm0 7a.75.75 0 00-1.5 0v1.5a.75.75 0 001.5 0v-1.5z"/></svg>
+                                    </span>
+                                    风险分析视图
+                                    <span class="view-option-desc">波动率与回撤</span>
+                                </div>
+                                <div class="view-option" data-view="full" onclick="switchView('full')">
+                                    <span class="icon">
+                                        <svg viewBox="0 0 16 16"><path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v12.5A1.75 1.75 0 0114.25 16H1.75A1.75 1.75 0 010 14.25V1.75zM1.75 1.5a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25H1.75z"/></svg>
+                                    </span>
+                                    全景视图
+                                    <span class="view-option-desc">显示全部38列</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="content-stats" style="margin-left: 20px;">
+                            <div class="stat-item">
+                                <span class="stat-label">筛选结果:</span>
+                                <span class="stat-value">128 只</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">显示列:</span>
+                                <span id="columnCount" style="color: var(--text-secondary);">24 / 38</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="content-actions">
+                        <button class="btn-secondary" onclick="openDrawer()">
+                            <span class="icon">
+                                <svg viewBox="0 0 16 16"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm0 14.5a6.5 6.5 0 110-13 6.5 6.5 0 010 13zM6.5 7A1.5 1.5 0 008 5.5h1A1.5 1.5 0 009.5 7v2a1.5 1.5 0 01-1.5 1.5H7A1.5 1.5 0 015.5 9V7zm1.5-.5a.5.5 0 00-.5.5v2a.5.5 0 00.5.5h1a.5.5 0 00.5-.5V7a.5.5 0 00-.5-.5H8z"/></svg>
+                            </span>
+                            自定义列
+                        </button>
+                        <button class="btn-secondary">
+                            <span class="icon">
+                                <svg viewBox="0 0 16 16"><path d="M7.47 10.78a.75.75 0 001.06 0l3.75-3.75a.75.75 0 00-1.06-1.06L8.75 8.44V1.75a.75.75 0 10-1.5 0v6.69L4.78 5.97a.75.75 0 00-1.06 1.06l3.75 3.75zM3.75 13a.75.75 0 000 1.5h8.5a.75.75 0 000-1.5h-8.5z"/></svg>
+                            </span>
+                            导出
+                        </button>
+                    </div>
+                </div>
+                <div class="table-wrapper">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th class="col-stock group-basic">基本信息</th>
+                                <th colspan="5" class="group-price">价格数据</th>
+                                <th colspan="3" class="group-volume">成交数据</th>
+                                <th colspan="4" class="group-value">市值估值</th>
+                                <th colspan="3" class="group-ma">均线</th>
+                                <th colspan="2" class="group-momentum">RSI</th>
+                                <th colspan="1" class="group-momentum">MACD</th>
+                                <th colspan="1" class="group-momentum">KDJ</th>
+                                <th colspan="2" class="group-boll">布林带</th>
+                                <th colspan="1" class="group-signal">信号</th>
+                                <th colspan="2" class="group-signal">交叉</th>
+                                <th colspan="3" class="group-return">收益</th>
+                                <th colspan="2" class="group-risk">风险</th>
+                                <th colspan="2" class="group-stats">Beta</th>
+                                <th colspan="2" class="group-stats">Alpha</th>
+                                <th colspan="3" class="group-stats">相关</th>
+                            </tr>
+                            <tr>
+                                <th id="th-stock" class="col-stock">股票</th>
+                                <th id="th-open" class="col-price">开盘</th>
+                                <th id="th-high" class="col-price">最高</th>
+                                <th id="th-low" class="col-price">最低</th>
+                                <th id="th-close" class="col-price">收盘</th>
+                                <th id="th-change" class="col-pct">涨跌%</th>
+                                <th id="th-vol" class="col-volume">成交量</th>
+                                <th id="th-amount" class="col-turnover">成交额</th>
+                                <th id="th-turnover" class="col-ratio">换手%</th>
+                                <th id="th-mkt-cap" class="col-volume">总市值</th>
+                                <th id="th-float-cap" class="col-volume">流通市值</th>
+                                <th id="th-pe" class="col-ratio">PE</th>
+                                <th id="th-pb" class="col-ratio">PB</th>
+                                <th id="th-ma5" class="col-ma">MA5</th>
+                                <th id="th-ma10" class="col-ma">MA10</th>
+                                <th id="th-ma20" class="col-ma">MA20</th>
+                                <th id="th-rsi6" class="col-rsi">RSI6</th>
+                                <th id="th-rsi12" class="col-rsi">RSI12</th>
+                                <th id="th-macd" class="col-macd">柱状</th>
+                                <th id="th-kdj" class="col-kdj">J值</th>
+                                <th id="th-boll-up" class="col-boll">上轨</th>
+                                <th id="th-boll-down" class="col-boll">下轨</th>
+                                <th id="th-bull" class="col-signal">多头</th>
+                                <th id="th-golden" class="col-signal">金叉</th>
+                                <th id="th-dead" class="col-signal">死叉</th>
+                                <th id="th-return5" class="col-return">5日%</th>
+                                <th id="th-return20" class="col-return">20日%</th>
+                                <th id="th-return60" class="col-return">60日%</th>
+                                <th id="th-volatility20" class="col-risk">波动%</th>
+                                <th id="th-maxdd20" class="col-risk">回撤%</th>
+                                <th id="th-beta60" class="col-beta">60日</th>
+                                <th id="th-beta120" class="col-beta">120日</th>
+                                <th id="th-alpha60" class="col-alpha">60日</th>
+                                <th id="th-alpha120" class="col-alpha">120日</th>
+                                <th id="th-corr60" class="col-corr">60日</th>
+                                <th id="th-corr120" class="col-corr">120日</th>
+                                <th id="th-corr250" class="col-corr">250日</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td class="col-stock">
+                                    <span class="stock-code">000001</span>
+                                    <span class="stock-name">平安银行</span>
+                                </td>
+                                <td class="col-price">11.95</td>
+                                <td class="col-price">12.85</td>
+                                <td class="col-price">11.88</td>
+                                <td class="col-price">12.58</td>
+                                <td class="col-pct price-up">+5.23%</td>
+                                <td class="col-volume">2.5亿</td>
+                                <td class="col-turnover">3.1亿</td>
+                                <td class="col-ratio">8.52%</td>
+                                <td class="col-volume">2445亿</td>
+                                <td class="col-volume">1980亿</td>
+                                <td class="col-ratio">5.8</td>
+                                <td class="col-ratio">0.82</td>
+                                <td class="col-ma">11.95</td>
+                                <td class="col-ma">11.62</td>
+                                <td class="col-ma">11.38</td>
+                                <td class="col-rsi">68.5</td>
+                                <td class="col-rsi">62.3</td>
+                                <td class="col-macd price-up">+0.25</td>
+                                <td class="col-kdj">72.3</td>
+                                <td class="col-boll">13.25</td>
+                                <td class="col-boll">10.85</td>
+                                <td class="col-signal signal-yes">是</td>
+                                <td class="col-signal signal-yes">●</td>
+                                <td class="col-signal signal-no">-</td>
+                                <td class="col-return price-up">+8.5%</td>
+                                <td class="col-return price-up">+12.3%</td>
+                                <td class="col-return price-up">+25.6%</td>
+                                <td class="col-risk">2.35%</td>
+                                <td class="col-risk price-down">-5.2%</td>
+                                <td class="col-beta">1.15</td>
+                                <td class="col-beta">1.08</td>
+                                <td class="col-alpha price-up">+2.3%</td>
+                                <td class="col-alpha price-up">+1.8%</td>
+                                <td class="col-corr">0.85</td>
+                                <td class="col-corr">0.82</td>
+                                <td class="col-corr">0.78</td>
+                            </tr>
+                            <tr>
+                                <td class="col-stock">
+                                    <span class="stock-code">000002</span>
+                                    <span class="stock-name">万科A</span>
+                                </td>
+                                <td class="col-price">18.72</td>
+                                <td class="col-price">18.95</td>
+                                <td class="col-price">18.15</td>
+                                <td class="col-price">18.32</td>
+                                <td class="col-pct price-down">-2.15%</td>
+                                <td class="col-volume">1.8亿</td>
+                                <td class="col-turnover">3.3亿</td>
+                                <td class="col-ratio">4.21%</td>
+                                <td class="col-volume">1890亿</td>
+                                <td class="col-volume">1560亿</td>
+                                <td class="col-ratio">8.2</td>
+                                <td class="col-ratio">0.65</td>
+                                <td class="col-ma">18.85</td>
+                                <td class="col-ma">19.12</td>
+                                <td class="col-ma">19.45</td>
+                                <td class="col-rsi">42.1</td>
+                                <td class="col-rsi">45.8</td>
+                                <td class="col-macd price-down">-0.18</td>
+                                <td class="col-kdj">35.6</td>
+                                <td class="col-boll">20.85</td>
+                                <td class="col-boll">17.25</td>
+                                <td class="col-signal signal-no">否</td>
+                                <td class="col-signal signal-no">-</td>
+                                <td class="col-signal signal-yes">●</td>
+                                <td class="col-return price-down">-3.2%</td>
+                                <td class="col-return price-down">-8.5%</td>
+                                <td class="col-return price-down">-12.3%</td>
+                                <td class="col-risk">1.85%</td>
+                                <td class="col-risk price-down">-8.5%</td>
+                                <td class="col-beta">0.95</td>
+                                <td class="col-beta">0.92</td>
+                                <td class="col-alpha price-down">-1.5%</td>
+                                <td class="col-alpha price-down">-2.1%</td>
+                                <td class="col-corr">0.75</td>
+                                <td class="col-corr">0.72</td>
+                                <td class="col-corr">0.68</td>
+                            </tr>
+                            <tr>
+                                <td class="col-stock">
+                                    <span class="stock-code">600519</span>
+                                    <span class="stock-name">贵州茅台</span>
+                                </td>
+                                <td class="col-price">1655</td>
+                                <td class="col-price">1698</td>
+                                <td class="col-price">1648</td>
+                                <td class="col-price">1688</td>
+                                <td class="col-pct price-up">+1.85%</td>
+                                <td class="col-volume">1520万</td>
+                                <td class="col-turnover">25.6亿</td>
+                                <td class="col-ratio">0.85%</td>
+                                <td class="col-volume">21200亿</td>
+                                <td class="col-volume">21200亿</td>
+                                <td class="col-ratio">28.5</td>
+                                <td class="col-ratio">8.92</td>
+                                <td class="col-ma">1665</td>
+                                <td class="col-ma">1652</td>
+                                <td class="col-ma">1638</td>
+                                <td class="col-rsi">58.3</td>
+                                <td class="col-rsi">55.2</td>
+                                <td class="col-macd price-up">+0.42</td>
+                                <td class="col-kdj">62.8</td>
+                                <td class="col-boll">1725</td>
+                                <td class="col-price">1585</td>
+                                <td class="col-signal signal-yes">是</td>
+                                <td class="col-signal signal-no">-</td>
+                                <td class="col-signal signal-no">-</td>
+                                <td class="col-return price-up">+3.5%</td>
+                                <td class="col-return price-up">+8.2%</td>
+                                <td class="col-return price-up">+15.6%</td>
+                                <td class="col-risk">1.25%</td>
+                                <td class="col-risk price-down">-3.2%</td>
+                                <td class="col-beta">0.85</td>
+                                <td class="col-beta">0.82</td>
+                                <td class="col-alpha price-up">+1.2%</td>
+                                <td class="col-alpha price-up">+0.9%</td>
+                                <td class="col-corr">0.65</td>
+                                <td class="col-corr">0.62</td>
+                                <td class="col-corr">0.58</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="drawer-overlay" id="drawerOverlay" onclick="closeDrawer()"></div>
+
+    <div class="drawer" id="columnDrawer">
+        <div class="drawer-header">
+            <div class="drawer-title">
+                <span class="icon">
+                    <svg viewBox="0 0 16 16"><path d="M8 0a8 8 0 100 16A8 8 0 008 0zm0 14.5a6.5 6.5 0 110-13 6.5 6.5 0 010 13zM6.5 7A1.5 1.5 0 008 5.5h1A1.5 1.5 0 009.5 7v2a1.5 1.5 0 01-1.5 1.5H7A1.5 1.5 0 015.5 9V7zm1.5-.5a.5.5 0 00-.5.5v2a.5.5 0 00.5.5h1a.5.5 0 00.5-.5V7a.5.5 0 00-.5-.5H8z"/></svg>
+                </span>
+                自定义列
+            </div>
+            <button class="drawer-close" onclick="closeDrawer()">
+                <span class="icon">
+                    <svg viewBox="0 0 16 16"><path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
+                </span>
+            </button>
+        </div>
+
+        <div class="column-search">
+            <div class="search-input-wrapper">
+                <span class="icon">
+                    <svg viewBox="0 0 16 16"><path d="M11.5 7a4.5 4.5 0 11-9 0 4.5 4.5 0 019 0zm-.82 4.74a6 6 0 111.06-1.06l3.04 3.04a.75.75 0 11-1.06 1.06l-3.04-3.04z"/></svg>
+                </span>
+                <input type="text" class="search-input" placeholder="搜索指标...">
+            </div>
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab(this, 'all')">全部</div>
+            <div class="tab" onclick="switchTab(this, 'price')">价格</div>
+            <div class="tab" onclick="switchTab(this, 'volume')">成交</div>
+            <div class="tab" onclick="switchTab(this, 'value')">估值</div>
+            <div class="tab" onclick="switchTab(this, 'tech')">技术</div>
+            <div class="tab" onclick="switchTab(this, 'signal')">信号</div>
+            <div class="tab" onclick="switchTab(this, 'risk')">风险</div>
+        </div>
+
+        <div class="drawer-body">
+            <div class="tab-content active" id="tab-all">
+                <div class="column-list">
+                    <div class="column-category">
+                        <div class="column-category-title">
+                            <span>价格数据</span>
+                            <div class="column-category-actions">
+                                <button class="link-btn" onclick="selectAll('price')">全选</button>
+                                <button class="link-btn" onclick="selectNone('price')">清空</button>
+                            </div>
+                        </div>
+                        <div class="column-checkbox-list">
+                            <div class="column-checkbox-item selected" data-category="price">
+                                <input type="checkbox" checked id="col-open" onchange="toggleColumn(this)">
+                                <label for="col-open">开盘价</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="price">
+                                <input type="checkbox" checked id="col-high" onchange="toggleColumn(this)">
+                                <label for="col-high">最高价</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="price">
+                                <input type="checkbox" checked id="col-low" onchange="toggleColumn(this)">
+                                <label for="col-low">最低价</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="price">
+                                <input type="checkbox" checked id="col-close" onchange="toggleColumn(this)">
+                                <label for="col-close">收盘价</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="price">
+                                <input type="checkbox" checked id="col-change" onchange="toggleColumn(this)">
+                                <label for="col-change">涨跌幅</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="column-category">
+                        <div class="column-category-title">
+                            <span>成交数据</span>
+                            <div class="column-category-actions">
+                                <button class="link-btn" onclick="selectAll('volume')">全选</button>
+                                <button class="link-btn" onclick="selectNone('volume')">清空</button>
+                            </div>
+                        </div>
+                        <div class="column-checkbox-list">
+                            <div class="column-checkbox-item selected" data-category="volume">
+                                <input type="checkbox" checked id="col-vol" onchange="toggleColumn(this)">
+                                <label for="col-vol">成交量</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="volume">
+                                <input type="checkbox" checked id="col-amount" onchange="toggleColumn(this)">
+                                <label for="col-amount">成交额</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="volume">
+                                <input type="checkbox" checked id="col-turnover" onchange="toggleColumn(this)">
+                                <label for="col-turnover">换手率</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="column-category">
+                        <div class="column-category-title">
+                            <span>市值估值</span>
+                            <div class="column-category-actions">
+                                <button class="link-btn" onclick="selectAll('value')">全选</button>
+                                <button class="link-btn" onclick="selectNone('value')">清空</button>
+                            </div>
+                        </div>
+                        <div class="column-checkbox-list">
+                            <div class="column-checkbox-item selected" data-category="value">
+                                <input type="checkbox" checked id="col-mkt-cap" onchange="toggleColumn(this)">
+                                <label for="col-mkt-cap">总市值</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="value">
+                                <input type="checkbox" checked id="col-float-cap" onchange="toggleColumn(this)">
+                                <label for="col-float-cap">流通市值</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="value">
+                                <input type="checkbox" checked id="col-pe" onchange="toggleColumn(this)">
+                                <label for="col-pe">市盈率</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="value">
+                                <input type="checkbox" checked id="col-pb" onchange="toggleColumn(this)">
+                                <label for="col-pb">市净率</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="column-category">
+                        <div class="column-category-title">
+                            <span>技术指标</span>
+                            <div class="column-category-actions">
+                                <button class="link-btn" onclick="selectAll('tech')">全选</button>
+                                <button class="link-btn" onclick="selectNone('tech')">清空</button>
+                            </div>
+                        </div>
+                        <div class="column-checkbox-list">
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-ma5" onchange="toggleColumn(this)">
+                                <label for="col-ma5">MA5</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-ma10" onchange="toggleColumn(this)">
+                                <label for="col-ma10">MA10</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-ma20" onchange="toggleColumn(this)">
+                                <label for="col-ma20">MA20</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-rsi6" onchange="toggleColumn(this)">
+                                <label for="col-rsi6">RSI(6)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-rsi12" onchange="toggleColumn(this)">
+                                <label for="col-rsi12">RSI(12)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-macd" onchange="toggleColumn(this)">
+                                <label for="col-macd">MACD柱状</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-kdj" onchange="toggleColumn(this)">
+                                <label for="col-kdj">KDJ J值</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-boll-up" onchange="toggleColumn(this)">
+                                <label for="col-boll-up">布林上轨</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="tech">
+                                <input type="checkbox" checked id="col-boll-down" onchange="toggleColumn(this)">
+                                <label for="col-boll-down">布林下轨</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="column-category">
+                        <div class="column-category-title">
+                            <span>交易信号</span>
+                            <div class="column-category-actions">
+                                <button class="link-btn" onclick="selectAll('signal')">全选</button>
+                                <button class="link-btn" onclick="selectNone('signal')">清空</button>
+                            </div>
+                        </div>
+                        <div class="column-checkbox-list">
+                            <div class="column-checkbox-item selected" data-category="signal">
+                                <input type="checkbox" checked id="col-bull" onchange="toggleColumn(this)">
+                                <label for="col-bull">均线多头排列</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="signal">
+                                <input type="checkbox" checked id="col-golden" onchange="toggleColumn(this)">
+                                <label for="col-golden">金叉</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="signal">
+                                <input type="checkbox" checked id="col-dead" onchange="toggleColumn(this)">
+                                <label for="col-dead">死叉</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="column-category">
+                        <div class="column-category-title">
+                            <span>收益风险</span>
+                            <div class="column-category-actions">
+                                <button class="link-btn" onclick="selectAll('risk')">全选</button>
+                                <button class="link-btn" onclick="selectNone('risk')">清空</button>
+                            </div>
+                        </div>
+                        <div class="column-checkbox-list">
+                            <div class="column-checkbox-item selected" data-category="risk">
+                                <input type="checkbox" checked id="col-return5" onchange="toggleColumn(this)">
+                                <label for="col-return5">5日收益</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="risk">
+                                <input type="checkbox" checked id="col-return20" onchange="toggleColumn(this)">
+                                <label for="col-return20">20日收益</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="risk">
+                                <input type="checkbox" checked id="col-return60" onchange="toggleColumn(this)">
+                                <label for="col-return60">60日收益</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="risk">
+                                <input type="checkbox" checked id="col-volatility20" onchange="toggleColumn(this)">
+                                <label for="col-volatility20">20日波动率</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="risk">
+                                <input type="checkbox" checked id="col-maxdd20" onchange="toggleColumn(this)">
+                                <label for="col-maxdd20">最大回撤(20)</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="column-category">
+                        <div class="column-category-title">
+                            <span>统计指标</span>
+                            <div class="column-category-actions">
+                                <button class="link-btn" onclick="selectAll('stats')">全选</button>
+                                <button class="link-btn" onclick="selectNone('stats')">清空</button>
+                            </div>
+                        </div>
+                        <div class="column-checkbox-list">
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-beta60" onchange="toggleColumn(this)">
+                                <label for="col-beta60">Beta(60)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-beta120" onchange="toggleColumn(this)">
+                                <label for="col-beta120">Beta(120)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-beta250" onchange="toggleColumn(this)">
+                                <label for="col-beta250">Beta(250)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-alpha60" onchange="toggleColumn(this)">
+                                <label for="col-alpha60">Alpha(60)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-alpha120" onchange="toggleColumn(this)">
+                                <label for="col-alpha120">Alpha(120)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-alpha250" onchange="toggleColumn(this)">
+                                <label for="col-alpha250">Alpha(250)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-corr60" onchange="toggleColumn(this)">
+                                <label for="col-corr60">相关系数(60)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-corr120" onchange="toggleColumn(this)">
+                                <label for="col-corr120">相关系数(120)</label>
+                            </div>
+                            <div class="column-checkbox-item selected" data-category="stats">
+                                <input type="checkbox" checked id="col-corr250" onchange="toggleColumn(this)">
+                                <label for="col-corr250">相关系数(250)</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="drawer-footer">
+            <div class="drawer-stats">
+                已选择 <span id="selectedCount">24</span> / 38 列
+            </div>
+            <div class="drawer-actions">
+                <button class="btn-text" onclick="resetColumns()">重置</button>
+                <button class="btn-primary" onclick="applyColumns()">应用</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 视图模板配置
+        const viewTemplates = {
+            default: {
+                name: '默认基础视图',
+                columns: ['col-stock', 'col-open', 'col-high', 'col-low', 'col-close', 'col-change',
+                         'col-vol', 'col-amount', 'col-turnover', 'col-mkt-cap', 'col-pe',
+                         'col-ma5', 'col-ma10', 'col-ma20', 'col-rsi6', 'col-rsi12',
+                         'col-macd', 'col-kdj', 'col-bull', 'col-golden', 'col-dead',
+                         'col-return5', 'col-return20', 'col-return60']
+            },
+            fundamental: {
+                name: '基本面视图',
+                columns: ['col-stock', 'col-close', 'col-change', 'col-mkt-cap', 'col-float-cap',
+                         'col-pe', 'col-pb', 'col-turnover', 'col-vol', 'col-amount',
+                         'col-return5', 'col-return20', 'col-return60', 'col-alpha60', 'col-alpha120']
+            },
+            volume: {
+                name: '量价视图',
+                columns: ['col-stock', 'col-open', 'col-high', 'col-low', 'col-close', 'col-change',
+                         'col-vol', 'col-amount', 'col-turnover', 'col-mkt-cap', 'col-float-cap',
+                         'col-ma5', 'col-ma10', 'col-ma20', 'col-bull', 'col-golden', 'col-dead']
+            },
+            technical: {
+                name: 'RSI/MACD技术视图',
+                columns: ['col-stock', 'col-close', 'col-change', 'col-ma5', 'col-ma10', 'col-ma20',
+                         'col-rsi6', 'col-rsi12', 'col-macd', 'col-kdj', 'col-boll-up', 'col-boll-down',
+                         'col-bull', 'col-golden', 'col-dead']
+            },
+            signal: {
+                name: '交易信号视图',
+                columns: ['col-stock', 'col-close', 'col-change', 'col-vol', 'col-turnover',
+                         'col-ma5', 'col-ma10', 'col-ma20', 'col-rsi6', 'col-macd', 'col-kdj',
+                         'col-bull', 'col-golden', 'col-dead', 'col-return5', 'col-return20']
+            },
+            risk: {
+                name: '风险分析视图',
+                columns: ['col-stock', 'col-close', 'col-change', 'col-mkt-cap', 'col-pe',
+                         'col-beta60', 'col-beta120', 'col-beta250', 'col-alpha60', 'col-alpha120',
+                         'col-corr60', 'col-corr120', 'col-corr250', 'col-volatility20', 'col-maxdd20']
+            },
+            full: {
+                name: '全景视图',
+                columns: ['col-stock', 'col-open', 'col-high', 'col-low', 'col-close', 'col-change',
+                         'col-vol', 'col-amount', 'col-turnover', 'col-mkt-cap', 'col-float-cap',
+                         'col-pe', 'col-pb', 'col-ma5', 'col-ma10', 'col-ma20', 'col-rsi6', 'col-rsi12',
+                         'col-macd', 'col-kdj', 'col-boll-up', 'col-boll-down', 'col-bull', 'col-golden',
+                         'col-dead', 'col-return5', 'col-return20', 'col-return60', 'col-volatility20',
+                         'col-maxdd20', 'col-beta60', 'col-beta120', 'col-beta250', 'col-alpha60',
+                         'col-alpha120', 'col-alpha250', 'col-corr60', 'col-corr120', 'col-corr250']
+            }
+        };
+
+        let currentView = 'default';
+
+        function openDrawer() {
+            document.getElementById('drawerOverlay').classList.add('active');
+            document.getElementById('columnDrawer').classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeDrawer() {
+            document.getElementById('drawerOverlay').classList.remove('active');
+            document.getElementById('columnDrawer').classList.remove('active');
+            document.body.style.overflow = '';
+        }
+
+        function switchTab(tab, tabId) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            tab.classList.add('active');
+            document.getElementById('tab-' + tabId).classList.add('active');
+        }
+
+        function toggleColumn(checkbox) {
+            const item = checkbox.closest('.column-checkbox-item');
+            if (checkbox.checked) {
+                item.classList.add('selected');
+            } else {
+                item.classList.remove('selected');
+            }
+            updateSelectedCount();
+        }
+
+        function selectAll(category) {
+            document.querySelectorAll('[data-category="' + category + '"] input[type="checkbox"]').forEach(cb => {
+                cb.checked = true;
+                cb.closest('.column-checkbox-item').classList.add('selected');
+            });
+            updateSelectedCount();
+        }
+
+        function selectNone(category) {
+            document.querySelectorAll('[data-category="' + category + '"] input[type="checkbox"]').forEach(cb => {
+                cb.checked = false;
+                cb.closest('.column-checkbox-item').classList.remove('selected');
+            });
+            updateSelectedCount();
+        }
+
+        function updateSelectedCount() {
+            const count = document.querySelectorAll('.column-checkbox-item.selected').length;
+            document.getElementById('selectedCount').textContent = count;
+            document.getElementById('columnCount').textContent = count + ' / 38';
+        }
+
+        function resetColumns() {
+            document.querySelectorAll('.column-checkbox-item').forEach(item => {
+                item.classList.add('selected');
+                item.querySelector('input[type="checkbox"]').checked = true;
+            });
+            updateSelectedCount();
+        }
+
+        function applyColumns() {
+            updateSelectedCount();
+            closeDrawer();
+        }
+
+        // 视图切换功能
+        function toggleViewDropdown() {
+            const dropdown = document.getElementById('viewDropdown');
+            dropdown.classList.toggle('active');
+        }
+
+        function switchView(viewId) {
+            if (!viewTemplates[viewId]) return;
+
+            currentView = viewId;
+            const template = viewTemplates[viewId];
+
+            // 更新下拉菜单显示
+            document.getElementById('currentViewName').textContent = template.name;
+
+            // 更新选项高亮
+            document.querySelectorAll('.view-option').forEach(option => {
+                option.classList.remove('active');
+                if (option.dataset.view === viewId) {
+                    option.classList.add('active');
+                }
+            });
+
+            // 关闭下拉菜单
+            document.getElementById('viewDropdown').classList.remove('active');
+
+            // 应用视图配置到复选框
+            applyViewToCheckboxes(template.columns);
+
+            // 更新表格显示
+            updateTableColumns(template.columns);
+
+            // 更新计数
+            updateSelectedCount();
+        }
+
+        function applyViewToCheckboxes(columnIds) {
+            // 先取消所有选中
+            document.querySelectorAll('.column-checkbox-item').forEach(item => {
+                item.classList.remove('selected');
+                item.querySelector('input[type="checkbox"]').checked = false;
+            });
+
+            // 根据视图配置选中对应列
+            columnIds.forEach(colId => {
+                const checkbox = document.getElementById(colId);
+                if (checkbox) {
+                    checkbox.checked = true;
+                    checkbox.closest('.column-checkbox-item').classList.add('selected');
+                }
+            });
+        }
+
+        function updateTableColumns(columnIds) {
+            // 获取所有表头单元格和数据单元格
+            const allHeaders = document.querySelectorAll('.data-table thead tr:last-child th');
+            const allRows = document.querySelectorAll('.data-table tbody tr');
+
+            // 列 ID 到索引的映射
+            const columnIdToIndex = {
+                'col-stock': 0, 'col-open': 1, 'col-high': 2, 'col-low': 3, 'col-close': 4,
+                'col-change': 5, 'col-vol': 6, 'col-amount': 7, 'col-turnover': 8,
+                'col-mkt-cap': 9, 'col-float-cap': 10, 'col-pe': 11, 'col-pb': 12,
+                'col-ma5': 13, 'col-ma10': 14, 'col-ma20': 15, 'col-rsi6': 16, 'col-rsi12': 17,
+                'col-macd': 18, 'col-kdj': 19, 'col-boll-up': 20, 'col-boll-down': 21,
+                'col-bull': 22, 'col-golden': 23, 'col-dead': 24, 'col-return5': 25,
+                'col-return20': 26, 'col-return60': 27, 'col-volatility20': 28, 'col-maxdd20': 29,
+                'col-beta60': 30, 'col-beta120': 31, 'col-beta250': 32, 'col-alpha60': 33,
+                'col-alpha120': 34, 'col-alpha250': 35, 'col-corr60': 36, 'col-corr120': 37,
+                'col-corr250': 38
+            };
+
+            // 构建可见列索引集合
+            const visibleIndices = new Set([0]); // 股票列始终显示
+            columnIds.forEach(colId => {
+                if (columnIdToIndex[colId] !== undefined) {
+                    visibleIndices.add(columnIdToIndex[colId]);
+                }
+            });
+
+            // 更新表头显示
+            allHeaders.forEach((th, index) => {
+                if (visibleIndices.has(index)) {
+                    th.style.display = '';
+                } else {
+                    th.style.display = 'none';
+                }
+            });
+
+            // 更新数据行显示
+            allRows.forEach(row => {
+                const cells = row.querySelectorAll('td');
+                cells.forEach((td, index) => {
+                    if (visibleIndices.has(index)) {
+                        td.style.display = '';
+                    } else {
+                        td.style.display = 'none';
+                    }
+                });
+            });
+
+            // 更新分组表头的 colspan
+            updateGroupHeaders(visibleIndices);
+        }
+
+        function updateGroupHeaders(visibleIndices) {
+            const groupRow = document.querySelector('.data-table thead tr:first-child');
+            if (!groupRow) return;
+
+            // 定义每个分组的列范围
+            const groups = [
+                { name: '基本信息', start: 0, end: 1 },
+                { name: '价格数据', start: 1, end: 6 },
+                { name: '成交数据', start: 6, end: 9 },
+                { name: '市值估值', start: 9, end: 13 },
+                { name: '均线', start: 13, end: 16 },
+                { name: 'RSI', start: 16, end: 18 },
+                { name: 'MACD', start: 18, end: 19 },
+                { name: 'KDJ', start: 19, end: 20 },
+                { name: '布林带', start: 20, end: 22 },
+                { name: '信号', start: 22, end: 23 },
+                { name: '交叉', start: 23, end: 25 },
+                { name: '收益', start: 25, end: 28 },
+                { name: '风险', start: 28, end: 30 },
+                { name: 'Beta', start: 30, end: 32 },
+                { name: 'Alpha', start: 32, end: 34 },
+                { name: '相关', start: 34, end: 37 }
+            ];
+
+            const groupHeaders = groupRow.querySelectorAll('th');
+            let currentIndex = 0;
+
+            groupHeaders.forEach((th, groupIdx) => {
+                if (groupIdx >= groups.length) return;
+
+                const group = groups[groupIdx];
+                let visibleCount = 0;
+
+                for (let i = group.start; i < group.end; i++) {
+                    if (visibleIndices.has(i)) {
+                        visibleCount++;
+                    }
+                }
+
+                if (visibleCount === 0) {
+                    th.style.display = 'none';
+                    th.colSpan = 1;
+                } else {
+                    th.style.display = '';
+                    th.colSpan = visibleCount;
+                }
+            });
+        }
+
+        // 点击外部关闭下拉菜单
+        document.addEventListener('click', function(e) {
+            const dropdown = document.getElementById('viewDropdown');
+            if (dropdown && !dropdown.contains(e.target)) {
+                dropdown.classList.remove('active');
+            }
+        });
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                closeDrawer();
+                document.getElementById('viewDropdown').classList.remove('active');
+            }
+        });
+
+        // 逻辑运算符切换
+        function toggleLogicOperator(btn) {
+            const current = btn.textContent;
+            btn.textContent = current === 'AND' ? 'OR' : 'AND';
+            btn.style.color = current === 'AND' ? 'var(--accent-orange)' : 'var(--accent-blue)';
+        }
+
+        // 删除筛选条件
+        function removeFilterItem(btn) {
+            const item = btn.closest('.filter-item');
+            item.style.transform = 'scale(0.9)';
+            item.style.opacity = '0';
+            setTimeout(() => {
+                item.remove();
+                updateFilterStats();
+            }, 200);
+        }
+
+        // 更新筛选统计
+        function updateFilterStats() {
+            const count = document.querySelectorAll('.filter-item').length;
+            const statsSpans = document.querySelectorAll('.filter-stats span');
+            if (statsSpans.length >= 2) {
+                statsSpans[0].textContent = count;
+            }
+        }
+
+        // 为所有删除按钮绑定事件
+        document.querySelectorAll('.filter-remove').forEach(btn => {
+            btn.addEventListener('click', function() {
+                removeFilterItem(this);
+            });
+        });
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            // 应用默认视图
+            switchView('default');
+        });
+    </script>
+</body>
+</html>

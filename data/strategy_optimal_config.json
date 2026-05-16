@@ -1,0 +1,80 @@
+{
+  "strategy_name": "MACD_Green_Bar_Contraction_VS",
+  "version": "1.0.0",
+  "created_at": "2025-03-14",
+  "description": "MACD绿柱收缩+波动率强度选股策略，通过Walk-Forward验证的最优参数组合",
+  "backtest_period": {
+    "start_date": "2015-01-01",
+    "end_date": "2025-12-31"
+  },
+  "performance": {
+    "total_return_pct": 150.6,
+    "benchmark_return_pct": 19.3,
+    "excess_return_pct": 131.3,
+    "trade_count": 6543
+  },
+  "signal_conditions": {
+    "entry": {
+      "macd": {
+        "fast_period": 12,
+        "slow_period": 26,
+        "signal_period": 9,
+        "condition": "green_bar_contraction",
+        "description": "连续4根绿柱，绝对值递减，最后一根>-0.005"
+      },
+      "volatility_strength": {
+        "threshold": 0.5,
+        "description": "波动率强度>=0.5，综合ATR、振幅、波动率、下影线"
+      },
+      "rsi": {
+        "period": 14,
+        "max_value": 50,
+        "description": "RSI<50，避免超买区域"
+      }
+    },
+    "exit": {
+      "max_hold_days": 10,
+      "trailing_stop": {
+        "trigger_pct": 3.0,
+        "drawdown_pct": 2.0,
+        "description": "盈利3%后启动移动止盈，回撤2%离场"
+      }
+    }
+  },
+  "position_management": {
+    "max_holdings": 5,
+    "position_size_pct": 18.0,
+    "selection_method": "volatility_strength_desc",
+    "description": "最多持有5只，每只18%仓位，按波动率强度降序选股"
+  },
+  "volatility_strength_formula": {
+    "formula": "VS = 0.35*ATR_norm + 0.30*Range_norm + 0.20*STD_norm + 0.15*Shadow_norm",
+    "components": {
+      "ATR_norm": {
+        "weight": 0.35,
+        "calculation": "(ATR/close*100 - 3.0) / 1.5",
+        "description": "ATR占比标准化"
+      },
+      "Range_norm": {
+        "weight": 0.30,
+        "calculation": "((high-low)/prev_close*100 - 2.5) / 1.5",
+        "description": "日内振幅标准化"
+      },
+      "STD_norm": {
+        "weight": 0.20,
+        "calculation": "(STD20/close*100 - 3.5) / 1.5",
+        "description": "20日波动率标准化"
+      },
+      "Shadow_norm": {
+        "weight": 0.15,
+        "calculation": "((close-low)/prev_close*100 - 1.5) / 1.5",
+        "description": "下影线标准化"
+      }
+    }
+  },
+  "risk_control": {
+    "max_position_pct": 90.0,
+    "cash_reserve_pct": 10.0,
+    "description": "最大仓位90%，保留10%现金"
+  }
+}

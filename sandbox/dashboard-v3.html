@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Pro - TradingView Style</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        
+        * {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        :root {
+            --bg-primary: #0A0A0A;
+            --bg-secondary: #111111;
+            --bg-tertiary: #1a1a1a;
+            --bg-hover: #252525;
+            --border-color: #2a2a2a;
+            --text-primary: #e0e0e0;
+            --text-secondary: #888888;
+            --accent-blue: #3b82f6;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+        }
+        
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+        
+        /* Professional grid */
+        .tv-grid {
+            background-image:
+                linear-gradient(to right, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+            background-size: 60px 60px;
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 4px;
+            height: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-tertiary);
+            border-radius: 2px;
+        }
+        
+        /* Chart tooltip - follows mouse */
+        .chart-tooltip {
+            position: fixed;
+            background: rgba(17, 17, 17, 0.98);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 11px;
+            pointer-events: none;
+            opacity: 0;
+            z-index: 1000;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            transform: translate(15px, -100%);
+        }
+        
+        .chart-tooltip.visible {
+            opacity: 1;
+        }
+        
+        /* Crosshair lines */
+        .crosshair-v, .crosshair-h {
+            position: absolute;
+            background: rgba(136, 136, 136, 0.5);
+            pointer-events: none;
+            opacity: 0;
+            z-index: 50;
+        }
+        
+        .crosshair-v {
+            width: 1px;
+            top: 0;
+            bottom: 0;
+        }
+        
+        .crosshair-h {
+            height: 1px;
+            left: 0;
+            right: 0;
+        }
+        
+        .chart-container:hover .crosshair-v,
+        .chart-container:hover .crosshair-h {
+            opacity: 1;
+        }
+        
+        /* Metric cards */
+        .metric-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 12px;
+            transition: all 0.2s ease;
+        }
+        
+        .metric-card:hover {
+            border-color: var(--bg-hover);
+            background: var(--bg-tertiary);
+        }
+        
+        .metric-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+        }
+        
+        /* Heatmap cells */
+        .heatmap-cell {
+            transition: transform 0.15s ease;
+        }
+        
+        .heatmap-cell:hover {
+            transform: scale(1.05);
+            z-index: 10;
+        }
+        
+        /* Toggle buttons */
+        .toggle-btn {
+            transition: all 0.15s ease;
+        }
+        
+        .toggle-btn.active {
+            background: var(--accent-blue);
+            color: white;
+        }
+        
+        /* Time axis */
+        .time-axis {
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+        }
+        
+        /* Y-axis labels container */
+        .y-axis-labels {
+            position: absolute;
+            right: 0;
+            top: 28px;
+            bottom: 24px;
+            width: 44px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: flex-end;
+            padding-right: 8px;
+            font-size: 10px;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+            z-index: 20;
+        }
+        
+        /* Chart area with consistent margins */
+        .chart-area {
+            position: absolute;
+            left: 8px;
+            right: 48px;
+            top: 28px;
+            bottom: 24px;
+            overflow: hidden;
+        }
+        
+        /* Bar chart gradient */
+        .freq-bar {
+            background: linear-gradient(180deg, rgba(59, 130, 246, 0.8) 0%, rgba(59, 130, 246, 0.4) 100%);
+            transition: all 0.2s ease;
+        }
+        
+        .freq-bar:hover {
+            background: linear-gradient(180deg, rgba(59, 130, 246, 1) 0%, rgba(59, 130, 246, 0.6) 100%);
+        }
+        
+        /* Daily returns table */
+        .daily-row {
+            display: flex;
+            align-items: center;
+            padding: 4px 8px;
+            font-size: 10px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .daily-row:hover {
+            background: var(--bg-tertiary);
+        }
+        
+        .daily-bar {
+            height: 4px;
+            border-radius: 2px;
+            margin-left: 8px;
+        }
+    </style>
+</head>
+<body class="h-screen overflow-hidden">
+    <!-- Global Tooltip -->
+    <div id="global-tooltip" class="chart-tooltip">
+        <div class="text-[#888888] mb-1" id="tooltip-date">2024-09-15</div>
+        <div class="flex items-center gap-4">
+            <div>
+                <div class="text-[#888888]">策略</div>
+                <div class="text-[#3b82f6] font-mono font-semibold" id="tooltip-value">1.2847</div>
+            </div>
+            <div>
+                <div class="text-[#888888]">基准</div>
+                <div class="text-[#888888] font-mono font-semibold" id="tooltip-benchmark">1.0823</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <header class="h-11 border-b border-[#2a2a2a] flex items-center justify-between px-4 bg-[#111111]">
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+                <div class="w-6 h-6 rounded bg-[#3b82f6] flex items-center justify-center">
+                    <i class="fas fa-chart-line text-white text-xs"></i>
+                </div>
+                <span class="font-semibold text-sm">双均线策略</span>
+                <span class="text-[10px] text-[#888888] bg-[#1a1a1a] px-1.5 py-0.5 rounded border border-[#2a2a2a]">v2.1</span>
+            </div>
+            <div class="h-4 w-px bg-[#2a2a2a]"></div>
+            <div class="flex items-center gap-4 text-xs">
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[#888888]">收益</span>
+                    <span class="text-[#10b981] font-mono font-semibold">+12.45%</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[#888888]">夏普</span>
+                    <span class="text-[#e0e0e0] font-mono font-semibold">2.34</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[#888888]">回撤</span>
+                    <span class="text-[#ef4444] font-mono font-semibold">-4.82%</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="flex items-center gap-2">
+            <div class="flex items-center bg-[#0d0d0d] rounded p-0.5 border border-[#2a2a2a]">
+                <button class="toggle-btn px-2 py-1 text-[10px] font-medium text-[#888888] rounded">1M</button>
+                <button class="toggle-btn px-2 py-1 text-[10px] font-medium text-[#888888] rounded">3M</button>
+                <button class="toggle-btn px-2 py-1 text-[10px] font-medium text-[#888888] rounded">6M</button>
+                <button class="toggle-btn active px-2 py-1 text-[10px] font-medium rounded">1Y</button>
+                <button class="toggle-btn px-2 py-1 text-[10px] font-medium text-[#888888] rounded">ALL</button>
+            </div>
+            <button class="flex items-center gap-1.5 px-3 py-1.5 bg-[#3b82f6] hover:bg-[#2563eb] text-white text-xs font-medium rounded transition-colors">
+                <i class="fas fa-robot text-xs"></i>
+                AI Review
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Layout -->
+    <div class="flex h-[calc(100vh-44px)]">
+        <!-- Charts Column -->
+        <main class="flex-1 flex flex-col min-w-0">
+            
+            <!-- Equity Chart -->
+            <div class="flex-1 min-h-0 border-b border-[#2a2a2a] relative chart-container" id="equity-chart" data-chart="equity">
+                <!-- Header -->
+                <div class="absolute top-2 left-3 right-12 flex items-center justify-between z-10">
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs font-semibold text-[#888888] uppercase tracking-wider">净值曲线</span>
+                        <div class="flex items-center gap-3 text-[10px]">
+                            <span class="flex items-center gap-1.5">
+                                <span class="w-3 h-0.5 bg-[#3b82f6] rounded-full"></span>
+                                <span class="text-[#e0e0e0]">策略</span>
+                            </span>
+                            <span class="flex items-center gap-1.5">
+                                <span class="w-3 h-0.5 border-t border-dashed border-[#888888]"></span>
+                                <span class="text-[#888888]">沪深300</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Y-axis labels - 根据新曲线范围调整 -->
+                <div class="y-axis-labels">
+                    <span>1.32</span>
+                    <span>1.16</span>
+                    <span>1.00</span>
+                </div>
+                
+                <!-- Chart SVG -->
+                <div class="chart-area tv-grid">
+                    <svg class="w-full h-full" viewBox="0 0 1200 400" preserveAspectRatio="none">
+                        <defs>
+                            <linearGradient id="equityGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.2" />
+                                <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0" />
+                            </linearGradient>
+                        </defs>
+                        
+                        <!-- Area fill - 真实回测曲线，高频锯齿波动 -->
+                        <path d="M0,360 
+                                 L8,359 L16,358 L24,356 L32,357 L40,355 L48,354 L56,352 L64,353 L72,351 L80,349 L88,350 L96,348 
+                                 L104,346 L112,347 L120,345 L128,343 L136,344 L144,342 L152,340 L160,341 L168,339 L176,337 L184,338 L192,336 
+                                 L200,334 L208,332 L216,333 L224,331 L232,329 L240,330 L248,328 L256,326 L264,327 L272,325 L280,323 L288,324 
+                                 L296,322 L304,320 L312,318 L320,316 L328,314 L336,312 L344,313 L352,311 L360,309 L368,310 L376,308 L384,306 
+                                 L392,304 L400,305 L408,303 L416,301 L424,302 L432,300 L440,298 L448,296 L456,297 L464,295 L472,293 L480,294 
+                                 L488,292 L496,290 L504,288 L512,289 L520,287 L528,285 L536,283 L544,284 L552,282 L560,280 L568,278 L576,279 
+                                 L584,277 L592,275 L600,273 L608,274 L616,272 L624,270 L632,268 L640,269 L648,267 L656,265 L664,263 L672,264 
+                                 L680,262 L688,260 L696,258 L704,259 L712,257 L720,255 L728,253 L736,254 L744,252 L752,250 L760,248 L768,249 
+                                 L776,247 L784,245 L792,243 L800,244 L808,242 L816,240 L824,238 L832,239 L840,237 L848,235 L856,233 L864,234 
+                                 L872,232 L880,230 L888,228 L896,229 L904,227 L912,225 L920,223 L928,224 L936,222 L944,220 L952,218 L960,219 
+                                 L968,217 L976,215 L984,213 L992,214 L1000,212 L1008,210 L1016,208 L1024,209 L1032,207 L1040,205 L1048,203 L1056,204 
+                                 L1064,202 L1072,200 L1080,198 L1088,199 L1096,197 L1104,195 L1112,193 L1120,194 L1128,192 L1136,190 L1144,188 L1152,189 
+                                 L1160,187 L1168,185 L1176,183 L1184,184 L1192,182 L1200,180 
+                                 L1200,400 L0,400 Z" 
+                              fill="url(#equityGrad)" />
+                        
+                        <!-- Strategy line - 高频锯齿波动，像真实价格走势 -->
+                        <path d="M0,360 
+                                 L8,359 L16,358 L24,356 L32,357 L40,355 L48,354 L56,352 L64,353 L72,351 L80,349 L88,350 L96,348 
+                                 L104,346 L112,347 L120,345 L128,343 L136,344 L144,342 L152,340 L160,341 L168,339 L176,337 L184,338 L192,336 
+                                 L200,334 L208,332 L216,333 L224,331 L232,329 L240,330 L248,328 L256,326 L264,327 L272,325 L280,323 L288,324 
+                                 L296,322 L304,320 L312,318 L320,316 L328,314 L336,312 L344,313 L352,311 L360,309 L368,310 L376,308 L384,306 
+                                 L392,304 L400,305 L408,303 L416,301 L424,302 L432,300 L440,298 L448,296 L456,297 L464,295 L472,293 L480,294 
+                                 L488,292 L496,290 L504,288 L512,289 L520,287 L528,285 L536,283 L544,284 L552,282 L560,280 L568,278 L576,279 
+                                 L584,277 L592,275 L600,273 L608,274 L616,272 L624,270 L632,268 L640,269 L648,267 L656,265 L664,263 L672,264 
+                                 L680,262 L688,260 L696,258 L704,259 L712,257 L720,255 L728,253 L736,254 L744,252 L752,250 L760,248 L768,249 
+                                 L776,247 L784,245 L792,243 L800,244 L808,242 L816,240 L824,238 L832,239 L840,237 L848,235 L856,233 L864,234 
+                                 L872,232 L880,230 L888,228 L896,229 L904,227 L912,225 L920,223 L928,224 L936,222 L944,220 L952,218 L960,219 
+                                 L968,217 L976,215 L984,213 L992,214 L1000,212 L1008,210 L1016,208 L1024,209 L1032,207 L1040,205 L1048,203 L1056,204 
+                                 L1064,202 L1072,200 L1080,198 L1088,199 L1096,197 L1104,195 L1112,193 L1120,194 L1128,192 L1136,190 L1144,188 L1152,189 
+                                 L1160,187 L1168,185 L1176,183 L1184,184 L1192,182 L1200,180" 
+                              fill="none" stroke="#3b82f6" stroke-width="1" stroke-linejoin="round" />
+                        
+                        <!-- Benchmark line - 同样高频波动但更平缓 -->
+                        <path d="M0,360 
+                                 L20,359 L40,358 L60,357 L80,356 L100,355 L120,354 L140,353 L160,352 L180,351 L200,350 L220,349 L240,348 
+                                 L260,347 L280,346 L300,345 L320,344 L340,343 L360,342 L380,341 L400,340 L420,339 L440,338 L460,337 L480,336 
+                                 L500,335 L520,334 L540,333 L560,332 L580,331 L600,330 L620,329 L640,328 L660,327 L680,326 L700,325 L720,324 
+                                 L740,323 L760,322 L780,321 L800,320 L820,319 L840,318 L860,317 L880,316 L900,315 L920,314 L940,313 L960,312 
+                                 L980,311 L1000,310 L1020,309 L1040,308 L1060,307 L1080,306 L1100,305 L1120,304 L1140,303 L1160,302 L1180,301 L1200,300" 
+                              fill="none" stroke="#888888" stroke-width="1" stroke-dasharray="3,3" stroke-linejoin="round" />
+                    </svg>
+                    
+                    <!-- Crosshair -->
+                    <div class="crosshair-v" style="left: 50%;"></div>
+                    <div class="crosshair-h" style="top: 50%;"></div>
+                </div>
+                
+                <!-- Time axis -->
+                <div class="time-axis absolute bottom-0 left-12 right-12 h-6 flex items-center justify-between px-2 text-[10px] text-[#888888]">
+                    <span>1月</span>
+                    <span>3月</span>
+                    <span>5月</span>
+                    <span>7月</span>
+                    <span>9月</span>
+                    <span>11月</span>
+                </div>
+            </div>
+            
+            <!-- Drawdown Chart - Fixed to stay within bounds -->
+            <div class="h-[22%] min-h-[130px] border-b border-[#2a2a2a] relative chart-container" id="drawdown-chart" data-chart="drawdown">
+                <div class="absolute top-2 left-3 z-10">
+                    <span class="text-xs font-semibold text-[#888888] uppercase tracking-wider">回撤</span>
+                </div>
+                
+                <div class="y-axis-labels" style="top: 24px;">
+                    <span>0%</span>
+                    <span>-4%</span>
+                    <span>-8%</span>
+                </div>
+                
+                <div class="chart-area tv-grid" style="top: 24px; bottom: 20px;">
+                    <svg class="w-full h-full" viewBox="0 0 1200 100" preserveAspectRatio="none">
+                        <defs>
+                            <linearGradient id="ddGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#ef4444;stop-opacity:0.3" />
+                                <stop offset="100%" style="stop-color:#ef4444;stop-opacity:0.02" />
+                            </linearGradient>
+                        </defs>
+                        
+                        <!-- Drawdown area - 高频锯齿回撤，像真实回测 -->
+                        <path d="M0,8 
+                                 L10,12 L20,10 L30,15 L40,18 L50,14 L60,20 L70,16 L80,22 L90,19 L100,25 L110,21 L120,28 
+                                 L130,24 L140,32 L150,27 L160,35 L170,30 L180,38 L190,33 L200,42 L210,36 L220,45 L230,39 
+                                 L240,48 L250,41 L260,52 L270,44 L280,55 L290,47 L300,58 L310,49 L320,62 L330,52 L340,65 
+                                 L350,55 L360,68 L370,57 L380,72 L390,60 L400,75 L410,62 L420,78 L430,64 L440,82 L450,67 
+                                 L460,85 L470,69 L480,88 L490,71 L500,90 L510,73 L520,92 L530,75 L540,88 L550,77 L560,85 
+                                 L570,79 L580,82 L590,81 L600,78 L610,80 L620,76 L630,79 L640,74 L650,77 L660,72 L670,75 
+                                 L680,70 L690,73 L700,68 L710,71 L720,66 L730,69 L740,64 L750,67 L760,62 L770,65 L780,60 
+                                 L790,63 L800,58 L810,61 L820,56 L830,59 L840,54 L850,57 L860,52 L870,55 L880,50 L890,53 
+                                 L900,48 L910,51 L920,46 L930,49 L940,44 L950,47 L960,42 L970,45 L980,40 L990,43 L1000,38 
+                                 L1010,41 L1020,36 L1030,39 L1040,34 L1050,37 L1060,32 L1070,35 L1080,30 L1090,33 L1100,28 
+                                 L1110,31 L1120,26 L1130,29 L1140,24 L1150,27 L1160,22 L1170,25 L1180,20 L1190,23 L1200,18 
+                                 L1200,95 L0,95 Z" 
+                              fill="url(#ddGrad)" />
+                        
+                        <!-- Drawdown line - 高频锯齿，真实回撤走势 -->
+                        <path d="M0,8 
+                                 L10,12 L20,10 L30,15 L40,18 L50,14 L60,20 L70,16 L80,22 L90,19 L100,25 L110,21 L120,28 
+                                 L130,24 L140,32 L150,27 L160,35 L170,30 L180,38 L190,33 L200,42 L210,36 L220,45 L230,39 
+                                 L240,48 L250,41 L260,52 L270,44 L280,55 L290,47 L300,58 L310,49 L320,62 L330,52 L340,65 
+                                 L350,55 L360,68 L370,57 L380,72 L390,60 L400,75 L410,62 L420,78 L430,64 L440,82 L450,67 
+                                 L460,85 L470,69 L480,88 L490,71 L500,90 L510,73 L520,92 L530,75 L540,88 L550,77 L560,85 
+                                 L570,79 L580,82 L590,81 L600,78 L610,80 L620,76 L630,79 L640,74 L650,77 L660,72 L670,75 
+                                 L680,70 L690,73 L700,68 L710,71 L720,66 L730,69 L740,64 L750,67 L760,62 L770,65 L780,60 
+                                 L790,63 L800,58 L810,61 L820,56 L830,59 L840,54 L850,57 L860,52 L870,55 L880,50 L890,53 
+                                 L900,48 L910,51 L920,46 L930,49 L940,44 L950,47 L960,42 L970,45 L980,40 L990,43 L1000,38 
+                                 L1010,41 L1020,36 L1030,39 L1040,34 L1050,37 L1060,32 L1070,35 L1080,30 L1090,33 L1100,28 
+                                 L1110,31 L1120,26 L1130,29 L1140,24 L1150,27 L1160,22 L1170,25 L1180,20 L1190,23 L1200,18" 
+                              fill="none" stroke="#ef4444" stroke-width="1" stroke-linejoin="round" />
+                        
+                        <!-- Zero line at top -->
+                        <line x1="0" y1="5" x2="1200" y2="5" stroke="#2a2a2a" stroke-width="1" />
+                    </svg>
+                    
+                    <div class="crosshair-v" style="left: 50%;"></div>
+                </div>
+                
+                <div class="time-axis absolute bottom-0 left-12 right-12 h-5 flex items-center justify-between px-2 text-[10px] text-[#888888]">
+                    <span></span><span></span><span></span><span></span><span></span><span></span>
+                </div>
+            </div>
+            
+            <!-- Trade Frequency -->
+            <div class="h-[22%] min-h-[130px] relative chart-container" id="freq-chart" data-chart="freq">
+                <div class="absolute top-2 left-3 z-10">
+                    <span class="text-xs font-semibold text-[#888888] uppercase tracking-wider">交易频率</span>
+                </div>
+                
+                <div class="y-axis-labels" style="top: 24px;">
+                    <span>20</span>
+                    <span>10</span>
+                    <span>0</span>
+                </div>
+                
+                <div class="chart-area tv-grid" style="top: 24px; bottom: 20px;">
+                    <div class="absolute inset-0 flex items-end gap-1 px-1">
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="1月" data-value="9">
+                            <div class="freq-bar w-full rounded-t" style="height: 45%;"></div>
+                            <span class="text-[9px] text-[#888888]">1月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="2月" data-value="6">
+                            <div class="freq-bar w-full rounded-t" style="height: 30%;"></div>
+                            <span class="text-[9px] text-[#888888]">2月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="3月" data-value="14">
+                            <div class="freq-bar w-full rounded-t" style="height: 70%;"></div>
+                            <span class="text-[9px] text-[#888888]">3月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="4月" data-value="8">
+                            <div class="freq-bar w-full rounded-t" style="height: 40%;"></div>
+                            <span class="text-[9px] text-[#888888]">4月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="5月" data-value="17">
+                            <div class="freq-bar w-full rounded-t" style="height: 85%;"></div>
+                            <span class="text-[9px] text-[#888888]">5月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="6月" data-value="5">
+                            <div class="freq-bar w-full rounded-t" style="height: 25%;"></div>
+                            <span class="text-[9px] text-[#888888]">6月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="7月" data-value="11">
+                            <div class="freq-bar w-full rounded-t" style="height: 55%;"></div>
+                            <span class="text-[9px] text-[#888888]">7月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="8月" data-value="13">
+                            <div class="freq-bar w-full rounded-t" style="height: 65%;"></div>
+                            <span class="text-[9px] text-[#888888]">8月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="9月" data-value="7">
+                            <div class="freq-bar w-full rounded-t" style="height: 35%;"></div>
+                            <span class="text-[9px] text-[#888888]">9月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="10月" data-value="18">
+                            <div class="freq-bar w-full rounded-t" style="height: 90%;"></div>
+                            <span class="text-[9px] text-[#888888]">10月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="11月" data-value="10">
+                            <div class="freq-bar w-full rounded-t" style="height: 50%;"></div>
+                            <span class="text-[9px] text-[#888888]">11月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1" data-month="12月" data-value="12">
+                            <div class="freq-bar w-full rounded-t" style="height: 60%;"></div>
+                            <span class="text-[9px] text-[#888888]">12月</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="time-axis absolute bottom-0 left-12 right-12 h-5 flex items-center justify-between px-2 text-[10px] text-[#888888]">
+                    <span></span><span></span><span></span><span></span><span></span><span></span>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Sidebar -->
+        <aside class="w-72 border-l border-[#2a2a2a] bg-[#111111] flex flex-col">
+            <!-- Sidebar Header -->
+            <div class="h-10 border-b border-[#2a2a2a] flex items-center justify-between px-3">
+                <span id="sidebar-title" class="text-[10px] font-semibold text-[#888888] uppercase tracking-wider">指标概览</span>
+                <div class="flex items-center bg-[#0d0d0d] rounded p-0.5 border border-[#2a2a2a]">
+                    <button id="btn-config" onclick="switchView('config')" class="toggle-btn px-2 py-0.5 text-[9px] font-medium text-[#888888] rounded">配置</button>
+                    <button id="btn-overview" onclick="switchView('overview')" class="toggle-btn active px-2 py-0.5 text-[9px] font-medium rounded">概览</button>
+                </div>
+            </div>
+            
+            <!-- Overview Panel -->
+            <div id="panel-overview" class="flex-1 overflow-y-auto p-3 space-y-4">
+                
+                <!-- 收益风险指标 -->
+                <div class="space-y-2">
+                    <div class="text-[11px] font-medium text-[#888888]">收益风险指标</div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div class="metric-card border-l-2 border-l-[#10b981]">
+                            <div class="text-[10px] text-[#888888] mb-0.5">累计收益</div>
+                            <div class="metric-value text-sm text-[#10b981]">+8.23%</div>
+                        </div>
+                        <div class="metric-card border-l-2 border-l-[#ef4444]">
+                            <div class="text-[10px] text-[#888888] mb-0.5">最大回撤</div>
+                            <div class="metric-value text-sm text-[#ef4444]">-5.12%</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">年化收益</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">+8.45%</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">年化波动</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">12.3%</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">夏普比率</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">2.08</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">索提诺比率</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">2.85</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 绩效指标 -->
+                <div class="space-y-2">
+                    <div class="text-[11px] font-medium text-[#888888]">绩效指标</div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div class="metric-card border-l-2 border-l-[#10b981]">
+                            <div class="text-[10px] text-[#888888] mb-0.5">胜率</div>
+                            <div class="metric-value text-sm text-[#10b981]">58.3%</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">盈亏比</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">1.85</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">交易次数</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">127</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">平均持仓</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">6.2天</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">卡尔玛比率</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">1.65</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="text-[10px] text-[#888888] mb-0.5">收益回撤比</div>
+                            <div class="metric-value text-sm text-[#e0e0e0]">1.61</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 基准对比 -->
+                <div class="space-y-2">
+                    <div class="text-[11px] font-medium text-[#888888]">基准对比</div>
+                    <div class="bg-[#0d0d0d] rounded border border-[#2a2a2a]">
+                        <div class="flex justify-between items-center px-3 py-2 border-b border-[#2a2a2a]">
+                            <span class="text-[10px] text-[#888888]">策略收益</span>
+                            <span class="text-xs font-mono text-[#10b981] font-semibold">+8.23%</span>
+                        </div>
+                        <div class="flex justify-between items-center px-3 py-2 border-b border-[#2a2a2a]">
+                            <span class="text-[10px] text-[#888888]">基准收益</span>
+                            <span class="text-xs font-mono text-[#e0e0e0]">+2.15%</span>
+                        </div>
+                        <div class="flex justify-between items-center px-3 py-2 border-b border-[#2a2a2a]">
+                            <span class="text-[10px] text-[#888888]">超额收益</span>
+                            <span class="text-xs font-mono text-[#10b981] font-semibold">+6.08%</span>
+                        </div>
+                        <div class="flex justify-between items-center px-3 py-2">
+                            <span class="text-[10px] text-[#888888]">信息比率</span>
+                            <span class="text-xs font-mono text-[#e0e0e0] font-semibold">1.42</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Returns Distribution with Day/Month/Year toggle -->
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-semibold text-[#888888] uppercase tracking-wider">收益分布</span>
+                        <div class="flex items-center gap-0.5 bg-[#0d0d0d] rounded p-0.5 border border-[#2a2a2a]">
+                            <button onclick="toggleReturns('daily')" id="ret-daily" class="text-[9px] px-1.5 py-0.5 rounded text-[#888888] hover:text-[#e0e0e0]">日</button>
+                            <button onclick="toggleReturns('monthly')" id="ret-monthly" class="text-[9px] px-1.5 py-0.5 rounded bg-[#3b82f6] text-white">月</button>
+                            <button onclick="toggleReturns('yearly')" id="ret-yearly" class="text-[9px] px-1.5 py-0.5 rounded text-[#888888] hover:text-[#e0e0e0]">年</button>
+                        </div>
+                    </div>
+                    
+                    <!-- Daily Returns View -->
+                    <div id="returns-daily-grid" class="hidden bg-[#0d0d0d] rounded border border-[#2a2a2a] p-2">
+                        <div class="text-[9px] text-[#888888] mb-2 flex justify-between">
+                            <span>日期</span>
+                            <span>收益</span>
+                        </div>
+                        <div class="space-y-0.5 max-h-[180px] overflow-y-auto">
+                            <div class="daily-row">
+                                <span class="text-[#888888] w-14">01-15</span>
+                                <div class="flex-1 flex items-center">
+                                    <div class="daily-bar bg-[#10b981]" style="width: 60%;"></div>
+                                </div>
+                                <span class="text-[#10b981] font-mono w-12 text-right">+1.2%</span>
+                            </div>
+                            <div class="daily-row">
+                                <span class="text-[#888888] w-14">01-14</span>
+                                <div class="flex-1 flex items-center">
+                                    <div class="daily-bar bg-[#10b981]" style="width: 40%;"></div>
+                                </div>
+                                <span class="text-[#10b981] font-mono w-12 text-right">+0.8%</span>
+                            </div>
+                            <div class="daily-row">
+                                <span class="text-[#888888] w-14">01-13</span>
+                                <div class="flex-1 flex items-center">
+                                    <div class="daily-bar bg-[#ef4444]" style="width: 25%;"></div>
+                                </div>
+                                <span class="text-[#ef4444] font-mono w-12 text-right">-0.5%</span>
+                            </div>
+                            <div class="daily-row">
+                                <span class="text-[#888888] w-14">01-12</span>
+                                <div class="flex-1 flex items-center">
+                                    <div class="daily-bar bg-[#10b981]" style="width: 80%;"></div>
+                                </div>
+                                <span class="text-[#10b981] font-mono w-12 text-right">+1.6%</span>
+                            </div>
+                            <div class="daily-row">
+                                <span class="text-[#888888] w-14">01-11</span>
+                                <div class="flex-1 flex items-center">
+                                    <div class="daily-bar bg-[#ef4444]" style="width: 15%;"></div>
+                                </div>
+                                <span class="text-[#ef4444] font-mono w-12 text-right">-0.3%</span>
+                            </div>
+                            <div class="daily-row">
+                                <span class="text-[#888888] w-14">01-10</span>
+                                <div class="flex-1 flex items-center">
+                                    <div class="daily-bar bg-[#10b981]" style="width: 50%;"></div>
+                                </div>
+                                <span class="text-[#10b981] font-mono w-12 text-right">+1.0%</span>
+                            </div>
+                            <div class="daily-row">
+                                <span class="text-[#888888] w-14">01-09</span>
+                                <div class="flex-1 flex items-center">
+                                    <div class="daily-bar bg-[#10b981]" style="width: 35%;"></div>
+                                </div>
+                                <span class="text-[#10b981] font-mono w-12 text-right">+0.7%</span>
+                            </div>
+                            <div class="daily-row">
+                                <span class="text-[#888888] w-14">01-08</span>
+                                <div class="flex-1 flex items-center">
+                                    <div class="daily-bar bg-[#ef4444]" style="width: 20%;"></div>
+                                </div>
+                                <span class="text-[#ef4444] font-mono w-12 text-right">-0.4%</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Monthly Returns View -->
+                    <div id="returns-monthly-grid" class="bg-[#0d0d0d] rounded border border-[#2a2a2a] p-2">
+                        <div class="grid grid-cols-4 gap-1">
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/80 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="1月: +2.1%">+2.1</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/40 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="2月: +0.8%">+0.8</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/90 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="3月: +3.2%">+3.2</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#ef4444]/30 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="4月: -0.5%">-0.5</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/70 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="5月: +1.8%">+1.8</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#ef4444]/20 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="6月: -0.3%">-0.3</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/60 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="7月: +1.5%">+1.5</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/50 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="8月: +1.2%">+1.2</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#ef4444]/40 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="9月: -0.8%">-0.8</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/85 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="10月: +2.8%">+2.8</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/45 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="11月: +1.0%">+1.0</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#10b981]/75 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="12月: +2.0%">+2.0</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Yearly Returns View -->
+                    <div id="returns-yearly-grid" class="hidden bg-[#0d0d0d] rounded border border-[#2a2a2a] p-2">
+                        <div class="grid grid-cols-3 gap-2">
+                            <div class="aspect-[2/1] rounded bg-[#10b981]/80 flex flex-col items-center justify-center cursor-pointer" title="2022: +12.5%">
+                                <span class="text-[10px] font-mono font-semibold text-white">+12.5%</span>
+                                <span class="text-[8px] text-white/60">2022</span>
+                            </div>
+                            <div class="aspect-[2/1] rounded bg-[#ef4444]/60 flex flex-col items-center justify-center cursor-pointer" title="2023: -5.2%">
+                                <span class="text-[10px] font-mono font-semibold text-white">-5.2%</span>
+                                <span class="text-[8px] text-white/60">2023</span>
+                            </div>
+                            <div class="aspect-[2/1] rounded bg-[#10b981]/90 flex flex-col items-center justify-center cursor-pointer" title="2024: +8.2%">
+                                <span class="text-[10px] font-mono font-semibold text-white">+8.2%</span>
+                                <span class="text-[8px] text-white/60">2024</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Config Panel -->
+            <div id="panel-config" class="hidden flex-1 overflow-y-auto p-3 space-y-3">
+                <div class="space-y-3">
+                    <div class="text-[10px] font-semibold text-[#888888] uppercase tracking-wider">策略参数</div>
+                    <div class="bg-[#0d0d0d] rounded border border-[#2a2a2a] p-3 space-y-3">
+                        <div>
+                            <label class="text-[10px] text-[#888888] block mb-1.5">短周期均线</label>
+                            <input type="number" value="5" class="w-full bg-[#111111] border border-[#2a2a2a] rounded px-2 py-1.5 text-xs text-[#e0e0e0] focus:border-[#3b82f6] outline-none font-mono">
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-[#888888] block mb-1.5">长周期均线</label>
+                            <input type="number" value="20" class="w-full bg-[#111111] border border-[#2a2a2a] rounded px-2 py-1.5 text-xs text-[#e0e0e0] focus:border-[#3b82f6] outline-none font-mono">
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-[#888888] block mb-1.5">止损比例 (%)</label>
+                            <input type="number" value="5" step="0.5" class="w-full bg-[#111111] border border-[#2a2a2a] rounded px-2 py-1.5 text-xs text-[#e0e0e0] focus:border-[#3b82f6] outline-none font-mono">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="space-y-3">
+                    <div class="text-[10px] font-semibold text-[#888888] uppercase tracking-wider">回测设置</div>
+                    <div class="bg-[#0d0d0d] rounded border border-[#2a2a2a] p-3 space-y-3">
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[10px] text-[#888888] block mb-1.5">开始</label>
+                                <input type="date" value="2024-01-01" class="w-full bg-[#111111] border border-[#2a2a2a] rounded px-2 py-1.5 text-xs text-[#e0e0e0] focus:border-[#3b82f6] outline-none">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-[#888888] block mb-1.5">结束</label>
+                                <input type="date" value="2024-12-31" class="w-full bg-[#111111] border border-[#2a2a2a] rounded px-2 py-1.5 text-xs text-[#e0e0e0] focus:border-[#3b82f6] outline-none">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-[#888888] block mb-1.5">基准指数</label>
+                            <select class="w-full bg-[#111111] border border-[#2a2a2a] rounded px-2 py-1.5 text-xs text-[#e0e0e0] focus:border-[#3b82f6] outline-none">
+                                <option>沪深300 (000300)</option>
+                                <option>中证500 (000905)</option>
+                                <option>上证指数 (000001)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                
+                <button class="w-full py-2 bg-[#3b82f6] hover:bg-[#2563eb] text-white text-xs font-medium rounded transition-colors">
+                    应用配置
+                </button>
+            </div>
+            
+            <!-- Footer -->
+            <div class="p-3 border-t border-[#2a2a2a]">
+                <button class="w-full py-2 bg-[#0d0d0d] hover:bg-[#1a1a1a] border border-[#2a2a2a] text-[#e0e0e0] text-xs font-medium rounded transition-colors flex items-center justify-center gap-2">
+                    <i class="fas fa-download text-xs"></i>
+                    导出报告
+                </button>
+            </div>
+        </aside>
+    </div>
+    
+    <script>
+        // Global tooltip that follows mouse
+        const tooltip = document.getElementById('global-tooltip');
+        const tooltipDate = document.getElementById('tooltip-date');
+        const tooltipValue = document.getElementById('tooltip-value');
+        const tooltipBenchmark = document.getElementById('tooltip-benchmark');
+        
+        // Chart data for tooltips
+        const chartData = {
+            equity: {
+                dates: ['2024-01-15', '2024-02-15', '2024-03-15', '2024-04-15', '2024-05-15', '2024-06-15', 
+                        '2024-07-15', '2024-08-15', '2024-09-15', '2024-10-15', '2024-11-15', '2024-12-15'],
+                values: [1.02, 1.05, 1.08, 1.06, 1.12, 1.10, 1.15, 1.18, 1.22, 1.28, 1.30, 1.32],
+                benchmarks: [1.01, 1.02, 1.03, 1.02, 1.04, 1.03, 1.05, 1.06, 1.07, 1.08, 1.09, 1.10]
+            }
+        };
+        
+        // Setup interactive charts
+        document.querySelectorAll('.chart-container').forEach(container => {
+            const crosshairV = container.querySelector('.crosshair-v');
+            const crosshairH = container.querySelector('.crosshair-h');
+            const chartType = container.dataset.chart;
+            
+            if (crosshairV) {
+                container.addEventListener('mousemove', (e) => {
+                    const rect = container.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    
+                    // Update crosshair position
+                    crosshairV.style.left = x + 'px';
+                    if (crosshairH) {
+                        crosshairH.style.top = y + 'px';
+                    }
+                    
+                    // Update tooltip position (fixed to viewport)
+                    tooltip.style.left = e.clientX + 'px';
+                    tooltip.style.top = e.clientY + 'px';
+                    
+                    // Calculate data index based on x position
+                    const chartArea = container.querySelector('.chart-area');
+                    const chartRect = chartArea.getBoundingClientRect();
+                    const relativeX = e.clientX - chartRect.left;
+                    const percentX = Math.max(0, Math.min(1, relativeX / chartRect.width));
+                    const dataIndex = Math.floor(percentX * 12);
+                    
+                    // Update tooltip content for equity chart
+                    if (chartType === 'equity' && chartData.equity) {
+                        const data = chartData.equity;
+                        const idx = Math.min(dataIndex, data.dates.length - 1);
+                        tooltipDate.textContent = data.dates[idx];
+                        tooltipValue.textContent = data.values[idx].toFixed(4);
+                        tooltipBenchmark.textContent = data.benchmarks[idx].toFixed(4);
+                        tooltip.classList.add('visible');
+                    } else if (chartType === 'drawdown') {
+                        tooltipDate.textContent = '回撤: ' + (percentX * 5).toFixed(2) + '%';
+                        tooltipValue.textContent = '';
+                        tooltipBenchmark.textContent = '';
+                        tooltip.classList.add('visible');
+                    }
+                });
+                
+                container.addEventListener('mouseleave', () => {
+                    tooltip.classList.remove('visible');
+                });
+            }
+        });
+        
+        // Trade frequency bar tooltips
+        document.querySelectorAll('#freq-chart [data-month]').forEach(bar => {
+            bar.addEventListener('mouseenter', (e) => {
+                const month = bar.dataset.month;
+                const value = bar.dataset.value;
+                tooltipDate.textContent = month;
+                tooltipValue.textContent = value + ' 笔';
+                tooltipBenchmark.textContent = '';
+                tooltip.classList.add('visible');
+            });
+            
+            bar.addEventListener('mousemove', (e) => {
+                tooltip.style.left = e.clientX + 'px';
+                tooltip.style.top = e.clientY + 'px';
+            });
+            
+            bar.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        function switchView(view) {
+            const btnConfig = document.getElementById('btn-config');
+            const btnOverview = document.getElementById('btn-overview');
+            const panelConfig = document.getElementById('panel-config');
+            const panelOverview = document.getElementById('panel-overview');
+            const sidebarTitle = document.getElementById('sidebar-title');
+            
+            if (view === 'config') {
+                btnConfig.classList.add('active');
+                btnConfig.classList.remove('text-[#888888]');
+                btnOverview.classList.remove('active');
+                btnOverview.classList.add('text-[#888888]');
+                panelConfig.classList.remove('hidden');
+                panelOverview.classList.add('hidden');
+                sidebarTitle.textContent = '参数配置';
+            } else {
+                btnOverview.classList.add('active');
+                btnOverview.classList.remove('text-[#888888]');
+                btnConfig.classList.remove('active');
+                btnConfig.classList.add('text-[#888888]');
+                panelOverview.classList.remove('hidden');
+                panelConfig.classList.add('hidden');
+                sidebarTitle.textContent = '指标概览';
+            }
+        }
+        
+        function toggleReturns(type) {
+            const btnDaily = document.getElementById('ret-daily');
+            const btnMonthly = document.getElementById('ret-monthly');
+            const btnYearly = document.getElementById('ret-yearly');
+            const gridDaily = document.getElementById('returns-daily-grid');
+            const gridMonthly = document.getElementById('returns-monthly-grid');
+            const gridYearly = document.getElementById('returns-yearly-grid');
+            
+            // Reset all buttons
+            [btnDaily, btnMonthly, btnYearly].forEach(btn => {
+                btn.classList.remove('bg-[#3b82f6]', 'text-white');
+                btn.classList.add('text-[#888888]');
+            });
+            
+            // Hide all grids
+            gridDaily.classList.add('hidden');
+            gridMonthly.classList.add('hidden');
+            gridYearly.classList.add('hidden');
+            
+            // Activate selected
+            if (type === 'daily') {
+                btnDaily.classList.add('bg-[#3b82f6]', 'text-white');
+                btnDaily.classList.remove('text-[#888888]');
+                gridDaily.classList.remove('hidden');
+            } else if (type === 'monthly') {
+                btnMonthly.classList.add('bg-[#3b82f6]', 'text-white');
+                btnMonthly.classList.remove('text-[#888888]');
+                gridMonthly.classList.remove('hidden');
+            } else {
+                btnYearly.classList.add('bg-[#3b82f6]', 'text-white');
+                btnYearly.classList.remove('text-[#888888]');
+                gridYearly.classList.remove('hidden');
+            }
+        }
+    </script>
+</body>
+</html>

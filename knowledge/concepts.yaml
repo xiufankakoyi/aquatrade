@@ -1,0 +1,119 @@
+[
+  {
+    "concept_id": "optical_module",
+    "concept_name": "光模块",
+    "aliases": ["光通信模块", "Optical Module", "光收发模块"],
+    "parent_concepts": ["AI 算力", "通信设备"],
+    "industry_chain": ["光芯片", "光器件", "光模块", "交换机", "数据中心"],
+    "keywords": ["光模块", "光通信", "光收发", "800G", "1.6T"],
+    "description": "面向数据中心、通信网络等场景的光电转换模块概念。"
+  },
+  {
+    "concept_id": "cpo",
+    "concept_name": "CPO",
+    "aliases": ["共封装光学", "Co-Packaged Optics"],
+    "parent_concepts": ["光模块", "AI 算力"],
+    "industry_chain": ["硅光", "光引擎", "交换芯片", "共封装系统"],
+    "keywords": ["CPO", "共封装", "Co-Packaged", "光引擎"],
+    "description": "将光引擎与交换芯片更紧密集成的高速互连技术方向。"
+  },
+  {
+    "concept_id": "silicon_photonics",
+    "concept_name": "硅光",
+    "aliases": ["硅光子", "Silicon Photonics"],
+    "parent_concepts": ["光模块", "CPO"],
+    "industry_chain": ["硅光芯片", "调制器", "光引擎", "封装测试"],
+    "keywords": ["硅光", "硅光子", "Silicon Photonics", "硅基光子"],
+    "description": "利用硅基工艺实现光子器件集成的技术方向。"
+  },
+  {
+    "concept_id": "indium_phosphide",
+    "concept_name": "磷化铟",
+    "aliases": ["InP", "Indium Phosphide"],
+    "parent_concepts": ["光芯片", "半导体材料"],
+    "industry_chain": ["衬底", "外延", "光芯片", "激光器", "光模块"],
+    "keywords": ["磷化铟", "InP", "Indium Phosphide", "光芯片材料"],
+    "description": "常用于高速光通信器件的 III-V 族半导体材料方向。"
+  },
+  {
+    "concept_id": "ai_pcb",
+    "concept_name": "AI PCB",
+    "aliases": ["服务器 PCB", "高速 PCB", "AI 服务器板"],
+    "parent_concepts": ["AI 算力", "电子元件"],
+    "industry_chain": ["覆铜板", "PCB 制造", "服务器主板", "交换机板卡"],
+    "keywords": ["AI PCB", "高速板", "服务器 PCB", "HDI"],
+    "description": "AI 服务器、交换机等硬件升级带来的高层数高速 PCB 方向。"
+  },
+  {
+    "concept_id": "liquid_cooling",
+    "concept_name": "液冷",
+    "aliases": ["数据中心液冷", "Liquid Cooling"],
+    "parent_concepts": ["AI 算力", "数据中心"],
+    "industry_chain": ["冷板", "管路", "冷却液", "机柜", "数据中心运维"],
+    "keywords": ["液冷", "冷板", "浸没式", "数据中心散热"],
+    "description": "面向高功耗服务器和数据中心的散热解决方案方向。"
+  },
+  {
+    "concept_id": "commercial_space",
+    "concept_name": "商业航天",
+    "aliases": ["低空卫星", "卫星互联网", "Commercial Space"],
+    "parent_concepts": ["高端制造", "军工"],
+    "industry_chain": ["卫星制造", "火箭发射", "地面站", "卫星运营"],
+    "keywords": ["商业航天", "卫星互联网", "火箭", "星座"],
+    "description": "商业化卫星制造、发射服务和卫星互联网产业方向。"
+  },
+  {
+    "concept_id": "power",
+    "concept_name": "电力",
+    "aliases": ["电网", "电力设备", "Power"],
+    "parent_concepts": ["能源", "公用事业"],
+    "industry_chain": ["发电", "输变电", "配电", "用电服务"],
+    "keywords": ["电力", "电网", "输变电", "配电"],
+    "description": "电力生产、输配和电力设备相关方向。"
+  },
+  {
+    "concept_id": "robotics",
+    "concept_name": "机器人",
+    "aliases": ["人形机器人", "Robot", "具身智能"],
+    "parent_concepts": ["智能制造", "AI 应用"],
+    "industry_chain": ["减速器", "伺服系统", "控制器", "整机", "应用场景"],
+    "keywords": ["机器人", "人形机器人", "减速器", "伺服", "具身智能"],
+    "description": "工业机器人、人形机器人及核心零部件方向。"
+  },
+  {
+    "concept_id": "lithium_mine",
+    "concept_name": "锂矿",
+    "aliases": ["锂资源", "Lithium"],
+    "parent_concepts": ["新能源", "有色金属"],
+    "industry_chain": ["锂矿采选", "盐湖提锂", "锂盐", "电池材料"],
+    "keywords": ["锂矿", "锂资源", "盐湖提锂", "碳酸锂"],
+    "description": "锂资源开采、提取和锂盐加工方向。"
+  },
+  {
+    "concept_id": "innovative_drug",
+    "concept_name": "创新药",
+    "aliases": ["创新药研发", "Biotech", "新药研发"],
+    "parent_concepts": ["医药生物"],
+    "industry_chain": ["靶点发现", "临床前", "临床试验", "注册上市", "商业化"],
+    "keywords": ["创新药", "临床", "新药", "ADC", "小分子"],
+    "description": "围绕新药研发、临床推进和商业化的医药方向。"
+  },
+  {
+    "concept_id": "computing_power_rental",
+    "concept_name": "算力租赁",
+    "aliases": ["智算租赁", "GPU 租赁", "Computing Power Rental"],
+    "parent_concepts": ["AI 算力", "数据中心"],
+    "industry_chain": ["GPU 服务器", "机房", "云平台", "算力服务"],
+    "keywords": ["算力租赁", "智算", "GPU 租赁", "算力服务"],
+    "description": "以 GPU/智算资源出租和托管为核心的服务方向。"
+  },
+  {
+    "concept_id": "high_speed_copper",
+    "concept_name": "铜缆高速连接",
+    "aliases": ["高速铜缆", "DAC", "AEC", "High Speed Copper"],
+    "parent_concepts": ["AI 算力", "高速互连"],
+    "industry_chain": ["线缆材料", "连接器", "高速铜缆", "服务器互连"],
+    "keywords": ["铜缆高速连接", "高速铜缆", "DAC", "AEC", "连接器"],
+    "description": "数据中心短距离高速互连中的铜缆和连接器方向。"
+  }
+]

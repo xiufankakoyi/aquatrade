@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Pro - TradingView Style</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        
+        * {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        :root {
+            --bg-primary: #0A0A0A;
+            --bg-secondary: #141414;
+            --bg-tertiary: #1a1a1a;
+            --bg-hover: #2a2e39;
+            --border-color: #2a2e39;
+            --text-primary: #d1d4dc;
+            --text-secondary: #787b86;
+            --accent-blue: #2962ff;
+            --accent-green: #22ab94;
+            --accent-red: #f23645;
+        }
+        
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+        
+        /* Professional grid */
+        .tv-grid {
+            background-image: 
+                linear-gradient(to right, rgba(42, 46, 57, 0.5) 1px, transparent 1px),
+                linear-gradient(to bottom, rgba(42, 46, 57, 0.5) 1px, transparent 1px);
+            background-size: 60px 60px;
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 4px;
+            height: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-tertiary);
+            border-radius: 2px;
+        }
+        
+        /* Chart tooltip */
+        .chart-tooltip {
+            position: absolute;
+            background: rgba(19, 23, 34, 0.95);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 11px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.1s;
+            z-index: 100;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+        
+        .chart-container:hover .chart-tooltip {
+            opacity: 1;
+        }
+        
+        /* Crosshair lines */
+        .crosshair-v, .crosshair-h {
+            position: absolute;
+            background: rgba(120, 123, 134, 0.4);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.1s;
+        }
+        
+        .crosshair-v {
+            width: 1px;
+            top: 0;
+            bottom: 0;
+        }
+        
+        .crosshair-h {
+            height: 1px;
+            left: 0;
+            right: 0;
+        }
+        
+        .chart-container:hover .crosshair-v,
+        .chart-container:hover .crosshair-h {
+            opacity: 1;
+        }
+        
+        /* Metric cards */
+        .metric-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 12px;
+            transition: all 0.2s ease;
+        }
+        
+        .metric-card:hover {
+            border-color: var(--bg-hover);
+            background: var(--bg-tertiary);
+        }
+        
+        .metric-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+        }
+        
+        /* Heatmap cells */
+        .heatmap-cell {
+            transition: transform 0.15s ease;
+        }
+        
+        .heatmap-cell:hover {
+            transform: scale(1.05);
+            z-index: 10;
+        }
+        
+        /* Toggle buttons */
+        .toggle-btn {
+            transition: all 0.15s ease;
+        }
+        
+        .toggle-btn.active {
+            background: var(--accent-blue);
+            color: white;
+        }
+        
+        /* Time axis */
+        .time-axis {
+            border-top: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+        }
+        
+        /* Y-axis labels container */
+        .y-axis-labels {
+            position: absolute;
+            right: 0;
+            top: 32px;
+            bottom: 24px;
+            width: 40px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: flex-end;
+            padding-right: 8px;
+            font-size: 10px;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+        
+        /* Chart area with consistent margins */
+        .chart-area {
+            position: absolute;
+            left: 12px;
+            right: 48px;
+            top: 32px;
+            bottom: 24px;
+        }
+        
+        /* Bar chart gradient */
+        .freq-bar {
+            background: linear-gradient(180deg, rgba(41, 98, 255, 0.8) 0%, rgba(41, 98, 255, 0.4) 100%);
+            transition: all 0.2s ease;
+        }
+        
+        .freq-bar:hover {
+            background: linear-gradient(180deg, rgba(41, 98, 255, 1) 0%, rgba(41, 98, 255, 0.6) 100%);
+        }
+    </style>
+</head>
+<body class="h-screen overflow-hidden">
+    <!-- Header -->
+    <header class="h-11 border-b border-[#2a2e39] flex items-center justify-between px-4 bg-[#131722]">
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+                <div class="w-6 h-6 rounded bg-[#2962ff] flex items-center justify-center">
+                    <i class="fas fa-chart-line text-white text-xs"></i>
+                </div>
+                <span class="font-semibold text-sm">双均线策略</span>
+                <span class="text-[10px] text-[#787b86] bg-[#1e222d] px-1.5 py-0.5 rounded border border-[#2a2e39]">v2.1</span>
+            </div>
+            <div class="h-4 w-px bg-[#2a2e39]"></div>
+            <div class="flex items-center gap-4 text-xs">
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[#787b86]">收益</span>
+                    <span class="text-[#22ab94] font-mono font-semibold">+12.45%</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[#787b86]">夏普</span>
+                    <span class="text-[#d1d4dc] font-mono font-semibold">2.34</span>
+                </div>
+                <div class="flex items-center gap-1.5">
+                    <span class="text-[#787b86]">回撤</span>
+                    <span class="text-[#f23645] font-mono font-semibold">-4.82%</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="flex items-center gap-2">
+            <div class="flex items-center bg-[#0c0e15] rounded p-0.5 border border-[#2a2e39]">
+                <button class="toggle-btn px-2 py-1 text-[10px] font-medium text-[#787b86] rounded">1M</button>
+                <button class="toggle-btn px-2 py-1 text-[10px] font-medium text-[#787b86] rounded">3M</button>
+                <button class="toggle-btn px-2 py-1 text-[10px] font-medium text-[#787b86] rounded">6M</button>
+                <button class="toggle-btn active px-2 py-1 text-[10px] font-medium rounded">1Y</button>
+                <button class="toggle-btn px-2 py-1 text-[10px] font-medium text-[#787b86] rounded">ALL</button>
+            </div>
+            <button class="flex items-center gap-1.5 px-3 py-1.5 bg-[#2962ff] hover:bg-[#1e4bd8] text-white text-xs font-medium rounded transition-colors">
+                <i class="fas fa-robot text-xs"></i>
+                AI Review
+            </button>
+        </div>
+    </header>
+
+    <!-- Main Layout -->
+    <div class="flex h-[calc(100vh-44px)]">
+        <!-- Charts Column -->
+        <main class="flex-1 flex flex-col min-w-0">
+            
+            <!-- Equity Chart -->
+            <div class="flex-1 min-h-0 border-b border-[#2a2e39] relative chart-container" id="equity-chart">
+                <!-- Header -->
+                <div class="absolute top-2 left-3 right-12 flex items-center justify-between z-10">
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs font-semibold text-[#787b86] uppercase tracking-wider">净值曲线</span>
+                        <div class="flex items-center gap-3 text-[10px]">
+                            <span class="flex items-center gap-1.5">
+                                <span class="w-3 h-0.5 bg-[#2962ff] rounded-full"></span>
+                                <span class="text-[#d1d4dc]">策略</span>
+                            </span>
+                            <span class="flex items-center gap-1.5">
+                                <span class="w-3 h-0.5 border-t border-dashed border-[#787b86]"></span>
+                                <span class="text-[#787b86]">沪深300</span>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Y-axis labels -->
+                <div class="y-axis-labels">
+                    <span>1.35</span>
+                    <span>1.20</span>
+                    <span>1.05</span>
+                </div>
+                
+                <!-- Chart SVG -->
+                <div class="chart-area tv-grid">
+                    <svg class="w-full h-full" viewBox="0 0 1200 400" preserveAspectRatio="none">
+                        <defs>
+                            <linearGradient id="equityGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#2962ff;stop-opacity:0.25" />
+                                <stop offset="100%" style="stop-color:#2962ff;stop-opacity:0" />
+                            </linearGradient>
+                        </defs>
+                        
+                        <!-- Area fill -->
+                        <path d="M0,360 C60,355 120,340 180,320 C240,300 300,310 360,280 C420,250 480,260 540,240 C600,220 660,230 720,210 C780,190 840,200 900,180 C960,160 1020,170 1080,150 C1140,130 1200,120 1200,120 L1200,400 L0,400 Z" 
+                              fill="url(#equityGrad)" />
+                        
+                        <!-- Strategy line -->
+                        <path d="M0,360 C60,355 120,340 180,320 C240,300 300,310 360,280 C420,250 480,260 540,240 C600,220 660,230 720,210 C780,190 840,200 900,180 C960,160 1020,170 1080,150 C1140,130 1200,120 1200,120" 
+                              fill="none" stroke="#2962ff" stroke-width="2" stroke-linecap="round" />
+                        
+                        <!-- Benchmark line -->
+                        <path d="M0,360 C200,350 400,340 600,330 C800,320 1000,310 1200,300" 
+                              fill="none" stroke="#787b86" stroke-width="1.5" stroke-dasharray="5,5" stroke-linecap="round" />
+                    </svg>
+                    
+                    <!-- Crosshair -->
+                    <div class="crosshair-v" style="left: 75%;"></div>
+                    <div class="crosshair-h" style="top: 30%;"></div>
+                    
+                    <!-- Tooltip -->
+                    <div class="chart-tooltip" style="left: 75%; top: 25%; transform: translate(-50%, -100%);">
+                        <div class="text-[#787b86] mb-1">2024-09-15</div>
+                        <div class="flex items-center gap-4">
+                            <div>
+                                <div class="text-[#787b86]">策略</div>
+                                <div class="text-[#2962ff] font-mono font-semibold">1.2847</div>
+                            </div>
+                            <div>
+                                <div class="text-[#787b86]">基准</div>
+                                <div class="text-[#787b86] font-mono font-semibold">1.0823</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Time axis -->
+                <div class="time-axis absolute bottom-0 left-12 right-12 h-6 flex items-center justify-between px-2 text-[10px] text-[#787b86]">
+                    <span>1月</span>
+                    <span>3月</span>
+                    <span>5月</span>
+                    <span>7月</span>
+                    <span>9月</span>
+                    <span>11月</span>
+                </div>
+            </div>
+            
+            <!-- Drawdown Chart -->
+            <div class="h-[22%] min-h-[130px] border-b border-[#2a2e39] relative chart-container">
+                <div class="absolute top-2 left-3 z-10">
+                    <span class="text-xs font-semibold text-[#787b86] uppercase tracking-wider">回撤</span>
+                </div>
+                
+                <div class="y-axis-labels" style="top: 24px;">
+                    <span>0%</span>
+                    <span>-5%</span>
+                </div>
+                
+                <div class="chart-area tv-grid" style="top: 24px; bottom: 20px;">
+                    <svg class="w-full h-full" viewBox="0 0 1200 100" preserveAspectRatio="none">
+                        <defs>
+                            <linearGradient id="ddGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                                <stop offset="0%" style="stop-color:#f23645;stop-opacity:0.4" />
+                                <stop offset="100%" style="stop-color:#f23645;stop-opacity:0.05" />
+                            </linearGradient>
+                        </defs>
+                        
+                        <path d="M0,10 C100,20 200,35 300,25 C400,15 500,40 600,30 C700,20 800,45 900,35 C1000,25 1100,50 1200,40 L1200,90 L0,90 Z" 
+                              fill="url(#ddGrad)" />
+                        
+                        <path d="M0,10 C100,20 200,35 300,25 C400,15 500,40 600,30 C700,20 800,45 900,35 C1000,25 1100,50 1200,40" 
+                              fill="none" stroke="#f23645" stroke-width="1.5" stroke-linecap="round" />
+                        
+                        <line x1="0" y1="8" x2="1200" y2="8" stroke="#2a2e39" stroke-width="1" />
+                    </svg>
+                    
+                    <div class="crosshair-v" style="left: 75%;"></div>
+                </div>
+                
+                <div class="time-axis absolute bottom-0 left-12 right-12 h-5 flex items-center justify-between px-2 text-[10px] text-[#787b86]">
+                    <span></span><span></span><span></span><span></span><span></span><span></span>
+                </div>
+            </div>
+            
+            <!-- Trade Frequency -->
+            <div class="h-[22%] min-h-[130px] relative chart-container">
+                <div class="absolute top-2 left-3 z-10">
+                    <span class="text-xs font-semibold text-[#787b86] uppercase tracking-wider">交易频率</span>
+                </div>
+                
+                <div class="y-axis-labels" style="top: 24px;">
+                    <span>20</span>
+                    <span>10</span>
+                    <span>0</span>
+                </div>
+                
+                <div class="chart-area tv-grid" style="top: 24px; bottom: 20px;">
+                    <div class="absolute inset-0 flex items-end gap-1 px-1">
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 45%;"></div>
+                            <span class="text-[9px] text-[#787b86]">1月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 30%;"></div>
+                            <span class="text-[9px] text-[#787b86]">2月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 70%;"></div>
+                            <span class="text-[9px] text-[#787b86]">3月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 40%;"></div>
+                            <span class="text-[9px] text-[#787b86]">4月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 85%;"></div>
+                            <span class="text-[9px] text-[#787b86]">5月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 25%;"></div>
+                            <span class="text-[9px] text-[#787b86]">6月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 55%;"></div>
+                            <span class="text-[9px] text-[#787b86]">7月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 65%;"></div>
+                            <span class="text-[9px] text-[#787b86]">8月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 35%;"></div>
+                            <span class="text-[9px] text-[#787b86]">9月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 90%;"></div>
+                            <span class="text-[9px] text-[#787b86]">10月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 50%;"></div>
+                            <span class="text-[9px] text-[#787b86]">11月</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center gap-1">
+                            <div class="freq-bar w-full rounded-t" style="height: 60%;"></div>
+                            <span class="text-[9px] text-[#787b86]">12月</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="time-axis absolute bottom-0 left-12 right-12 h-5 flex items-center justify-between px-2 text-[10px] text-[#787b86]">
+                    <span></span><span></span><span></span><span></span><span></span><span></span>
+                </div>
+            </div>
+        </main>
+        
+        <!-- Sidebar -->
+        <aside class="w-72 border-l border-[#2a2e39] bg-[#131722] flex flex-col">
+            <!-- Sidebar Header -->
+            <div class="h-10 border-b border-[#2a2e39] flex items-center justify-between px-3">
+                <span id="sidebar-title" class="text-[10px] font-semibold text-[#787b86] uppercase tracking-wider">指标概览</span>
+                <div class="flex items-center bg-[#0c0e15] rounded p-0.5 border border-[#2a2e39]">
+                    <button id="btn-config" onclick="switchView('config')" class="toggle-btn px-2 py-0.5 text-[9px] font-medium text-[#787b86] rounded">配置</button>
+                    <button id="btn-overview" onclick="switchView('overview')" class="toggle-btn active px-2 py-0.5 text-[9px] font-medium rounded">概览</button>
+                </div>
+            </div>
+            
+            <!-- Overview Panel -->
+            <div id="panel-overview" class="flex-1 overflow-y-auto p-3 space-y-3">
+                <!-- Key Metrics -->
+                <div class="grid grid-cols-2 gap-2">
+                    <div class="metric-card">
+                        <div class="text-[10px] text-[#787b86] mb-1">累计收益</div>
+                        <div class="metric-value text-sm text-[#22ab94]">+12.45%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="text-[10px] text-[#787b86] mb-1">最大回撤</div>
+                        <div class="metric-value text-sm text-[#f23645]">-4.82%</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="text-[10px] text-[#787b86] mb-1">夏普比率</div>
+                        <div class="metric-value text-sm text-[#d1d4dc]">2.34</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="text-[10px] text-[#787b86] mb-1">胜率</div>
+                        <div class="metric-value text-sm text-[#d1d4dc]">61.2%</div>
+                    </div>
+                </div>
+                
+                <!-- Secondary Metrics -->
+                <div class="space-y-2">
+                    <div class="text-[10px] font-semibold text-[#787b86] uppercase tracking-wider">详细指标</div>
+                    <div class="bg-[#0c0e15] rounded border border-[#2a2e39] p-3 space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-[#787b86]">年化收益</span>
+                            <span class="text-xs font-mono text-[#d1d4dc]">+12.8%</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-[#787b86]">年化波动</span>
+                            <span class="text-xs font-mono text-[#d1d4dc]">11.2%</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-[#787b86]">索提诺比率</span>
+                            <span class="text-xs font-mono text-[#d1d4dc]">3.12</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-[#787b86]">盈亏比</span>
+                            <span class="text-xs font-mono text-[#d1d4dc]">1.85</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-[#787b86]">交易次数</span>
+                            <span class="text-xs font-mono text-[#d1d4dc]">156</span>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-[10px] text-[#787b86]">平均持仓</span>
+                            <span class="text-xs font-mono text-[#d1d4dc]">5.8天</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Monthly Returns -->
+                <div class="space-y-2">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-semibold text-[#787b86] uppercase tracking-wider">收益分布</span>
+                        <div class="flex items-center gap-1">
+                            <button onclick="toggleReturns('monthly')" id="ret-monthly" class="text-[9px] px-1.5 py-0.5 rounded bg-[#2962ff] text-white">月</button>
+                            <button onclick="toggleReturns('yearly')" id="ret-yearly" class="text-[9px] px-1.5 py-0.5 rounded text-[#787b86] hover:text-[#d1d4dc]">年</button>
+                        </div>
+                    </div>
+                    <div id="returns-monthly-grid" class="bg-[#0c0e15] rounded border border-[#2a2e39] p-2">
+                        <div class="grid grid-cols-4 gap-1">
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/80 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="1月: +2.1%">+2.1</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/40 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="2月: +0.8%">+0.8</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/90 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="3月: +3.2%">+3.2</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#f23645]/30 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="4月: -0.5%">-0.5</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/70 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="5月: +1.8%">+1.8</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#f23645]/20 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="6月: -0.3%">-0.3</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/60 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="7月: +1.5%">+1.5</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/50 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="8月: +1.2%">+1.2</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#f23645]/40 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="9月: -0.8%">-0.8</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/85 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="10月: +2.8%">+2.8</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/45 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="11月: +1.0%">+1.0</div>
+                            <div class="heatmap-cell aspect-square rounded bg-[#22ab94]/75 flex items-center justify-center text-[9px] font-mono text-white cursor-pointer" title="12月: +2.0%">+2.0</div>
+                        </div>
+                    </div>
+                    <div id="returns-yearly-grid" class="hidden bg-[#0c0e15] rounded border border-[#2a2e39] p-2">
+                        <div class="grid grid-cols-3 gap-2">
+                            <div class="aspect-[2/1] rounded bg-[#22ab94]/80 flex flex-col items-center justify-center cursor-pointer" title="2022: +12.5%">
+                                <span class="text-[10px] font-mono font-semibold text-white">+12.5%</span>
+                                <span class="text-[8px] text-white/60">2022</span>
+                            </div>
+                            <div class="aspect-[2/1] rounded bg-[#f23645]/60 flex flex-col items-center justify-center cursor-pointer" title="2023: -5.2%">
+                                <span class="text-[10px] font-mono font-semibold text-white">-5.2%</span>
+                                <span class="text-[8px] text-white/60">2023</span>
+                            </div>
+                            <div class="aspect-[2/1] rounded bg-[#22ab94]/90 flex flex-col items-center justify-center cursor-pointer" title="2024: +8.2%">
+                                <span class="text-[10px] font-mono font-semibold text-white">+8.2%</span>
+                                <span class="text-[8px] text-white/60">2024</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Config Panel -->
+            <div id="panel-config" class="hidden flex-1 overflow-y-auto p-3 space-y-3">
+                <div class="space-y-3">
+                    <div class="text-[10px] font-semibold text-[#787b86] uppercase tracking-wider">策略参数</div>
+                    <div class="bg-[#0c0e15] rounded border border-[#2a2e39] p-3 space-y-3">
+                        <div>
+                            <label class="text-[10px] text-[#787b86] block mb-1.5">短周期均线</label>
+                            <input type="number" value="5" class="w-full bg-[#131722] border border-[#2a2e39] rounded px-2 py-1.5 text-xs text-[#d1d4dc] focus:border-[#2962ff] outline-none font-mono">
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-[#787b86] block mb-1.5">长周期均线</label>
+                            <input type="number" value="20" class="w-full bg-[#131722] border border-[#2a2e39] rounded px-2 py-1.5 text-xs text-[#d1d4dc] focus:border-[#2962ff] outline-none font-mono">
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-[#787b86] block mb-1.5">止损比例 (%)</label>
+                            <input type="number" value="5" step="0.5" class="w-full bg-[#131722] border border-[#2a2e39] rounded px-2 py-1.5 text-xs text-[#d1d4dc] focus:border-[#2962ff] outline-none font-mono">
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="space-y-3">
+                    <div class="text-[10px] font-semibold text-[#787b86] uppercase tracking-wider">回测设置</div>
+                    <div class="bg-[#0c0e15] rounded border border-[#2a2e39] p-3 space-y-3">
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="text-[10px] text-[#787b86] block mb-1.5">开始</label>
+                                <input type="date" value="2024-01-01" class="w-full bg-[#131722] border border-[#2a2e39] rounded px-2 py-1.5 text-xs text-[#d1d4dc] focus:border-[#2962ff] outline-none">
+                            </div>
+                            <div>
+                                <label class="text-[10px] text-[#787b86] block mb-1.5">结束</label>
+                                <input type="date" value="2024-12-31" class="w-full bg-[#131722] border border-[#2a2e39] rounded px-2 py-1.5 text-xs text-[#d1d4dc] focus:border-[#2962ff] outline-none">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-[10px] text-[#787b86] block mb-1.5">基准指数</label>
+                            <select class="w-full bg-[#131722] border border-[#2a2e39] rounded px-2 py-1.5 text-xs text-[#d1d4dc] focus:border-[#2962ff] outline-none">
+                                <option>沪深300 (000300)</option>
+                                <option>中证500 (000905)</option>
+                                <option>上证指数 (000001)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                
+                <button class="w-full py-2 bg-[#2962ff] hover:bg-[#1e4bd8] text-white text-xs font-medium rounded transition-colors">
+                    应用配置
+                </button>
+            </div>
+            
+            <!-- Footer -->
+            <div class="p-3 border-t border-[#2a2e39]">
+                <button class="w-full py-2 bg-[#0c0e15] hover:bg-[#1e222d] border border-[#2a2e39] text-[#d1d4dc] text-xs font-medium rounded transition-colors flex items-center justify-center gap-2">
+                    <i class="fas fa-download text-xs"></i>
+                    导出报告
+                </button>
+            </div>
+        </aside>
+    </div>
+    
+    <script>
+        function switchView(view) {
+            const btnConfig = document.getElementById('btn-config');
+            const btnOverview = document.getElementById('btn-overview');
+            const panelConfig = document.getElementById('panel-config');
+            const panelOverview = document.getElementById('panel-overview');
+            const sidebarTitle = document.getElementById('sidebar-title');
+            
+            if (view === 'config') {
+                btnConfig.classList.add('active');
+                btnConfig.classList.remove('text-[#787b86]');
+                btnOverview.classList.remove('active');
+                btnOverview.classList.add('text-[#787b86]');
+                panelConfig.classList.remove('hidden');
+                panelOverview.classList.add('hidden');
+                sidebarTitle.textContent = '参数配置';
+            } else {
+                btnOverview.classList.add('active');
+                btnOverview.classList.remove('text-[#787b86]');
+                btnConfig.classList.remove('active');
+                btnConfig.classList.add('text-[#787b86]');
+                panelOverview.classList.remove('hidden');
+                panelConfig.classList.add('hidden');
+                sidebarTitle.textContent = '指标概览';
+            }
+        }
+        
+        function toggleReturns(type) {
+            const btnMonthly = document.getElementById('ret-monthly');
+            const btnYearly = document.getElementById('ret-yearly');
+            const gridMonthly = document.getElementById('returns-monthly-grid');
+            const gridYearly = document.getElementById('returns-yearly-grid');
+            
+            if (type === 'yearly') {
+                btnYearly.classList.add('bg-[#2962ff]', 'text-white');
+                btnYearly.classList.remove('text-[#787b86]');
+                btnMonthly.classList.remove('bg-[#2962ff]', 'text-white');
+                btnMonthly.classList.add('text-[#787b86]');
+                gridYearly.classList.remove('hidden');
+                gridMonthly.classList.add('hidden');
+            } else {
+                btnMonthly.classList.add('bg-[#2962ff]', 'text-white');
+                btnMonthly.classList.remove('text-[#787b86]');
+                btnYearly.classList.remove('bg-[#2962ff]', 'text-white');
+                btnYearly.classList.add('text-[#787b86]');
+                gridMonthly.classList.remove('hidden');
+                gridYearly.classList.add('hidden');
+            }
+        }
+        
+        // Interactive crosshair
+        document.querySelectorAll('.chart-container').forEach(container => {
+            const crosshairV = container.querySelector('.crosshair-v');
+            const crosshairH = container.querySelector('.crosshair-h');
+            const tooltip = container.querySelector('.chart-tooltip');
+            
+            if (crosshairV && crosshairH) {
+                container.addEventListener('mousemove', (e) => {
+                    const rect = container.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    
+                    crosshairV.style.left = x + 'px';
+                    crosshairH.style.top = y + 'px';
+                    
+                    if (tooltip) {
+                        tooltip.style.left = x + 'px';
+                        tooltip.style.top = (y - 10) + 'px';
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>

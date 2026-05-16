@@ -1,0 +1,205 @@
+{
+  "crawl_20260505_101052": {
+    "job_id": "crawl_20260505_101052",
+    "job_type": "crawl",
+    "status": "completed",
+    "progress": 100.0,
+    "message": "✅ 爬虫任务完成",
+    "created_at": "2026-05-05T10:10:52.351514",
+    "updated_at": "2026-05-05T10:11:14.416494",
+    "completed_at": "2026-05-05T10:11:14.416494",
+    "error_info": null,
+    "logs": [
+      {
+        "timestamp": "2026-05-05T10:10:52.356165",
+        "level": "info",
+        "message": "🚀 启动爬虫任务，目标日期: 2026-05-05"
+      },
+      {
+        "timestamp": "2026-05-05T10:10:52.358219",
+        "level": "info",
+        "message": "执行命令: C:\\Users\\Liu\\Desktop\\projects\\aquatrade\\venv\\Scripts\\python.exe C:\\Users\\Liu\\Desktop\\projects\\aquatrade\\quant\\main_launcher.py 2026-05-05"
+      },
+      {
+        "timestamp": "2026-05-05T10:10:52.359896",
+        "level": "info",
+        "message": "工作目录: C:\\Users\\Liu\\Desktop\\projects\\aquatrade\\quant"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.363772",
+        "level": "info",
+        "message": ""
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.365312",
+        "level": "info",
+        "message": "📅 处理日期: 2026-05-05"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.366102",
+        "level": "info",
+        "message": "📊 交易日范围: 2026-04-07 至 2026-05-05 (20个交易日)"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.366811",
+        "level": "info",
+        "message": "[📡 请求] ladder_trend_summary ..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.367534",
+        "level": "info",
+        "message": "❌ 网络请求异常: HTTPSConnectionPool(host='stock.quicktiny.cn', port=443): Max retries exceeded with url: /api/ladder?startDate=2026-05-05&endDate=2026-05-05 (Caused by ProxyError('Unable to connect to proxy', NewConnectionError(\"HTTPSConnection(host='127.0.0.1', port=7890): Failed to establish a new connection: [WinError 10048] 通常每个套接字地址(协议/网络地址/端口)只允许使用一次。\")))"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.368291",
+        "level": "info",
+        "message": "[📡 请求] ladder_hierarchy_detail ..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.369013",
+        "level": "info",
+        "message": "❌ 网络请求异常: HTTPSConnectionPool(host='stock.quicktiny.cn', port=443): Max retries exceeded with url: /api/ladder/day/20260505 (Caused by ProxyError('Unable to connect to proxy', NewConnectionError(\"HTTPSConnection(host='127.0.0.1', port=7890): Failed to establish a new connection: [WinError 10048] 通常每个套接字地址(协议/网络地址/端口)只允许使用一次。\")))"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.369803",
+        "level": "info",
+        "message": "[📡 请求] limit_up_filter ..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.370594",
+        "level": "info",
+        "message": "[📄 第1页] ..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.371369",
+        "level": "info",
+        "message": "❌ 网络请求异常: HTTPSConnectionPool(host='stock.quicktiny.cn', port=443): Max retries exceeded with url: /api/limit-up/filter?date=20260505&reasonTypeInput=&page=1&limit=100 (Caused by ProxyError('Unable to connect to proxy', NewConnectionError(\"HTTPSConnection(host='127.0.0.1', port=7890): Failed to establish a new connection: [WinError 10048] 通常每个套接字地址(协议/网络地址/端口)只允许使用一次。\")))"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.372150",
+        "level": "info",
+        "message": "停止(无数据)"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.372912",
+        "level": "info",
+        "message": "成功"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.373667",
+        "level": "info",
+        "message": "☕ 休息 3.3s..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.374439",
+        "level": "info",
+        "message": "[📡 请求] sector_heat_stats ... 成功"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.375516",
+        "level": "info",
+        "message": "☕ 休息 4.2s..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.376412",
+        "level": "info",
+        "message": "[📅 交易日] market_sentiment_cycle: 2026-04-07 ~ 2026-05-05"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.377227",
+        "level": "info",
+        "message": "[📡 请求] market_sentiment_cycle ... 成功"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.378082",
+        "level": "info",
+        "message": "☕ 休息 2.7s..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.378891",
+        "level": "info",
+        "message": "[📅 交易日] dragon_tiger_list: 2026-04-07 ~ 2026-05-05"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.379708",
+        "level": "info",
+        "message": "[📡 请求] dragon_tiger_list ... 成功"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.380562",
+        "level": "info",
+        "message": "☕ 休息 5.2s..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.381392",
+        "level": "info",
+        "message": "[📡 请求] risk_monitor_list ... 成功"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.382242",
+        "level": "info",
+        "message": "☕ 休息 4.2s..."
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.383089",
+        "level": "info",
+        "message": ""
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.383994",
+        "level": "info",
+        "message": "🎉 任务结束。"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.406175",
+        "level": "info",
+        "message": "[INFO] 检测到单个日期模式"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.407693",
+        "level": "info",
+        "message": ""
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.408716",
+        "level": "info",
+        "message": "=================================================="
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.409677",
+        "level": "info",
+        "message": "[爬虫] 正在爬取 2026-05-05 的数据"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.410636",
+        "level": "info",
+        "message": "=================================================="
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.411562",
+        "level": "info",
+        "message": ""
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.412616",
+        "level": "info",
+        "message": "=================================================="
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.413380",
+        "level": "info",
+        "message": "任务完成!"
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.414294",
+        "level": "info",
+        "message": "=================================================="
+      },
+      {
+        "timestamp": "2026-05-05T10:11:14.415524",
+        "level": "success",
+        "message": "✅ 爬虫任务完成"
+      }
+    ]
+  }
+}

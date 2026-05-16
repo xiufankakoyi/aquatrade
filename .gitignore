@@ -61,6 +61,7 @@ data/*webhook*.json
 *.sqlite3
 *.duckdb
 *.duckdb.wal
+*.mdb
 qdb_data/
 redis_data/
 Redis/
@@ -74,6 +75,8 @@ Redis/
 *.manifest
 *.jsonl
 *.csv
+!knowledge/stock_concept_mapping.csv
+!data/sample_news.csv
 *.npy
 *.npz
 *.pkl

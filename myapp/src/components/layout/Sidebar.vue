@@ -124,6 +124,7 @@ const defaultOrder = [
   '/kline-game',
   '/stock-screener',
   '/similarity',
+  '/industry-chain',
   '/portfolio',
   '/history',
 ];
@@ -243,8 +244,14 @@ const allNavItems = computed<NavItem[]>(() => [
   {
     to: '/similarity',
     icon: 'fa-shapes',
-    label: '形态相似度',
+    label: '形态研究',
     isActive: isActive('/similarity'),
+  },
+  {
+    to: '/industry-chain',
+    icon: 'fa-network-wired',
+    label: '产业链雷达',
+    isActive: isActive('/industry-chain'),
   },
   {
     to: '/portfolio',
@@ -316,7 +323,7 @@ const handleDragOver = (e: DragEvent, item: NavItem) => {
   }
 };
 
-const handleDrop = (e: DragEvent, targetItem: NavItem, targetIndex: number) => {
+const handleDrop = (e: DragEvent, targetItem: NavItem, _targetIndex: number) => {
   e.preventDefault();
 
   if (!isEditMode.value || !draggedItem.value) return;

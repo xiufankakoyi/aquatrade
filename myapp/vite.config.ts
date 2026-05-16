@@ -1,7 +1,10 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { resolve } from 'path'
+import { dirname, resolve } from 'path'
+import { fileURLToPath } from 'url'
 import { createConnection } from 'net'
+
+const configDir = dirname(fileURLToPath(import.meta.url))
 
 function readPortEnv(): number | null {
   const raw = process.env.AQUATRADE_PROXY_PORT || process.env.VITE_PROXY_PORT
@@ -79,7 +82,7 @@ export default defineConfig(async () => {
     plugins: [vue()],
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src')
+        '@': resolve(configDir, 'src')
       }
     },
     server: {

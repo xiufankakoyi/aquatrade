@@ -26,6 +26,11 @@ def register_routes(app):
         ('server.routes.screener_routes', 'screener_bp'),
         ('server.routes.export_routes', 'export_bp'),
         ('server.routes.similarity_routes', 'similarity_bp'),
+        ('server.routes.event_routes', 'event_bp'),
+        ('server.routes.pattern_routes', 'pattern_bp'),
+        ('server.concept_lab.concept_api', 'concept_bp'),
+        ('server.routes.news_routes', 'news_bp'),
+        ('server.industry_chain.api', 'industry_chain_bp'),
     ]
     
     for module_name, bp_name in route_modules:
