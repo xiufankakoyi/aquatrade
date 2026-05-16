@@ -8,13 +8,11 @@ methods return an empty DataFrame and ProviderRegistry handles failover.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Iterable
 
 import pandas as pd
-
-from server.data_sync.normalizer import normalize_symbol
-
 
 MARKET_SNAPSHOT_COLUMNS = [
     "trade_date",
@@ -215,6 +213,23 @@ def to_yyyymmdd(value: str | None) -> str:
 def normalize_symbols(values: Any) -> pd.Series:
     series = values if isinstance(values, pd.Series) else pd.Series(values)
     return series.astype(str).apply(lambda value: normalize_symbol(value)["symbol"])
+
+
+def normalize_symbol(raw: str) -> dict[str, Any]:
+    if not raw:
+        return {"symbol": "", "exchange": "", "raw_symbol": ""}
+    raw_str = str(raw).strip().upper()
+    match = re.search(r"(\d{6})", raw_str)
+    if not match:
+        return {"symbol": raw_str, "exchange": "", "raw_symbol": raw}
+    code = match.group(1)
+    if ".SH" in raw_str or raw_str.startswith("SH") or code.startswith(("6", "5", "9")):
+        exchange = "SH"
+    elif ".BJ" in raw_str or raw_str.startswith("BJ") or code.startswith(("4", "8")):
+        exchange = "BJ"
+    else:
+        exchange = "SZ"
+    return {"symbol": f"{code}.{exchange}", "exchange": exchange, "raw_symbol": raw}
 
 
 def stock_code(symbol: str) -> str:
