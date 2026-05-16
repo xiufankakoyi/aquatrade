@@ -141,14 +141,20 @@ function renderChart() {
             : d.hot_score > 0
               ? Number(d.hot_score).toFixed(2)
               : '暂无';
-          const stockCount = d.stock_count || 0;
+          const stockCount = d.candidate_count || d.stock_count || 0;
+          const avgPct = Number(d.avg_pct_chg ?? d.avg_return_1d ?? 0).toFixed(2);
+          const amount = formatAmount(d.total_amount || 0);
           return `
             <div style="padding:8px;max-width:260px;">
               <div style="font-weight:700;font-size:14px;margin-bottom:5px;color:#f8fafc;">${escapeHtml(d.name)}</div>
               <div style="color:#94a3b8;font-size:12px;margin-bottom:4px;">${escapeHtml(d.layer_name || d.layer)} / ${escapeHtml(d.type || '节点')}</div>
               <div style="color:#cbd5e1;font-size:12px;line-height:1.45;">${escapeHtml(d.description || '暂无描述')}</div>
               <div style="margin-top:6px;color:#94a3b8;font-size:11px;">热度：${hotScore}</div>
-              <div style="color:#94a3b8;font-size:11px;">相关股票数量：${stockCount}</div>
+              <div style="color:#94a3b8;font-size:11px;">强度：${escapeHtml(d.market_strength || '很弱')}</div>
+              <div style="color:#94a3b8;font-size:11px;">候选股票：${stockCount}</div>
+              <div style="color:#94a3b8;font-size:11px;">涨停数：${d.limit_up_count || 0}</div>
+              <div style="color:#94a3b8;font-size:11px;">平均涨幅：${avgPct}%</div>
+              <div style="color:#94a3b8;font-size:11px;">成交额：${amount}</div>
             </div>
           `;
         }
@@ -301,6 +307,13 @@ function brighten(color: string): string {
     '#a78bfa': '#6d28d9',
   };
   return palette[color] || color;
+}
+
+function formatAmount(value: number): string {
+  const number = Number(value || 0);
+  if (number >= 1e8) return `${(number / 1e8).toFixed(2)}亿`;
+  if (number >= 1e4) return `${(number / 1e4).toFixed(2)}万`;
+  return number ? number.toFixed(2) : '暂无';
 }
 
 function escapeHtml(value: string): string {

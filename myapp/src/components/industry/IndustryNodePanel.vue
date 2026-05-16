@@ -19,9 +19,43 @@
         <span class="node-type">{{ nodeType }}</span>
       </div>
 
-      <div v-if="hotScoreSource" class="demo-note">
-        {{ hotScoreSource }}仅用于缺数据时的展示高亮，不代表真实行情。
-      </div>
+      <section class="panel-section">
+        <div class="section-title">节点热度</div>
+        <div class="metrics-grid">
+          <div class="metric hot">
+            <span class="metric-label">hot_score</span>
+            <span class="metric-value">{{ formatScore(metrics.hot_score) }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">强度</span>
+            <span class="metric-value">{{ metrics.market_strength || '很弱' }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">候选数</span>
+            <span class="metric-value">{{ metrics.candidate_count || 0 }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">涨停数</span>
+            <span class="metric-value">{{ metrics.limit_up_count || 0 }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">平均涨幅</span>
+            <span class="metric-value" :class="changeClass(metrics.avg_pct_chg)">{{ formatPercent(metrics.avg_pct_chg) }}</span>
+          </div>
+          <div class="metric">
+            <span class="metric-label">成交额</span>
+            <span class="metric-value">{{ formatAmount(metrics.total_amount) }}</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel-section">
+        <div class="section-title">自动匹配板块</div>
+        <div v-if="matchedBoards.length" class="keywords">
+          <span v-for="board in matchedBoards" :key="board" class="keyword-tag">{{ board }}</span>
+        </div>
+        <div v-else class="empty-line">暂无本地证据</div>
+      </section>
 
       <section class="panel-section">
         <div class="section-title">简介</div>
@@ -37,38 +71,12 @@
       </section>
 
       <section class="panel-section">
-        <div class="section-title">上游节点</div>
-        <div v-if="upstream.length" class="node-links">
-          <span v-for="item in upstream" :key="item.id" class="node-link">{{ item.name }}</span>
+        <div class="section-title">上下游</div>
+        <div class="node-links">
+          <span v-for="item in upstream" :key="item.id" class="node-link">上游 {{ item.name }}</span>
+          <span v-for="item in downstream" :key="item.id" class="node-link">下游 {{ item.name }}</span>
         </div>
-        <div v-else class="empty-line">暂无上游节点</div>
-      </section>
-
-      <section class="panel-section">
-        <div class="section-title">下游节点</div>
-        <div v-if="downstream.length" class="node-links">
-          <span v-for="item in downstream" :key="item.id" class="node-link">{{ item.name }}</span>
-        </div>
-        <div v-else class="empty-line">暂无下游节点</div>
-      </section>
-
-      <section class="panel-section">
-        <div class="section-title">数据状态</div>
-        <div class="metrics-grid">
-          <div class="metric">
-            <span class="metric-label">相关股票数量</span>
-            <span class="metric-value">{{ stockCount }}</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">本地映射</span>
-            <span class="metric-value">{{ stockCount > 0 ? '已加载' : '暂无' }}</span>
-          </div>
-          <div class="metric">
-            <span class="metric-label">行情确认</span>
-            <span class="metric-value">{{ hasMarketData ? '已加载' : '暂无' }}</span>
-          </div>
-        </div>
-        <div v-if="stockCount === 0" class="empty-line strong">暂无已验证公司映射</div>
+        <div v-if="!upstream.length && !downstream.length" class="empty-line">暂无上下游节点</div>
       </section>
     </div>
   </aside>
@@ -93,12 +101,41 @@ const description = computed(() => detailNode.value?.description || props.node?.
 const keywords = computed(() => detailNode.value?.keywords?.length ? detailNode.value.keywords : props.node?.keywords || []);
 const upstream = computed(() => props.nodeDetail?.upstream || []);
 const downstream = computed(() => props.nodeDetail?.downstream || []);
-const stockCount = computed(() => props.nodeDetail?.stock_count ?? props.node?.stock_count ?? 0);
-const hotScoreSource = computed(() => props.nodeDetail?.metrics?.hot_score_source || props.node?.hot_score_source || '');
-const hasMarketData = computed(() => {
-  const metrics = props.nodeDetail?.metrics || {};
-  return Boolean(metrics.trade_date || metrics.avg_return_1d || metrics.total_amount || metrics.limit_up_count);
+const metrics = computed(() => props.nodeDetail?.metrics || props.node || {});
+const matchedBoards = computed(() => {
+  const set = new Set<string>();
+  for (const stock of props.nodeDetail?.stocks || []) {
+    for (const item of String(stock.matched_board_name || stock.source_concept_name || '').split(';')) {
+      const value = item.trim();
+      if (value) set.add(value);
+    }
+  }
+  return Array.from(set).slice(0, 12);
 });
+
+function formatScore(value: unknown): string {
+  const number = Number(value || 0);
+  return number.toFixed(2);
+}
+
+function formatPercent(value: unknown): string {
+  const number = Number(value || 0);
+  return `${number.toFixed(2)}%`;
+}
+
+function formatAmount(value: unknown): string {
+  const number = Number(value || 0);
+  if (number >= 1e8) return `${(number / 1e8).toFixed(2)}亿`;
+  if (number >= 1e4) return `${(number / 1e4).toFixed(2)}万`;
+  return number ? number.toFixed(2) : '暂无';
+}
+
+function changeClass(value: unknown): string {
+  const number = Number(value || 0);
+  if (number > 0) return 'up';
+  if (number < 0) return 'down';
+  return '';
+}
 </script>
 
 <style scoped>
@@ -154,17 +191,6 @@ const hasMarketData = computed(() => {
   background: #1e293b;
   color: #cbd5e1;
   font-size: 11px;
-}
-
-.demo-note {
-  margin-bottom: 14px;
-  padding: 9px 10px;
-  border: 1px solid rgba(251, 191, 36, 0.25);
-  border-radius: 6px;
-  background: rgba(69, 26, 3, 0.25);
-  color: #fbbf24;
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .panel-section {
@@ -223,6 +249,10 @@ const hasMarketData = computed(() => {
   background: #111827;
 }
 
+.metric.hot {
+  background: rgba(127, 29, 29, 0.34);
+}
+
 .metric-label {
   color: #64748b;
   font-size: 11px;
@@ -239,8 +269,11 @@ const hasMarketData = computed(() => {
   font-size: 12px;
 }
 
-.empty-line.strong {
-  margin-top: 10px;
-  color: #fbbf24;
+.up {
+  color: #ef4444;
+}
+
+.down {
+  color: #22c55e;
 }
 </style>

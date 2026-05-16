@@ -89,7 +89,7 @@ import DataSourceStatusBar from '@/components/industry/DataSourceStatusBar.vue';
 
 const DEFAULT_CHAIN_ID = 'optical_communication';
 const DEFAULT_NODE_IDS = ['optical_module', 'optical_communication'];
-const EMPTY_STOCK_MESSAGE = '暂无本地公司证据。请维护 knowledge/stock_concept_mapping.csv 或 knowledge/data_sources/company_evidence.csv 后查看映射。';
+const EMPTY_STOCK_MESSAGE = '尚未运行每日更新脚本，请执行 python tools/update_industry_data_daily.py --all';
 
 const chains = ref<ChainInfo[]>([]);
 const currentChainId = ref(DEFAULT_CHAIN_ID);
@@ -112,7 +112,7 @@ const statusLoading = ref(false);
 
 const includeCandidates = ref(true);
 const verifiedOnly = ref(false);
-const sortBy = ref('final_score');
+const sortBy = ref('system_relevance_score');
 
 onMounted(async () => {
   await loadChains();

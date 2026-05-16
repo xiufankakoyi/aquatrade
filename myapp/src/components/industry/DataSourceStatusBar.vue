@@ -10,17 +10,25 @@
         <i class="fas fa-sitemap"></i>
         <span>产业链结构：{{ structureLoaded ? '已加载' : '暂无' }}</span>
       </div>
-      <div class="status-item" :class="localEvidenceLoaded ? 'ok' : 'neutral'">
+      <div class="status-item" :class="autoDataLoaded ? 'ok' : 'neutral'">
         <i class="fas fa-database"></i>
-        <span>本地证据：{{ localEvidenceLoaded ? '已加载' : '暂无' }}</span>
-      </div>
-      <div class="status-item" :class="externalCandidatesLoaded ? 'ok' : 'neutral'">
-        <i class="fas fa-layer-group"></i>
-        <span>外部候选：{{ externalCandidatesLoaded ? '已加载' : '暂无' }}</span>
+        <span>自动更新：{{ autoDataLoaded ? '已生成' : '未运行' }}</span>
       </div>
       <div class="status-item" :class="marketLoaded ? 'ok' : 'neutral'">
         <i class="fas fa-chart-line"></i>
-        <span>行情确认：{{ marketLoaded ? '已加载' : '暂无' }}</span>
+        <span>行情快照：{{ marketLoaded ? '已加载' : '暂无' }}</span>
+      </div>
+      <div class="status-item" :class="candidateLoaded ? 'ok' : 'neutral'">
+        <i class="fas fa-layer-group"></i>
+        <span>节点候选：{{ candidateLoaded ? '已生成' : '暂无' }}</span>
+      </div>
+      <div class="status-item neutral">
+        <i class="fas fa-clock"></i>
+        <span>更新时间：{{ status?.last_sync || '暂无' }}</span>
+      </div>
+      <div class="status-item neutral">
+        <i class="fas fa-plug"></i>
+        <span>数据源：{{ providerNames }}</span>
       </div>
       <div v-if="usingFallback" class="status-item warn">
         <i class="fas fa-exclamation-circle"></i>
@@ -43,14 +51,16 @@ interface Props {
 
 const props = defineProps<Props>();
 
-const localEvidenceLoaded = computed(() => {
-  const manual = props.status?.manual_provider;
-  const parquet = props.status?.parquet_files || {};
-  return Boolean(manual?.evidence_exists || parquet.company_evidence);
+const autoDataLoaded = computed(() => Boolean(props.status?.parquet_files?.industry_node_metrics));
+const candidateLoaded = computed(() => Boolean(props.status?.parquet_files?.industry_node_candidates));
+const marketLoaded = computed(() => Boolean(props.status?.parquet_files?.market_snapshot));
+const providerNames = computed(() => {
+  const providers = props.status?.providers || {};
+  const names = Object.entries(providers)
+    .filter(([, value]) => value?.available)
+    .map(([name]) => name);
+  return names.length ? names.join(' / ') : '暂无可用外部源';
 });
-
-const externalCandidatesLoaded = computed(() => Boolean(props.status?.parquet_files?.concept_members));
-const marketLoaded = computed(() => Boolean(props.status?.parquet_files?.stock_market_snapshot || props.status?.parquet_files?.node_market_metrics));
 </script>
 
 <style scoped>
