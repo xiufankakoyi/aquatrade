@@ -190,101 +190,31 @@ class JQVolumeStrategy(StrategyBase):
         stock_pool_today：当前日期的股票池
         data_query：数据库查询对象
         """
-        import json, time
-        _t_signal_start = time.perf_counter()
-        # #region agent log
-        try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"jq_volume_strategy.py:generate_signals","message":"generate_signals开始","data":{"date":current_date,"pool_rows":len(stock_pool_today) if stock_pool_today is not None and not stock_pool_today.empty else 0},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"C"}) + "\n")
-                f.flush()
-        except: pass
-        # #endregion
-        
         if self._last_date is None:
             self._last_date = current_date
-            # #region agent log
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"jq_volume_strategy.py:generate_signals","message":"首次调用，返回空信号","data":{"date":current_date},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"C"}) + "\n")
-                    f.flush()
-            except: pass
-            # #endregion
             return {}
 
         previous_date = self._last_date
         self._last_date = current_date
 
-        # #region agent log
-        _t_yesterday_start = time.perf_counter()
-        # #endregion
         stock_pool_yesterday = self._get_previous_day_pool(previous_date, data_query)
-        # #region agent log
-        _t_yesterday_end = time.perf_counter()
-        try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"jq_volume_strategy.py:generate_signals","message":"获取昨日股票池完成","data":{"date":current_date,"elapsed":_t_yesterday_end-_t_yesterday_start,"rows":len(stock_pool_yesterday) if stock_pool_yesterday is not None and not stock_pool_yesterday.empty else 0},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"C"}) + "\n")
-                f.flush()
-        except: pass
-        # #endregion
         if stock_pool_yesterday is None or stock_pool_yesterday.empty:
             return {}
 
-        # #region agent log
-        _t_prescreen_start = time.perf_counter()
-        # #endregion
         pre_screened_stocks = self._pre_screen_stocks(stock_pool_yesterday, previous_date)
-        # #region agent log
-        _t_prescreen_end = time.perf_counter()
-        try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"jq_volume_strategy.py:generate_signals","message":"预筛选完成","data":{"date":current_date,"elapsed":_t_prescreen_end-_t_prescreen_start,"candidates":len(pre_screened_stocks)},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"C"}) + "\n")
-                f.flush()
-        except: pass
-        # #endregion
         if not pre_screened_stocks:
             return {}
 
-        # #region agent log
-        _t_eval_start = time.perf_counter()
-        # #endregion
         buy_candidates = self._evaluate_buy_candidates(pre_screened_stocks, stock_pool_yesterday)
-        # #region agent log
-        _t_eval_end = time.perf_counter()
-        try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"jq_volume_strategy.py:generate_signals","message":"评估买入候选完成","data":{"date":current_date,"elapsed":_t_eval_end-_t_eval_start,"buy_count":len(buy_candidates)},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"C"}) + "\n")
-                f.flush()
-        except: pass
-        # #endregion
 
         if stock_pool_today is None or stock_pool_today.empty:
             sell_signals: List[str] = []
         else:
-            # #region agent log
-            _t_sell_start = time.perf_counter()
-            # #endregion
             sell_signals = self._get_sell_signals(stock_pool_today, current_date, data_query)
-            # #region agent log
-            _t_sell_end = time.perf_counter()
-            try:
-                with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                    f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"jq_volume_strategy.py:generate_signals","message":"获取卖出信号完成","data":{"date":current_date,"elapsed":_t_sell_end-_t_sell_start,"sell_count":len(sell_signals)},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"C"}) + "\n")
-                    f.flush()
-            except: pass
-            # #endregion
 
         final_signals: Dict[str, str] = {code: "sell" for code in sell_signals}
         for stock in buy_candidates:
             final_signals.setdefault(stock, "buy")
-
-        _t_signal_end = time.perf_counter()
-        # #region agent log
-        try:
-            with open(r'd:\aquatrade\.cursor\debug.log', 'a', encoding='utf-8') as f:
-                f.write(json.dumps({"id":f"log_{int(time.time()*1000)}","timestamp":int(time.time()*1000),"location":"jq_volume_strategy.py:generate_signals","message":"generate_signals完成","data":{"date":current_date,"elapsed":_t_signal_end-_t_signal_start,"total_signals":len(final_signals)},"sessionId":"debug-session","runId":"perf-debug","hypothesisId":"C"}) + "\n")
-                f.flush()
-        except: pass
-        # #endregion
 
         return final_signals
 

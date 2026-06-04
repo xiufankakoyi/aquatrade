@@ -89,7 +89,7 @@ import DataSourceStatusBar from '@/components/industry/DataSourceStatusBar.vue';
 
 const DEFAULT_CHAIN_ID = 'optical_communication';
 const DEFAULT_NODE_IDS = ['optical_module', 'optical_communication'];
-const EMPTY_STOCK_MESSAGE = '尚未运行每日更新脚本，请执行 python tools/update_industry_data_daily.py --all';
+const EMPTY_STOCK_MESSAGE = '自动调度尚未生成产业链数据，请等待后端启动后的自动更新';
 
 const chains = ref<ChainInfo[]>([]);
 const currentChainId = ref(DEFAULT_CHAIN_ID);

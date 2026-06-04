@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,7 @@ from server.data_providers.base import (
     now_text,
 )
 from server.data_providers.provider_registry import ProviderRegistry
-from server.industry_chain.loader import ChainLoader, project_root
+from server.industry_chain.loader import ChainLoader, MappingLoader, project_root
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +96,7 @@ class IndustryDataSync:
         self.summary: dict[str, Any] = {}
 
     def sync_all(self, chain_id: str | None = None, trade_date: str | None = None) -> dict[str, Any]:
-        trade_date = normalize_trade_date(trade_date)
+        trade_date = _resolve_trade_date(trade_date)
         chains = self._load_chains(chain_id)
         if not chains:
             return {"status": "no_chains", "trade_date": trade_date, "chains_synced": []}
@@ -102,18 +104,10 @@ class IndustryDataSync:
         logger.info("Start IndustryChainRadar auto update: chain_id=%s trade_date=%s", chain_id, trade_date)
 
         market_snapshot = self.registry.get_realtime_quotes(trade_date=trade_date)
-        self._write("market_snapshot.parquet", market_snapshot, MARKET_SNAPSHOT_COLUMNS)
-        self._write("stock_market_snapshot.parquet", market_snapshot, MARKET_SNAPSHOT_COLUMNS)
+        market_snapshot = self._existing_frame_if_empty("market_snapshot.parquet", market_snapshot, MARKET_SNAPSHOT_COLUMNS, trade_date)
 
         daily_bars = self.registry.get_daily_bars(start_date=trade_date, end_date=trade_date, symbols=None)
-        self._write("daily_bars_latest.parquet", daily_bars, DAILY_BARS_COLUMNS)
-
-        concept_boards = self.registry.get_concept_boards(trade_date=trade_date)
-        self._write("concept_boards.parquet", concept_boards, CONCEPT_BOARDS_COLUMNS)
-
-        board_matches = self._match_boards_to_nodes(chains, concept_boards, trade_date)
-        concept_members = self._fetch_matched_board_members(board_matches, trade_date)
-        self._write("concept_board_members.parquet", concept_members, CONCEPT_BOARD_MEMBERS_COLUMNS)
+        daily_bars = self._existing_frame_if_empty("daily_bars_latest.parquet", daily_bars, DAILY_BARS_COLUMNS, trade_date)
 
         limit_up_pool = self.registry.get_limit_up_pool(trade_date=trade_date)
         self._write("limit_up_pool.parquet", limit_up_pool, LIMIT_UP_POOL_COLUMNS)
@@ -123,6 +117,28 @@ class IndustryDataSync:
 
         stock_fund_flow = self.registry.get_stock_fund_flow(trade_date=trade_date)
         self._write("stock_fund_flow.parquet", stock_fund_flow, STOCK_FUND_FLOW_COLUMNS)
+
+        concept_boards = self.registry.get_concept_boards(trade_date=trade_date)
+        if concept_boards.empty:
+            concept_boards = self._concept_boards_from_fund_flow(board_fund_flow, trade_date)
+        self._write("concept_boards.parquet", concept_boards, CONCEPT_BOARDS_COLUMNS)
+
+        board_matches = self._match_boards_to_nodes(chains, concept_boards, trade_date)
+        concept_members = self._fetch_matched_board_members(board_matches, trade_date)
+
+        if concept_members.empty:
+            fallback_matches, fallback_members = self._derive_members_from_stock_boards(
+                chains=chains,
+                board_matches=board_matches,
+                market_snapshot=market_snapshot,
+                limit_up_pool=limit_up_pool,
+                stock_fund_flow=stock_fund_flow,
+                trade_date=trade_date,
+            )
+            board_matches = _append_unique(board_matches, fallback_matches, ["chain_id", "node_id", "board_code", "board_name"])
+            concept_members = _append_unique(concept_members, fallback_members, ["board_code", "board_name", "symbol"])
+
+        self._write("concept_board_members.parquet", concept_members, CONCEPT_BOARD_MEMBERS_COLUMNS)
 
         stock_symbols = sorted(set(concept_members.get("symbol", pd.Series(dtype=str)).dropna().astype(str)))
         stock_basic_info = self.registry.get_stock_basic_info(symbols=stock_symbols or None)
@@ -137,6 +153,51 @@ class IndustryDataSync:
             stock_basic_info=stock_basic_info,
             trade_date=trade_date,
         )
+        seed_candidates = self._build_local_seed_candidates(
+            chains=chains,
+            market_snapshot=market_snapshot,
+            limit_up_pool=limit_up_pool,
+            stock_fund_flow=stock_fund_flow,
+            trade_date=trade_date,
+        )
+        candidates = _append_unique(candidates, seed_candidates, ["chain_id", "node_id", "symbol"])
+
+        market_snapshot, daily_bars = self._ensure_market_data_for_candidates(
+            market_snapshot=market_snapshot,
+            daily_bars=daily_bars,
+            candidates=candidates,
+            stock_basic_info=stock_basic_info,
+            trade_date=trade_date,
+        )
+        stock_fund_flow = self._ensure_stock_flow_for_candidates(
+            stock_fund_flow=stock_fund_flow,
+            candidates=candidates,
+            trade_date=trade_date,
+        )
+        self._write("market_snapshot.parquet", market_snapshot, MARKET_SNAPSHOT_COLUMNS)
+        self._write("stock_market_snapshot.parquet", market_snapshot, MARKET_SNAPSHOT_COLUMNS)
+        self._write("daily_bars_latest.parquet", daily_bars, DAILY_BARS_COLUMNS)
+        self._write("stock_fund_flow.parquet", stock_fund_flow, STOCK_FUND_FLOW_COLUMNS)
+
+        if not market_snapshot.empty or not stock_fund_flow.empty:
+            candidates = self._build_node_candidates(
+                board_matches=board_matches,
+                concept_members=concept_members,
+                market_snapshot=market_snapshot,
+                limit_up_pool=limit_up_pool,
+                stock_fund_flow=stock_fund_flow,
+                stock_basic_info=stock_basic_info,
+                trade_date=trade_date,
+            )
+            seed_candidates = self._build_local_seed_candidates(
+                chains=chains,
+                market_snapshot=market_snapshot,
+                limit_up_pool=limit_up_pool,
+                stock_fund_flow=stock_fund_flow,
+                trade_date=trade_date,
+            )
+            candidates = _append_unique(candidates, seed_candidates, ["chain_id", "node_id", "symbol"])
+
         self._write("industry_node_candidates.parquet", candidates, INDUSTRY_NODE_CANDIDATES_COLUMNS)
         self._write("concept_members.parquet", candidates, INDUSTRY_NODE_CANDIDATES_COLUMNS)
 
@@ -250,9 +311,12 @@ class IndustryDataSync:
             return empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
         frames: list[pd.DataFrame] = []
         seen: set[tuple[str, str]] = set()
-        for _, row in board_matches[["board_code", "board_name"]].drop_duplicates().iterrows():
+        for _, row in board_matches[["board_code", "board_name", "board_type"]].drop_duplicates().iterrows():
             board_code = str(row.get("board_code", "") or "")
             board_name = str(row.get("board_name", "") or "")
+            board_type = str(row.get("board_type", "") or "")
+            if "concept_ths" in board_type or "fund_flow_board" in board_type:
+                continue
             key = (board_code, board_name)
             if key in seen:
                 continue
@@ -265,6 +329,170 @@ class IndustryDataSync:
             if df is not None and not df.empty:
                 frames.append(df)
         return pd.concat(frames, ignore_index=True).drop_duplicates() if frames else empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
+
+    def _concept_boards_from_fund_flow(self, board_fund_flow: pd.DataFrame, trade_date: str) -> pd.DataFrame:
+        if board_fund_flow.empty or "board_name" not in board_fund_flow.columns:
+            return empty_frame(CONCEPT_BOARDS_COLUMNS)
+        frame = board_fund_flow.dropna(subset=["board_name"]).copy()
+        if frame.empty:
+            return empty_frame(CONCEPT_BOARDS_COLUMNS)
+        result = pd.DataFrame(index=frame.index)
+        result["trade_date"] = trade_date
+        result["board_code"] = frame["board_name"].astype(str)
+        result["board_name"] = frame["board_name"].astype(str)
+        result["board_type"] = "fund_flow_board"
+        result["pct_chg"] = frame.get("pct_chg", pd.Series(0, index=frame.index))
+        result["amount"] = None
+        result["stock_count"] = 0
+        result["provider"] = frame.get("provider", pd.Series("", index=frame.index)).astype(str) + ":fund_flow"
+        result["updated_at"] = now_text()
+        return ensure_columns(result[result["board_name"].astype(bool)], CONCEPT_BOARDS_COLUMNS)
+
+    def _derive_members_from_stock_boards(
+        self,
+        chains: list[Any],
+        board_matches: pd.DataFrame,
+        market_snapshot: pd.DataFrame,
+        limit_up_pool: pd.DataFrame,
+        stock_fund_flow: pd.DataFrame,
+        trade_date: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        if not hasattr(self.registry, "get_stock_belong_boards"):
+            return empty_frame(_board_match_columns()), empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
+
+        seed_symbols = self._seed_symbols_for_board_scan(chains, market_snapshot, limit_up_pool, stock_fund_flow)
+        if not seed_symbols:
+            return empty_frame(_board_match_columns()), empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
+
+        stock_boards = self.registry.get_stock_belong_boards(seed_symbols, trade_date=trade_date)
+        if stock_boards is None or stock_boards.empty:
+            return empty_frame(_board_match_columns()), empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
+
+        board_frame = pd.DataFrame(
+            {
+                "trade_date": trade_date,
+                "board_code": stock_boards.get("board_code", pd.Series(dtype=str)).astype(str),
+                "board_name": stock_boards.get("board_name", pd.Series(dtype=str)).astype(str),
+                "board_type": "stock_belong_board",
+                "pct_chg": stock_boards.get("pct_chg", pd.Series(dtype=float)),
+                "amount": None,
+                "stock_count": 0,
+                "provider": stock_boards.get("provider", pd.Series("", index=stock_boards.index)).astype(str) + ":belong_board",
+                "updated_at": now_text(),
+            }
+        ).drop_duplicates(subset=["board_code", "board_name"])
+        derived_matches = self._match_boards_to_nodes(chains, ensure_columns(board_frame, CONCEPT_BOARDS_COLUMNS), trade_date)
+        if derived_matches.empty and board_matches.empty:
+            return empty_frame(_board_match_columns()), empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
+
+        all_matches = _append_unique(board_matches, derived_matches, ["chain_id", "node_id", "board_code", "board_name"])
+        match_keys = set(zip(all_matches["board_code"].astype(str), all_matches["board_name"].astype(str))) if not all_matches.empty else set()
+        filtered = stock_boards[
+            stock_boards.apply(lambda row: (str(row.get("board_code", "")), str(row.get("board_name", ""))) in match_keys, axis=1)
+        ]
+        if filtered.empty:
+            return derived_matches, empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
+
+        market_map = _df_by_symbol(market_snapshot)
+        rows = []
+        for _, row in filtered.iterrows():
+            symbol = str(row.get("symbol", ""))
+            market_row = market_map.get(symbol, {})
+            rows.append(
+                {
+                    "trade_date": trade_date,
+                    "board_code": str(row.get("board_code", "")),
+                    "board_name": str(row.get("board_name", "")),
+                    "symbol": symbol,
+                    "stock_name": str(row.get("stock_name", "")) or str(market_row.get("stock_name", "")),
+                    "pct_chg": _safe_float(market_row.get("pct_chg", row.get("pct_chg"))),
+                    "amount": _safe_float(market_row.get("amount")),
+                    "provider": str(row.get("provider", "")) + ":belong_board",
+                    "updated_at": now_text(),
+                }
+            )
+        return derived_matches, ensure_columns(pd.DataFrame(rows), CONCEPT_BOARD_MEMBERS_COLUMNS)
+
+    def _seed_symbols_for_board_scan(
+        self,
+        chains: list[Any],
+        market_snapshot: pd.DataFrame,
+        limit_up_pool: pd.DataFrame,
+        stock_fund_flow: pd.DataFrame,
+    ) -> list[str]:
+        limit = _env_int("INDUSTRY_BELONG_BOARD_SCAN_LIMIT", 500, 50, 3000)
+        symbols: list[str] = []
+
+        if not market_snapshot.empty and "symbol" in market_snapshot.columns:
+            if "amount" in market_snapshot.columns:
+                symbols.extend(market_snapshot.sort_values("amount", ascending=False)["symbol"].dropna().astype(str).head(limit).tolist())
+            if "pct_chg" in market_snapshot.columns:
+                frame = market_snapshot.assign(_abs_pct=market_snapshot["pct_chg"].apply(lambda value: abs(_safe_float(value))))
+                symbols.extend(frame.sort_values("_abs_pct", ascending=False)["symbol"].dropna().astype(str).head(max(100, limit // 3)).tolist())
+        if not limit_up_pool.empty and "symbol" in limit_up_pool.columns:
+            symbols.extend(limit_up_pool["symbol"].dropna().astype(str).tolist())
+        if not stock_fund_flow.empty and {"symbol", "main_net_inflow"} <= set(stock_fund_flow.columns):
+            symbols.extend(stock_fund_flow.sort_values("main_net_inflow", ascending=False)["symbol"].dropna().astype(str).head(max(100, limit // 3)).tolist())
+
+        chain_ids = {chain.chain_id for chain in chains}
+        for mapping in MappingLoader().load_mappings(include_samples=True):
+            if mapping.chain_id in chain_ids and mapping.symbol:
+                symbols.append(mapping.symbol)
+
+        return list(dict.fromkeys(str(symbol) for symbol in normalize_symbols(symbols) if str(symbol)))
+
+    def _build_local_seed_candidates(
+        self,
+        chains: list[Any],
+        market_snapshot: pd.DataFrame,
+        limit_up_pool: pd.DataFrame,
+        stock_fund_flow: pd.DataFrame,
+        trade_date: str,
+    ) -> pd.DataFrame:
+        chain_map = {chain.chain_id: chain for chain in chains}
+        chain_ids = set(chain_map)
+        market_map = _df_by_symbol(market_snapshot)
+        limit_symbols = set(limit_up_pool.get("symbol", pd.Series(dtype=str)).dropna().astype(str))
+        flow_map = _df_by_symbol(stock_fund_flow)
+        rows = []
+
+        for mapping in MappingLoader().load_mappings(include_samples=True):
+            if mapping.chain_id not in chain_ids or not mapping.symbol:
+                continue
+            chain = chain_map.get(mapping.chain_id)
+            node = chain.get_node(mapping.node_id) if chain else None
+            if node is None:
+                continue
+            symbol = str(normalize_symbols([mapping.symbol]).iloc[0])
+            market_row = market_map.get(symbol, {})
+            flow_row = flow_map.get(symbol, {})
+            auto_score = max(0.35, min(_safe_float(mapping.relevance_score), 0.75) * 0.65)
+            if symbol in market_map:
+                auto_score += 0.08
+            if _safe_float(market_row.get("pct_chg")) > 0:
+                auto_score += 0.04
+            if symbol in limit_symbols:
+                auto_score += 0.10
+            if _safe_float(flow_row.get("main_net_inflow")) > 0:
+                auto_score += 0.06
+            matched_keyword = mapping.chain_position or ";".join(_node_keywords(node)[:3])
+            rows.append(
+                {
+                    "trade_date": trade_date,
+                    "chain_id": mapping.chain_id,
+                    "node_id": mapping.node_id,
+                    "matched_board_name": matched_keyword,
+                    "matched_keyword": matched_keyword,
+                    "symbol": symbol,
+                    "stock_name": mapping.stock_name or str(market_row.get("stock_name", "")),
+                    "candidate_source": "local_structured_seed",
+                    "provider": "local_structured_seed",
+                    "source_confidence": 0.45,
+                    "auto_relevance_score": round(min(auto_score, 0.82), 4),
+                    "updated_at": now_text(),
+                }
+            )
+        return ensure_columns(pd.DataFrame(rows), INDUSTRY_NODE_CANDIDATES_COLUMNS) if rows else empty_frame(INDUSTRY_NODE_CANDIDATES_COLUMNS)
 
     def _build_node_candidates(
         self,
@@ -337,6 +565,118 @@ class IndustryDataSync:
                 }
             )
         return ensure_columns(pd.DataFrame(rows), INDUSTRY_NODE_CANDIDATES_COLUMNS) if rows else empty_frame(INDUSTRY_NODE_CANDIDATES_COLUMNS)
+
+    def _ensure_market_data_for_candidates(
+        self,
+        market_snapshot: pd.DataFrame,
+        daily_bars: pd.DataFrame,
+        candidates: pd.DataFrame,
+        stock_basic_info: pd.DataFrame,
+        trade_date: str,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        if candidates.empty or "symbol" not in candidates.columns:
+            return market_snapshot, daily_bars
+
+        candidate_symbols = list(dict.fromkeys(candidates["symbol"].dropna().astype(str).tolist()))
+        if not candidate_symbols:
+            return market_snapshot, daily_bars
+
+        existing_symbols = set(market_snapshot.get("symbol", pd.Series(dtype=str)).dropna().astype(str)) if not market_snapshot.empty else set()
+        missing_symbols = [symbol for symbol in candidate_symbols if symbol not in existing_symbols]
+        if market_snapshot is not None and not market_snapshot.empty and not missing_symbols:
+            return ensure_columns(market_snapshot, MARKET_SNAPSHOT_COLUMNS), ensure_columns(daily_bars, DAILY_BARS_COLUMNS)
+
+        limit = _env_int("INDUSTRY_MARKET_FALLBACK_SYMBOL_LIMIT", 800, 50, 3000)
+        fetch_symbols = (missing_symbols or candidate_symbols)[:limit]
+        fallback_bars = self.registry.get_daily_bars(
+            start_date=trade_date,
+            end_date=trade_date,
+            symbols=fetch_symbols,
+        )
+        if fallback_bars is None or fallback_bars.empty:
+            return market_snapshot, daily_bars
+
+        fallback_bars = ensure_columns(fallback_bars, DAILY_BARS_COLUMNS)
+        daily_bars = _append_unique(daily_bars, fallback_bars, ["trade_date", "symbol"])
+        fallback_snapshot = self._market_snapshot_from_daily_bars(fallback_bars, candidates, stock_basic_info, trade_date)
+        market_snapshot = _append_unique(market_snapshot, fallback_snapshot, ["symbol"])
+        return ensure_columns(market_snapshot, MARKET_SNAPSHOT_COLUMNS), ensure_columns(daily_bars, DAILY_BARS_COLUMNS)
+
+    def _market_snapshot_from_daily_bars(
+        self,
+        daily_bars: pd.DataFrame,
+        candidates: pd.DataFrame,
+        stock_basic_info: pd.DataFrame,
+        trade_date: str,
+    ) -> pd.DataFrame:
+        if daily_bars.empty:
+            return empty_frame(MARKET_SNAPSHOT_COLUMNS)
+
+        name_map: dict[str, str] = {}
+        for frame in (stock_basic_info, candidates):
+            if frame is None or frame.empty or "symbol" not in frame.columns:
+                continue
+            for _, row in frame.iterrows():
+                symbol = str(row.get("symbol", "") or "")
+                stock_name = str(row.get("stock_name", "") or "")
+                if symbol and stock_name and symbol not in name_map:
+                    name_map[symbol] = stock_name
+
+        bars = daily_bars.copy()
+        bars["symbol"] = normalize_symbols(bars["symbol"])
+        bars = bars[bars["symbol"].astype(bool)]
+        if bars.empty:
+            return empty_frame(MARKET_SNAPSHOT_COLUMNS)
+        bars = bars.sort_values("trade_date").drop_duplicates(subset=["symbol"], keep="last")
+
+        result = pd.DataFrame(index=bars.index)
+        result["trade_date"] = trade_date
+        result["symbol"] = bars["symbol"].astype(str)
+        result["stock_name"] = bars.apply(
+            lambda row: str(row.get("stock_name", "") or name_map.get(str(row.get("symbol", "")), "")),
+            axis=1,
+        )
+        result["pct_chg"] = bars.get("pct_chg", pd.Series(0, index=bars.index))
+        result["close"] = bars.get("close", pd.Series(0, index=bars.index))
+        result["high"] = bars.get("high", pd.Series(0, index=bars.index))
+        result["low"] = bars.get("low", pd.Series(0, index=bars.index))
+        result["open"] = bars.get("open", pd.Series(0, index=bars.index))
+        result["amount"] = bars.get("amount", pd.Series(0, index=bars.index))
+        result["volume"] = bars.get("volume", pd.Series(0, index=bars.index))
+        result["turnover_rate"] = bars.get("turnover_rate", pd.Series(0, index=bars.index))
+        result["volume_ratio"] = bars.get("volume_ratio", pd.Series(0, index=bars.index))
+        result["total_market_cap"] = bars.get("total_market_cap", pd.Series(0, index=bars.index))
+        result["float_market_cap"] = bars.get("float_market_cap", pd.Series(0, index=bars.index))
+        result["provider"] = bars.get("provider", pd.Series("", index=bars.index)).astype(str) + ":daily_fallback"
+        result["updated_at"] = now_text()
+        return ensure_columns(result[result["symbol"].astype(bool)], MARKET_SNAPSHOT_COLUMNS)
+
+    def _ensure_stock_flow_for_candidates(
+        self,
+        stock_fund_flow: pd.DataFrame,
+        candidates: pd.DataFrame,
+        trade_date: str,
+    ) -> pd.DataFrame:
+        if candidates.empty or "symbol" not in candidates.columns:
+            return stock_fund_flow
+
+        candidate_symbols = list(dict.fromkeys(candidates["symbol"].dropna().astype(str).tolist()))
+        existing_symbols = set(stock_fund_flow.get("symbol", pd.Series(dtype=str)).dropna().astype(str)) if not stock_fund_flow.empty else set()
+        missing_symbols = [symbol for symbol in candidate_symbols if symbol not in existing_symbols]
+        if not missing_symbols:
+            return ensure_columns(stock_fund_flow, STOCK_FUND_FLOW_COLUMNS)
+
+        limit = _env_int("INDUSTRY_STOCK_FLOW_FALLBACK_SYMBOL_LIMIT", 200, 20, 1000)
+        try:
+            fallback_flow = self.registry.get_stock_fund_flow(
+                trade_date=trade_date,
+                symbols=missing_symbols[:limit],
+            )
+        except TypeError:
+            return stock_fund_flow
+        if fallback_flow is None or fallback_flow.empty:
+            return stock_fund_flow
+        return ensure_columns(_append_unique(stock_fund_flow, fallback_flow, ["symbol"]), STOCK_FUND_FLOW_COLUMNS)
 
     def _calc_node_metrics(
         self,
@@ -452,8 +792,35 @@ class IndustryDataSync:
                 )
         return ensure_columns(pd.DataFrame(rows), INDUSTRY_GRAPH_CACHE_COLUMNS) if rows else empty_frame(INDUSTRY_GRAPH_CACHE_COLUMNS)
 
+    def _existing_frame_if_empty(self, filename: str, df: pd.DataFrame, columns: list[str], trade_date: str) -> pd.DataFrame:
+        if df is not None and not df.empty:
+            return ensure_columns(df, columns)
+        path = self.output_dir / filename
+        if not path.exists():
+            return df
+        try:
+            existing = pd.read_parquet(path)
+        except Exception:
+            return df
+        if existing is None or existing.empty:
+            return df
+        if "trade_date" in existing.columns:
+            current = existing[existing["trade_date"].astype(str).str.replace("-", "", regex=False) == trade_date.replace("-", "")]
+            if not current.empty:
+                return ensure_columns(current, columns)
+            return df
+        return ensure_columns(existing, columns)
+
     def _write(self, filename: str, df: pd.DataFrame, columns: list[str]) -> None:
         path = self.output_dir / filename
+        if (df is None or df.empty) and filename != "data_source_log.parquet" and path.exists():
+            try:
+                existing = pd.read_parquet(path)
+                if existing is not None and not existing.empty:
+                    logger.warning("Skip empty write for %s; keeping %s existing rows", path, len(existing))
+                    return
+            except Exception:
+                pass
         frame = ensure_columns(df, columns) if df is not None and not df.empty else empty_frame(columns)
         frame.to_parquet(path, index=False)
         logger.info("Saved %s rows to %s", len(frame), path)
@@ -510,6 +877,47 @@ def _node_keywords(node: Any) -> list[str]:
     values.extend(getattr(node, "aliases", []) or [])
     values.extend(getattr(node, "keywords", []) or [])
     return [value for value in dict.fromkeys(str(item).strip() for item in values) if value]
+
+
+def _resolve_trade_date(value: str | None) -> str:
+    if value and str(value).strip().lower() != "today":
+        return normalize_trade_date(value)
+    now = datetime.now()
+    if os.getenv("INDUSTRY_AUTO_UPDATE_SKIP_WEEKENDS", "true").strip().lower() in {"1", "true", "yes", "on"}:
+        while now.weekday() >= 5:
+            now -= timedelta(days=1)
+    return now.strftime("%Y-%m-%d")
+
+
+def _board_match_columns() -> list[str]:
+    return [
+        "trade_date",
+        "chain_id",
+        "node_id",
+        "board_code",
+        "board_name",
+        "board_type",
+        "matched_keyword",
+        "source_confidence",
+        "provider",
+        "updated_at",
+    ]
+
+
+def _append_unique(left: pd.DataFrame, right: pd.DataFrame, subset: list[str]) -> pd.DataFrame:
+    if left is None or left.empty:
+        return right.copy() if right is not None else pd.DataFrame()
+    if right is None or right.empty:
+        return left.copy()
+    return pd.concat([left, right], ignore_index=True).drop_duplicates(subset=subset, keep="first")
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, minimum), maximum)
 
 
 def _normalize_match_text(value: str) -> str:

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 
 from server.data_sync.sync_industry_data import IndustryDataSync
+from server.industry_chain.auto_update_scheduler import IndustryAutoUpdateScheduler
 
 
 class FakeRegistry:
@@ -148,3 +151,19 @@ def test_industry_auto_update_generates_candidates_without_manual_csv(monkeypatc
     assert {"optical_module", "optical_chip", "indium_phosphide"} <= set(candidates["node_id"])
     assert "system_relevance_score" not in candidates.columns
     assert metrics["hot_score"].max() > 0
+
+
+def test_industry_auto_update_scheduler_defaults_to_after_close(monkeypatch):
+    monkeypatch.setenv("INDUSTRY_AUTO_UPDATE_ENABLED", "true")
+    monkeypatch.setenv("INDUSTRY_AUTO_UPDATE_ON_STARTUP", "true")
+    monkeypatch.setenv("INDUSTRY_AUTO_UPDATE_HOUR", "16")
+    monkeypatch.setenv("INDUSTRY_AUTO_UPDATE_MINUTE", "30")
+    monkeypatch.setenv("INDUSTRY_AUTO_UPDATE_SKIP_WEEKENDS", "true")
+
+    scheduler = IndustryAutoUpdateScheduler()
+    next_run = scheduler._next_run_time(datetime(2026, 5, 15, 16, 31))
+
+    assert next_run.strftime("%Y-%m-%d %H:%M") == "2026-05-18 16:30"
+    assert scheduler._default_trade_date(datetime(2026, 5, 17, 10, 0)) == "2026-05-15"
+    assert scheduler.status()["enabled"] is True
+    assert scheduler.status()["run_on_startup"] is True

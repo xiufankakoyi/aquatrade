@@ -20,7 +20,7 @@ from server.industry_chain.stock_enricher import StockEnricher
 industry_chain_bp = Blueprint("industry_chain", __name__, url_prefix="/api/industry-chain")
 
 RESEARCH_BOUNDARY = "仅展示本地维护的产业链资料、证据、自动候选和市场统计，不构成买入、卖出、仓位、止盈或止损建议。"
-EMPTY_UPDATE_MESSAGE = "尚未运行每日更新脚本，请执行 python tools/update_industry_data_daily.py --all"
+EMPTY_UPDATE_MESSAGE = "自动调度尚未生成产业链数据，请等待后端启动后的自动更新；排障时可使用 python tools/update_industry_data_daily.py --all"
 
 
 def _response(data: Any, message: str | None = None, count: int | None = None):
@@ -219,13 +219,39 @@ def data_sources_status():
         except Exception:
             recent_log = []
 
+    parquet_row_counts: dict[str, int] = {}
+    for name in ("market_snapshot", "industry_node_candidates", "industry_node_metrics"):
+        path = output_dir / f"{name}.parquet"
+        if not path.exists():
+            parquet_row_counts[name] = 0
+            continue
+        try:
+            parquet_row_counts[name] = int(len(pd.read_parquet(path)))
+        except Exception:
+            parquet_row_counts[name] = 0
+
     data = {
         "providers": ProviderRegistry().status(),
         "last_sync": last_sync,
         "parquet_files": parquet_files,
+        "parquet_row_counts": parquet_row_counts,
         "recent_source_log": recent_log,
         "empty_hint": EMPTY_UPDATE_MESSAGE,
     }
+    try:
+        from server.industry_chain.auto_update_scheduler import get_industry_auto_update_scheduler
+
+        scheduler = get_industry_auto_update_scheduler()
+        scheduler.start()
+        if (
+            parquet_row_counts.get("industry_node_candidates", 0) == 0
+            or parquet_row_counts.get("industry_node_metrics", 0) == 0
+            or parquet_row_counts.get("market_snapshot", 0) == 0
+        ):
+            scheduler.run_once(reason="api_status_empty", force=False)
+        data["auto_update_scheduler"] = scheduler.status()
+    except Exception as exc:
+        data["auto_update_scheduler"] = {"enabled": False, "last_status": "unavailable", "last_error": str(exc)}
     return _response(data)
 
 

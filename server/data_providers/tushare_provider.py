@@ -174,7 +174,7 @@ class TushareProvider(BaseMarketDataProvider):
     def get_board_fund_flow(self, trade_date: str) -> pd.DataFrame:
         return empty_frame(BOARD_FUND_FLOW_COLUMNS)
 
-    def get_stock_fund_flow(self, trade_date: str) -> pd.DataFrame:
+    def get_stock_fund_flow(self, trade_date: str, symbols: list[str] | None = None) -> pd.DataFrame:
         if not self.is_available():
             return empty_frame(STOCK_FUND_FLOW_COLUMNS)
         try:
@@ -183,6 +183,11 @@ class TushareProvider(BaseMarketDataProvider):
             return empty_frame(STOCK_FUND_FLOW_COLUMNS)
         if df is None or df.empty:
             return empty_frame(STOCK_FUND_FLOW_COLUMNS)
+        if symbols:
+            symbol_set = set(normalize_symbols(symbols))
+            df = df[df["ts_code"].isin(symbol_set)]
+            if df.empty:
+                return empty_frame(STOCK_FUND_FLOW_COLUMNS)
         result = pd.DataFrame(index=df.index)
         result["trade_date"] = normalize_trade_date(trade_date)
         result["symbol"] = normalize_symbols(pick_column(df, ["ts_code"]))

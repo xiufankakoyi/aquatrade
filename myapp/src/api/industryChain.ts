@@ -163,7 +163,9 @@ export interface DataSourceStatus {
   providers: Record<string, Record<string, any>>;
   last_sync: string | null;
   parquet_files: Record<string, boolean>;
+  parquet_row_counts?: Record<string, number>;
   recent_source_log?: Record<string, any>[];
+  auto_update_scheduler?: Record<string, any>;
   empty_hint?: string;
 }
 

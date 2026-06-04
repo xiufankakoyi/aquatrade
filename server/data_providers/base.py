@@ -129,6 +129,17 @@ STOCK_BASIC_INFO_COLUMNS = [
     "updated_at",
 ]
 
+STOCK_BELONG_BOARDS_COLUMNS = [
+    "trade_date",
+    "symbol",
+    "stock_name",
+    "board_code",
+    "board_name",
+    "pct_chg",
+    "provider",
+    "updated_at",
+]
+
 
 class BaseMarketDataProvider:
     """Base class with optional methods for market data providers."""
@@ -169,11 +180,14 @@ class BaseMarketDataProvider:
     def get_board_fund_flow(self, trade_date: str) -> pd.DataFrame:
         return empty_frame(BOARD_FUND_FLOW_COLUMNS)
 
-    def get_stock_fund_flow(self, trade_date: str) -> pd.DataFrame:
+    def get_stock_fund_flow(self, trade_date: str, symbols: list[str] | None = None) -> pd.DataFrame:
         return empty_frame(STOCK_FUND_FLOW_COLUMNS)
 
     def get_stock_basic_info(self, symbols: list[str] | None = None) -> pd.DataFrame:
         return empty_frame(STOCK_BASIC_INFO_COLUMNS)
+
+    def get_stock_belong_boards(self, symbols: list[str], trade_date: str | None = None) -> pd.DataFrame:
+        return empty_frame(STOCK_BELONG_BOARDS_COLUMNS)
 
     # Backward-compatible aliases used by the previous sync module.
     def get_market_snapshot(self, trade_date: str | None = None) -> pd.DataFrame:

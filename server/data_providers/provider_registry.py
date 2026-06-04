@@ -18,6 +18,7 @@ from server.data_providers.base import (
     DAILY_BARS_COLUMNS,
     LIMIT_UP_POOL_COLUMNS,
     MARKET_SNAPSHOT_COLUMNS,
+    STOCK_BELONG_BOARDS_COLUMNS,
     STOCK_BASIC_INFO_COLUMNS,
     STOCK_FUND_FLOW_COLUMNS,
     BaseMarketDataProvider,
@@ -117,12 +118,14 @@ class ProviderRegistry:
             trade_date=trade_date,
         )
 
-    def get_stock_fund_flow(self, trade_date: str) -> pd.DataFrame:
+    def get_stock_fund_flow(self, trade_date: str, symbols: list[str] | None = None) -> pd.DataFrame:
         return self._failover(
             method_name="get_stock_fund_flow",
             provider_order=["efinance", "akshare", "tushare"],
             columns=STOCK_FUND_FLOW_COLUMNS,
             trade_date=trade_date,
+            symbols=symbols,
+            context=f"{len(symbols)} symbols" if symbols else "",
         )
 
     def get_stock_basic_info(self, symbols: list[str] | None = None) -> pd.DataFrame:
@@ -131,6 +134,16 @@ class ProviderRegistry:
             provider_order=["local_stock_info", "tushare", "akshare", "efinance", "baostock"],
             columns=STOCK_BASIC_INFO_COLUMNS,
             symbols=symbols,
+        )
+
+    def get_stock_belong_boards(self, symbols: list[str], trade_date: str | None = None) -> pd.DataFrame:
+        return self._failover(
+            method_name="get_stock_belong_boards",
+            provider_order=["efinance"],
+            columns=STOCK_BELONG_BOARDS_COLUMNS,
+            symbols=symbols,
+            trade_date=trade_date,
+            context=f"{len(symbols)} symbols",
         )
 
     def status(self) -> dict[str, Any]:

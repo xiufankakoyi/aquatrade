@@ -1,4 +1,4 @@
-"""AKShare provider for A-share market, board, limit-up and fund-flow data."""
+"""AKShare provider for A-share board, limit-up and fund-flow data."""
 
 from __future__ import annotations
 
@@ -62,13 +62,13 @@ class AkshareProvider(BaseMarketDataProvider):
 
         result = pd.DataFrame(index=df.index)
         result["trade_date"] = normalize_trade_date(trade_date)
-        result["symbol"] = normalize_symbols(pick_column(df, ["代码", "code", "股票代码"]))
-        result["stock_name"] = pick_column(df, ["名称", "name", "股票名称"]).astype(str)
-        result["pct_chg"] = to_numeric_series(pick_column(df, ["涨跌幅", "changepercent", "涨幅"]))
-        result["close"] = to_numeric_series(pick_column(df, ["最新价", "close", "收盘"]))
+        result["symbol"] = normalize_symbols(pick_column(df, ["代码", "股票代码", "code"]))
+        result["stock_name"] = pick_column(df, ["名称", "股票名称", "name"]).astype(str)
+        result["pct_chg"] = to_numeric_series(pick_column(df, ["涨跌幅", "涨幅", "changepercent"]))
+        result["close"] = to_numeric_series(pick_column(df, ["最新价", "收盘", "close"]))
         result["high"] = to_numeric_series(pick_column(df, ["最高", "high"]))
         result["low"] = to_numeric_series(pick_column(df, ["最低", "low"]))
-        result["open"] = to_numeric_series(pick_column(df, ["今开", "open", "开盘"]))
+        result["open"] = to_numeric_series(pick_column(df, ["今开", "开盘", "open"]))
         result["amount"] = to_numeric_series(pick_column(df, ["成交额", "amount"]))
         result["volume"] = to_numeric_series(pick_column(df, ["成交量", "volume"]))
         result["turnover_rate"] = to_numeric_series(pick_column(df, ["换手率", "turnover_rate"]))
@@ -127,18 +127,32 @@ class AkshareProvider(BaseMarketDataProvider):
     def get_concept_boards(self, trade_date: str | None = None) -> pd.DataFrame:
         if not self.is_available():
             return empty_frame(CONCEPT_BOARDS_COLUMNS)
-        df = self._ak.stock_board_concept_name_em()
-        if df is None or df.empty:
-            return empty_frame(CONCEPT_BOARDS_COLUMNS)
 
+        try:
+            df = self._ak.stock_board_concept_name_em()
+            if df is not None and not df.empty:
+                return self._normalize_concept_boards(df, trade_date, provider_suffix="em")
+        except Exception as exc:
+            logger.warning("AKShare EM concept boards failed: %s", exc)
+
+        try:
+            df = self._ak.stock_board_concept_name_ths()
+            if df is not None and not df.empty:
+                return self._normalize_concept_boards(df, trade_date, provider_suffix="ths")
+        except Exception as exc:
+            logger.warning("AKShare THS concept boards failed: %s", exc)
+
+        return empty_frame(CONCEPT_BOARDS_COLUMNS)
+
+    def _normalize_concept_boards(self, df: pd.DataFrame, trade_date: str | None, provider_suffix: str) -> pd.DataFrame:
         result = pd.DataFrame(index=df.index)
         result["trade_date"] = normalize_trade_date(trade_date)
-        result["board_code"] = pick_column(df, ["板块代码", "代码", "code"]).astype(str)
-        result["board_name"] = pick_column(df, ["板块名称", "名称", "name"]).astype(str)
-        result["board_type"] = "concept"
-        result["pct_chg"] = to_numeric_series(pick_column(df, ["涨跌幅", "涨幅", "pct_chg"]))
+        result["board_code"] = pick_column(df, ["板块代码", "代码", "code"], "").astype(str)
+        result["board_name"] = pick_column(df, ["板块名称", "名称", "name"], "").astype(str)
+        result["board_type"] = f"concept_{provider_suffix}"
+        result["pct_chg"] = to_numeric_series(pick_column(df, ["涨跌幅", "涨幅", "板块涨幅", "pct_chg"]))
         result["amount"] = to_numeric_series(pick_column(df, ["成交额", "amount"]))
-        result["stock_count"] = to_numeric_series(pick_column(df, ["股票家数", "成分股数量", "stock_count"], 0)).fillna(0).astype(int)
+        result["stock_count"] = to_numeric_series(pick_column(df, ["股票家数", "成分股数量", "公司家数", "stock_count"], 0)).fillna(0).astype(int)
         result["provider"] = self.name
         result["updated_at"] = now_text()
         return ensure_columns(result[result["board_name"].astype(bool)], CONCEPT_BOARDS_COLUMNS)
@@ -152,7 +166,11 @@ class AkshareProvider(BaseMarketDataProvider):
         if not self.is_available():
             return empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
         symbol = board_name or board_code_or_name
-        df = self._ak.stock_board_concept_cons_em(symbol=symbol)
+        try:
+            df = self._ak.stock_board_concept_cons_em(symbol=symbol)
+        except Exception as exc:
+            logger.warning("AKShare concept members failed for %s: %s", symbol, exc)
+            return empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
         if df is None or df.empty:
             return empty_frame(CONCEPT_BOARD_MEMBERS_COLUMNS)
 
@@ -185,7 +203,7 @@ class AkshareProvider(BaseMarketDataProvider):
         result["first_limit_time"] = pick_column(df, ["首次封板时间", "first_limit_time"]).astype(str)
         result["last_limit_time"] = pick_column(df, ["最后封板时间", "last_limit_time"]).astype(str)
         result["open_count"] = to_numeric_series(pick_column(df, ["炸板次数", "打开次数", "open_count"], 0)).fillna(0).astype(int)
-        result["limit_up_reason"] = pick_column(df, ["涨停原因类别", "涨停原因", "reason"]).astype(str)
+        result["limit_up_reason"] = pick_column(df, ["涨停原因类别", "涨停原因", "所属行业", "reason"]).astype(str)
         result["consecutive_limit_count"] = to_numeric_series(pick_column(df, ["连板数", "连续涨停", "consecutive_limit_count"], 1)).fillna(1).astype(int)
         result["provider"] = self.name
         result["updated_at"] = now_text()
@@ -197,43 +215,28 @@ class AkshareProvider(BaseMarketDataProvider):
         func = getattr(self._ak, "stock_fund_flow_concept", None)
         if func is None:
             return empty_frame(BOARD_FUND_FLOW_COLUMNS)
-        df = func(symbol="即时")
+        try:
+            df = func(symbol="即时")
+        except Exception as exc:
+            logger.warning("AKShare concept fund flow failed: %s", exc)
+            return empty_frame(BOARD_FUND_FLOW_COLUMNS)
         if df is None or df.empty:
             return empty_frame(BOARD_FUND_FLOW_COLUMNS)
 
         result = pd.DataFrame(index=df.index)
         result["trade_date"] = normalize_trade_date(trade_date)
         result["board_name"] = pick_column(df, ["行业", "名称", "板块名称", "name"]).astype(str)
-        result["main_net_inflow"] = to_numeric_series(pick_column(df, ["主力净流入-净额", "主力净流入", "main_net_inflow"]))
-        result["super_large_net_inflow"] = to_numeric_series(pick_column(df, ["超大单净流入-净额", "超大单净流入"]))
-        result["large_net_inflow"] = to_numeric_series(pick_column(df, ["大单净流入-净额", "大单净流入"]))
-        result["pct_chg"] = to_numeric_series(pick_column(df, ["涨跌幅", "涨幅", "pct_chg"]))
+        # AKShare returns concept flow in 亿元 for this endpoint.
+        result["main_net_inflow"] = to_numeric_series(pick_column(df, ["净额", "主力净流入", "main_net_inflow"])) * 100000000
+        result["super_large_net_inflow"] = None
+        result["large_net_inflow"] = None
+        result["pct_chg"] = to_numeric_series(pick_column(df, ["行业-涨跌幅", "涨跌幅", "涨幅", "pct_chg"]))
         result["provider"] = self.name
         result["updated_at"] = now_text()
         return ensure_columns(result[result["board_name"].astype(bool)], BOARD_FUND_FLOW_COLUMNS)
 
-    def get_stock_fund_flow(self, trade_date: str) -> pd.DataFrame:
-        if not self.is_available():
-            return empty_frame(STOCK_FUND_FLOW_COLUMNS)
-        func = getattr(self._ak, "stock_fund_flow_individual", None)
-        if func is None:
-            return empty_frame(STOCK_FUND_FLOW_COLUMNS)
-        df = func(symbol="即时")
-        if df is None or df.empty:
-            return empty_frame(STOCK_FUND_FLOW_COLUMNS)
-
-        result = pd.DataFrame(index=df.index)
-        result["trade_date"] = normalize_trade_date(trade_date)
-        result["symbol"] = normalize_symbols(pick_column(df, ["股票代码", "代码", "code"]))
-        result["stock_name"] = pick_column(df, ["股票简称", "名称", "name"]).astype(str)
-        result["main_net_inflow"] = to_numeric_series(pick_column(df, ["主力净流入-净额", "主力净流入", "main_net_inflow"]))
-        result["super_large_net_inflow"] = to_numeric_series(pick_column(df, ["超大单净流入-净额", "超大单净流入"]))
-        result["large_net_inflow"] = to_numeric_series(pick_column(df, ["大单净流入-净额", "大单净流入"]))
-        result["small_net_inflow"] = to_numeric_series(pick_column(df, ["小单净流入-净额", "小单净流入"]))
-        result["pct_chg"] = to_numeric_series(pick_column(df, ["涨跌幅", "涨幅", "pct_chg"]))
-        result["provider"] = self.name
-        result["updated_at"] = now_text()
-        return ensure_columns(result[result["symbol"].astype(bool)], STOCK_FUND_FLOW_COLUMNS)
+    def get_stock_fund_flow(self, trade_date: str, symbols: list[str] | None = None) -> pd.DataFrame:
+        return empty_frame(STOCK_FUND_FLOW_COLUMNS)
 
     def get_stock_basic_info(self, symbols: list[str] | None = None) -> pd.DataFrame:
         if not self.is_available():

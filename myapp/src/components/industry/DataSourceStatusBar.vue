@@ -26,6 +26,10 @@
         <i class="fas fa-clock"></i>
         <span>更新时间：{{ status?.last_sync || '暂无' }}</span>
       </div>
+      <div class="status-item" :class="schedulerClass">
+        <i class="fas fa-rotate"></i>
+        <span>自动调度：{{ schedulerText }}</span>
+      </div>
       <div class="status-item neutral">
         <i class="fas fa-plug"></i>
         <span>数据源：{{ providerNames }}</span>
@@ -51,9 +55,23 @@ interface Props {
 
 const props = defineProps<Props>();
 
-const autoDataLoaded = computed(() => Boolean(props.status?.parquet_files?.industry_node_metrics));
-const candidateLoaded = computed(() => Boolean(props.status?.parquet_files?.industry_node_candidates));
-const marketLoaded = computed(() => Boolean(props.status?.parquet_files?.market_snapshot));
+const autoDataLoaded = computed(() => Boolean((props.status?.parquet_row_counts?.industry_node_metrics || 0) > 0));
+const candidateLoaded = computed(() => Boolean((props.status?.parquet_row_counts?.industry_node_candidates || 0) > 0));
+const marketLoaded = computed(() => Boolean((props.status?.parquet_row_counts?.market_snapshot || 0) > 0));
+const scheduler = computed(() => props.status?.auto_update_scheduler || {});
+const schedulerClass = computed(() => {
+  const lastStatus = String(scheduler.value.last_status || '');
+  if (scheduler.value.running || ['success', 'skipped_current'].includes(lastStatus)) return 'ok';
+  if (lastStatus === 'failed') return 'warn';
+  return scheduler.value.enabled ? 'neutral' : 'warn';
+});
+const schedulerText = computed(() => {
+  if (!scheduler.value.enabled) return '未启用';
+  if (scheduler.value.running) return '更新中';
+  if (scheduler.value.last_status === 'failed') return '失败，见数据源日志';
+  const nextRun = scheduler.value.next_run_at;
+  return nextRun ? `下次 ${nextRun}` : '已启用';
+});
 const providerNames = computed(() => {
   const providers = props.status?.providers || {};
   const names = Object.entries(providers)

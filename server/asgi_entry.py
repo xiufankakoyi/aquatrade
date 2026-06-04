@@ -207,6 +207,15 @@ def _start_post_startup_tasks():
     )
     sync_thread.start()
     print("[Startup] Background sync thread started")
+
+    try:
+        from server.industry_chain.auto_update_scheduler import get_industry_auto_update_scheduler
+
+        get_industry_auto_update_scheduler().start()
+        print("[Startup] IndustryChainRadar auto update scheduler started")
+    except Exception as e:
+        print(f"[WARNING] IndustryChainRadar auto update scheduler failed: {e}")
+
     print("="*80 + "\n")
 
 

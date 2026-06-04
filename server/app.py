@@ -556,6 +556,14 @@ def _ensure_api_initialized() -> None:
         logger = get_logger(__name__)
         logger.warning(f"启动服务初始化失败: {e}")
 
+    try:
+        from server.industry_chain.auto_update_scheduler import get_industry_auto_update_scheduler
+
+        get_industry_auto_update_scheduler().start()
+    except Exception as e:
+        logger = get_logger(__name__)
+        logger.warning(f"IndustryChainRadar auto update scheduler startup failed: {e}")
+
 def _sanitize_json_data(data):
     """
     【健壮性加固】清洗数据，将 NaN/Infinity 转换为 null，防止 JSON 序列化报错

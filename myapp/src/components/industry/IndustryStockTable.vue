@@ -32,7 +32,7 @@
 
     <div v-else-if="stocks.length === 0" class="empty-message">
       <i class="fas fa-info-circle"></i>
-      <span>尚未运行每日更新脚本，请执行 python tools/update_industry_data_daily.py --all</span>
+      <span>自动调度尚未生成产业链数据，请等待后端启动后的自动更新</span>
     </div>
 
     <div v-else class="table-wrapper">
