@@ -52,6 +52,7 @@ config/secrets.py
 !config/secrets_template.py
 quant/config.json
 data/*webhook*.json
+data/dragon_eye_jobs.json
 
 # Databases and local services
 *.db
