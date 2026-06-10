@@ -237,6 +237,7 @@ def trigger_dragon_update():
 
     Request Body:
         - date: 目标日期 (YYYY-MM-DD)，默认为今天
+        - backfill: 是否补爬最近缺失交易日，默认为 false
 
     Returns:
         {"success": True, "message": "爬虫任务已启动", "job_id": "xxx"}
@@ -244,15 +245,15 @@ def trigger_dragon_update():
     try:
         data = request.get_json(silent=True) or {}
         target_date = data.get('date') or datetime.now().strftime("%Y-%m-%d")
-
-        from core.dragon_eye.service import DragonEyeService
-        service = DragonEyeService()
+        backfill = bool(data.get('backfill', False))
 
         def background_crawl():
             """后台爬虫线程"""
             try:
-                job_id = service.run_crawler(target_date)
-                logger.info(f"[DragonUpdate] Crawl job started: {job_id}")
+                from data_svc.storage.unified_updater import UnifiedDataUpdater
+
+                result = UnifiedDataUpdater().update_dragon_eye(target_date, backfill=backfill)
+                logger.info(f"[DragonUpdate] Crawl completed: {result}")
             except Exception as e:
                 logger.error(f"[DragonUpdate] Crawl failed: {e}")
 
@@ -277,6 +278,7 @@ def trigger_full_update():
 
     Request Body:
         - date: DragonEye 目标日期 (YYYY-MM-DD)，默认为今天
+        - backfill: 是否补爬最近缺失交易日，默认为 false
 
     Returns:
         {"success": True, "message": "全部更新任务已在后台启动"}
@@ -284,6 +286,7 @@ def trigger_full_update():
     try:
         data = request.get_json(silent=True) or {}
         dragon_date = data.get('date') or datetime.now().strftime("%Y-%m-%d")
+        dragon_backfill = bool(data.get('backfill', False))
 
         def background_full_update():
             """后台完整更新线程"""
@@ -291,23 +294,20 @@ def trigger_full_update():
                 # 1. 更新股票数据
                 from data_svc.storage.unified_updater import UnifiedDataUpdater
                 updater = UnifiedDataUpdater()
-                stock_result = updater.run_full_update()
-                logger.info(f"[FullUpdate] Stock update: {stock_result.message}")
-
-                # 2. 更新 DragonEye 爬虫数据
-                from core.dragon_eye.service import DragonEyeService
-                service = DragonEyeService()
-                job_id = service.run_crawler(dragon_date)
-                logger.info(f"[FullUpdate] DragonEye crawl job: {job_id}")
+                update_result = updater.run_full_update(
+                    dragon_target_date=dragon_date,
+                    dragon_backfill=dragon_backfill,
+                )
+                logger.info(f"[FullUpdate] Update result: {update_result.message}")
 
                 # 广播完成
                 try:
                     from server.asgi_socketio_handlers import sio
                     if sio:
                         sio.emit('db_update_progress', {
-                            "status": "COMPLETED",
+                            "status": "COMPLETED" if update_result.success else "FAILED",
                             "progress": 100,
-                            "message": f"全部数据更新完成，爬虫任务已启动"
+                            "message": update_result.message,
                         })
                 except:
                     pass

@@ -14,11 +14,15 @@ import { useBacktestStore } from '../store/backtestStore';
  * EquityCurve 组件
  * 仅用于展示权益曲线（使用 ECharts）
  * K线图功能已迁移到 TVKlineChart 组件
- * 
+ *
  * 【流式更新优化】
  * - 使用增量更新而非完全重绘
  * - 添加防抖机制减少重绘频率
  * - 流式模式下暂停 localStorage 持久化
+ *
+ * 【交互优化】
+ * - 十字线与曲线交点显示实心圆标记
+ * - 净值曲线最高点/最低点灰色小字标注
  */
 
 const backtestStore = useBacktestStore();
@@ -73,6 +77,16 @@ const versionColors = [
 ];
 
 /**
+ * 格式化数值为紧凑显示（万/亿）
+ */
+function formatCompact(value: number): string {
+  const abs = Math.abs(value);
+  if (abs >= 1e8) return (value / 1e8).toFixed(2) + '亿';
+  if (abs >= 1e4) return (value / 1e4).toFixed(2) + '万';
+  return value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/**
  * 初始化图表
  */
 function initChart() {
@@ -88,7 +102,7 @@ function initChart() {
   }
 
   chartInstance = markRaw(echarts.init(chartContainer.value));
-  
+
   // 监听鼠标移动
   chartInstance.on('mousemove', (params: any) => {
     const data = params.data;
@@ -117,12 +131,12 @@ function initChart() {
   chartInstance.on('click', (params: any) => {
     let date = '';
     if (params.axisValue) {
-      date = typeof params.axisValue === 'string' ? params.axisValue : 
+      date = typeof params.axisValue === 'string' ? params.axisValue :
              new Date(params.axisValue).toISOString().split('T')[0];
     } else if (params.data && Array.isArray(params.data)) {
       date = params.data[0];
     }
-    
+
     if (date && date.match(/^\d{4}-\d{2}-\d{2}/)) {
       backtestStore.setPlaybackCursor(date);
       backtestStore.togglePlaybackMode(true);
@@ -146,13 +160,13 @@ function updateChart() {
   }
 
   const series: any[] = [];
-  
+
   // 获取所有日期
   const allDates = new Set<string>();
   props.versions.forEach(v => v.data.forEach(d => allDates.add(d.date)));
   props.benchmark.forEach(d => allDates.add(d.date));
   const sortedDates = Array.from(allDates).sort();
-  
+
   // Equity Curve versions
   props.versions.forEach((version, index) => {
     const equityMap = new Map(version.data.map(d => [d.date, d.equity]));
@@ -164,9 +178,9 @@ function updateChart() {
         value: [date, equity]
       };
     }).filter(d => d !== null) as any[];
-    
+
     const color = index === 0 ? '#2962ff' : versionColors[index % versionColors.length];
-    
+
     series.push({
       id: index === 0 ? 'strategy-equity' : `equity-${index}`,
       name: version.versionName,
@@ -190,11 +204,16 @@ function updateChart() {
       symbol: 'none',
       emphasis: {
         focus: 'series',
-        lineStyle: { width: 3 }
+        lineStyle: { width: 3 },
+        itemStyle: {
+          color: color,
+          borderColor: '#fff',
+          borderWidth: 2
+        }
       }
     });
   });
-  
+
   // 添加基准数据
   if (props.benchmark.length > 0) {
     const benchmarkMap = new Map(props.benchmark.map(d => [d.date, d.equity]));
@@ -206,7 +225,7 @@ function updateChart() {
         value: [date, equity]
       };
     }).filter(d => d !== null) as any[];
-    
+
     series.push({
       name: '基准',
       type: 'line',
@@ -222,7 +241,12 @@ function updateChart() {
       },
       symbol: 'none',
       emphasis: {
-        focus: 'series'
+        focus: 'series',
+        itemStyle: {
+          color: '#94a3b8',
+          borderColor: '#fff',
+          borderWidth: 2
+        }
       }
     });
   }
@@ -257,10 +281,67 @@ function updateChart() {
     });
   }
 
+  // 计算净值曲线的最高点/最低点，用于 markPoint 标注
+  const primaryData = props.versions[0]?.data || [];
+  const markPointData: any[] = [];
+  if (primaryData.length > 0) {
+    let maxItem = primaryData[0];
+    let minItem = primaryData[0];
+    for (const item of primaryData) {
+      if (item.equity > maxItem.equity) maxItem = item;
+      if (item.equity < minItem.equity) minItem = item;
+    }
+    markPointData.push(
+      {
+        name: '最高',
+        coord: [maxItem.date, maxItem.equity],
+        value: maxItem.equity,
+        itemStyle: { color: '#34d399' },
+        symbol: 'circle',
+        symbolSize: 6,
+        label: {
+          show: true,
+          formatter: (p: any) => formatCompact(p.value),
+          position: 'top',
+          color: '#64748b',
+          fontSize: 11,
+          fontFamily: 'JetBrains Mono, monospace',
+          distance: 8
+        }
+      },
+      {
+        name: '最低',
+        coord: [minItem.date, minItem.equity],
+        value: minItem.equity,
+        itemStyle: { color: '#f87171' },
+        symbol: 'circle',
+        symbolSize: 6,
+        label: {
+          show: true,
+          formatter: (p: any) => formatCompact(p.value),
+          position: 'bottom',
+          color: '#64748b',
+          fontSize: 11,
+          fontFamily: 'JetBrains Mono, monospace',
+          distance: 8
+        }
+      }
+    );
+  }
+
+  // 给第一个 series（净值曲线）添加 markPoint
+  if (series.length > 0 && markPointData.length > 0) {
+    series[0].markPoint = {
+      data: markPointData,
+      animation: true,
+      silent: true
+    };
+  }
+
   const option: any = {
     axisPointer: {
       link: { xAxisIndex: 'all' },
-      label: { 
+      label: {
         backgroundColor: 'rgba(30, 41, 59, 0.9)',
         borderColor: '#475569',
         borderWidth: 1,
@@ -273,7 +354,7 @@ function updateChart() {
         color: '#64748b',
         width: 1,
         type: 'dashed'
-      }
+      },
     },
     tooltip: {
       trigger: 'axis',
@@ -282,25 +363,41 @@ function updateChart() {
       borderWidth: 1,
       borderRadius: 8,
       padding: [12, 16],
-      textStyle: { 
-        color: '#e2e8f0', 
+      textStyle: {
+        color: '#e2e8f0',
         fontSize: 12,
         fontFamily: 'JetBrains Mono, monospace'
       },
       extraCssText: 'backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);',
+      axisPointer: {
+        type: 'cross',
+        crossStyle: {
+          color: '#64748b',
+          width: 1,
+          type: 'dashed'
+        },
+        lineStyle: {
+          color: '#64748b',
+          width: 1,
+          type: 'dashed'
+        },
+        label: {
+          show: false
+        }
+      },
       formatter: (params: any) => {
         if (!Array.isArray(params) || params.length === 0) return '';
         let dateStr = params[0].axisValue;
         if (typeof dateStr === 'number') dateStr = new Date(dateStr).toISOString().split('T')[0];
-        
+
         // 格式化日期显示
         const date = new Date(dateStr);
         const formattedDate = `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
-        
+
         let html = `<div style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(71, 85, 105, 0.5);">`;
         html += `<div style="font-weight: 600; font-size: 13px; color: #f8fafc;">${formattedDate}</div>`;
         html += `</div>`;
-        
+
         params.forEach((item: any) => {
           const rawValue = Array.isArray(item.value) ? item.value[1] : item.value;
           const formattedValue = (typeof rawValue === 'number') ? rawValue.toLocaleString(undefined, {
@@ -357,27 +454,27 @@ function updateChart() {
         formatter: (value: number) => {
           const date = new Date(value);
           const year = date.getFullYear();
-          const month = date.getMonth() + 1;
-          const day = date.getDate();
-          
+          const month = (date.getMonth() + 1).toString().padStart(2, '0');
+          const day = date.getDate().toString().padStart(2, '0');
+
           // 获取数据范围
           const startDate = sortedDates.length > 0 ? new Date(sortedDates[0]) : null;
           const endDate = sortedDates.length > 0 ? new Date(sortedDates[sortedDates.length - 1]) : null;
-          
-          if (!startDate || !endDate) return `${month}-${day}`;
-          
+
+          if (!startDate || !endDate) return `${month}/${day}`;
+
           // 如果跨年，显示年份
           const spansYear = startDate.getFullYear() !== endDate.getFullYear();
-          
+
           if (spansYear) {
             // 1月或跨年时显示年份
-            if (month === 1 || date.getTime() - startDate.getTime() < 30 * 24 * 60 * 60 * 1000) {
-              return `${year}-${month.toString().padStart(2, '0')}`;
+            if (month === '01' || date.getTime() - startDate.getTime() < 30 * 24 * 60 * 60 * 1000) {
+              return `${year}/${month}`;
             }
-            return `${month}-${day}`;
+            return `${month}/${day}`;
           } else {
             // 同一年，不显示年份
-            return `${month}-${day}`;
+            return `${month}/${day}`;
           }
         },
         hideOverlap: true
@@ -397,8 +494,8 @@ function updateChart() {
         position: 'right',
         logBase: 10,
         axisLine: { show: false },
-        axisLabel: { 
-          color: '#64748b', 
+        axisLabel: {
+          color: '#64748b',
           fontSize: 10,
           formatter: (value: number) => {
             if (value >= 1000000) {
@@ -407,7 +504,7 @@ function updateChart() {
             return value.toLocaleString();
           }
         },
-        splitLine: { 
+        splitLine: {
           show: true,
           lineStyle: {
             color: 'rgba(71, 85, 105, 0.2)',
@@ -467,9 +564,9 @@ function incrementalUpdateChart() {
 
   const currentDataLength = props.versions[0]?.data.length || 0;
   const isStreaming = backtestStore.running;
-  
+
   console.log('[EquityCurve] incrementalUpdateChart:', currentDataLength, 'points, lastDataLength:', lastDataLength, 'isStreaming:', isStreaming);
-  
+
   // 如果是流式模式且数据量增加，使用增量更新
   if (isStreaming && currentDataLength > lastDataLength && lastDataLength > 0) {
     const newDataPoints = props.versions[0].data.slice(lastDataLength);
@@ -480,7 +577,7 @@ function incrementalUpdateChart() {
         name: d.date,
         value: [d.date, d.equity]
       }));
-      
+
       chartInstance.setOption({
         series: [{
           id: 'strategy-equity',
@@ -490,12 +587,12 @@ function incrementalUpdateChart() {
           }))
         }]
       }, { notMerge: false });
-      
+
       lastDataLength = currentDataLength;
       return;
     }
   }
-  
+
   // 非流式模式或数据量减少，完整更新
   console.log('[EquityCurve] 完整更新图表');
   lastDataLength = currentDataLength;
@@ -509,11 +606,11 @@ function incrementalUpdateChart() {
 function debouncedUpdate() {
   const isStreaming = backtestStore.running;
   const delay = isStreaming ? 100 : 0; // 流式模式下 100ms 防抖
-  
+
   if (updateDebounceTimer) {
     clearTimeout(updateDebounceTimer);
   }
-  
+
   updateDebounceTimer = setTimeout(() => {
     incrementalUpdateChart();
     updateDebounceTimer = null;

@@ -99,6 +99,7 @@ class Setting:
     
     # LanceDB 配置
     LANCEDB_PATH = os.getenv('LANCEDB_PATH', '')
+    ENABLE_PARQUET_FALLBACK = os.getenv('ENABLE_PARQUET_FALLBACK', 'false').lower() in {'1', 'true', 'yes', 'on'}
     
     # Apache Arrow 交互层配置
     ARROW_BATCH_SIZE = int(os.getenv('ARROW_BATCH_SIZE', '10000'))

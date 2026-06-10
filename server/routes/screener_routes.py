@@ -16,6 +16,8 @@ import polars as pl
 import pandas as pd
 import numpy as np
 
+from config.config import Config
+
 screener_bp = Blueprint('screener', __name__, url_prefix='/api/screener')
 
 _lancedb_reader = None
@@ -145,8 +147,11 @@ def normalize_date_for_filter(target_date: str, df: pl.DataFrame) -> Optional[st
     return target_date
 
 
-def get_all_stocks_daily_df(target_date: Optional[str] = None) -> Optional[pl.DataFrame]:
-    """获取所有股票的日线数据（优先从 Parquet 文件读取）
+def get_all_stocks_daily_df(
+    target_date: Optional[str] = None,
+    fields: Optional[List[str]] = None,
+) -> Optional[pl.DataFrame]:
+    """获取所有股票的日线数据（默认从 LanceDB 读取）
     
     Args:
         target_date: 如果指定，只返回该日期的数据
@@ -155,8 +160,23 @@ def get_all_stocks_daily_df(target_date: Optional[str] = None) -> Optional[pl.Da
         包含所有股票数据的 Polars DataFrame
     """
     try:
-        import os
-        import polars as pl
+        reader = get_lancedb()
+        requested_fields = [
+            "stock_code", "ts_code", "trade_date", "open", "high", "low", "close",
+            "volume", "amount", "prev_close", "change_pct", "turnover_rate", "volume_ratio",
+            "total_mv", "float_mv", "pe", "pe_ttm", "pb", "ps", "ps_ttm",
+        ]
+        for field in fields or []:
+            if field and field not in requested_fields:
+                requested_fields.append(field)
+        df = reader.read(None, target_date, target_date, fields=requested_fields)
+        if df is not None and not df.is_empty():
+            print(f"[Screener] Loaded {len(df)} rows from LanceDB")
+            return df
+
+        if not Config.parquet_fallback_enabled():
+            print("[Screener] No LanceDB data and Parquet fallback is disabled")
+            return None
         
         parquet_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -212,7 +232,7 @@ def get_factor_data_for_date(target_date: str) -> Optional[pl.DataFrame]:
     """
     获取指定日期的所有股票因子数据
     
-    直接从 Parquet 文件读取，避免按单只股票分片读取全量日期数据。
+    默认从 LanceDB factors 表读取；仅显式启用后才回退到 Parquet。
     
     Args:
         target_date: 目标日期，格式 'YYYY-MM-DD'
@@ -221,7 +241,20 @@ def get_factor_data_for_date(target_date: str) -> Optional[pl.DataFrame]:
         包含因子数据的 Polars DataFrame
     """
     try:
-        import os
+        reader = get_lancedb()
+        df = reader.read_table("factors", None, target_date, target_date, fields=None)
+        if df is not None and not df.is_empty():
+            if 'stock_code' in df.columns:
+                df = df.with_columns(
+                    pl.col('stock_code').str.split('.').list.get(0).alias('stock_code')
+                )
+            print(f"[Screener] Loaded factor data from LanceDB for {len(df)} stocks on {target_date}")
+            return df
+
+        if not Config.parquet_fallback_enabled():
+            print(f"[Screener] No LanceDB factor data for {target_date}; Parquet fallback is disabled")
+            return None
+
         from datetime import datetime
         
         parquet_path = os.path.join(
@@ -1028,7 +1061,7 @@ def rank_stocks():
         page_size = int(data.get('page_size', 20))
 
         # 从当前数据后端获取数据
-        df = get_all_stocks_daily_df(target_date=date)
+        df = get_all_stocks_daily_df(target_date=date, fields=[field])
         
         if df is None or df.is_empty():
             return jsonify({'success': False, 'error': f'该日期无数据: {date}'}), 404
@@ -1077,7 +1110,7 @@ def get_field_stats():
         field = request.args.get('field', 'close')
 
         # 从当前数据后端获取数据
-        df = get_all_stocks_daily_df(target_date=date)
+        df = get_all_stocks_daily_df(target_date=date, fields=[field])
         
         if df is None or df.is_empty():
             return jsonify({'success': False, 'error': f'该日期无数据: {date}'}), 404

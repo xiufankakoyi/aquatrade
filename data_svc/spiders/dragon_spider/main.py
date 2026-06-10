@@ -421,6 +421,22 @@ class StealthCrawler:
             }
         }
 
+    @staticmethod
+    def cached_payload_is_usable(api_key, payload):
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("note") and not payload.get("data"):
+            return False
+
+        if api_key == "limit_up_filter":
+            data = payload.get("data") or {}
+            return isinstance(data, dict) and bool(data.get("stocks"))
+        if api_key in ("ladder_hierarchy_detail", "ladder_trend_summary"):
+            return bool(payload.get("dates"))
+        if api_key == "market_sentiment_cycle":
+            return bool(payload.get("data"))
+        return bool(payload.get("data")) or payload.get("success") is True
+
     def run_task(self, target_date):
         date_nodash = target_date.strftime("%Y%m%d")
         date_dash = target_date.strftime("%Y-%m-%d")
@@ -443,8 +459,15 @@ class StealthCrawler:
         for api_key, api_conf in API_MAP.items():
             file_path = os.path.join(day_dir, f"{api_key}.json")
             if os.path.exists(file_path):
-                print(f"   [✅ 已存在] {api_key}")
-                continue
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        cached_payload = json.load(f)
+                    if self.cached_payload_is_usable(api_key, cached_payload):
+                        print(f"   [✅ 已存在] {api_key}")
+                        continue
+                    print(f"   [♻️ 重新抓取] {api_key} 本地缓存为空或不完整")
+                except Exception:
+                    print(f"   [♻️ 重新抓取] {api_key} 本地缓存损坏")
 
             url_final = api_conf["url"].format(
                 date_nodash=date_nodash,

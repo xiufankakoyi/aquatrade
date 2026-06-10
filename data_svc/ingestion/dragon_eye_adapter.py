@@ -20,7 +20,7 @@ import sys
 import json
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any, Tuple
 
 import polars as pl
@@ -47,6 +47,32 @@ class DragonEyeTransformer:
     输入: data_lake/{date}/ 下的 JSON 文件
     输出: df_limit_up (涨停事实表) + df_sector (梯队维度表)
     """
+
+    @staticmethod
+    def _float(value: Any, default: float = 0.0) -> float:
+        try:
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _int(value: Any, default: int = 0) -> int:
+        try:
+            if value is None or value == "":
+                return default
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _tags(value: Any) -> List[str]:
+        if isinstance(value, list):
+            return [str(item) for item in value if item]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
 
     @staticmethod
     def transform_limit_up(
@@ -80,39 +106,43 @@ class DragonEyeTransformer:
                 try:
                     dt = datetime.fromtimestamp(int(first_limit_ts))
                     minutes_from_open = max(0, (dt.hour * 60 + dt.minute) - (9 * 60 + 30))
-                except (ValueError, OSError):
+                except (TypeError, ValueError, OSError, OverflowError):
                     minutes_from_open = 240
             else:
                 minutes_from_open = 240
 
-            market_cap_yi = stock.get("total_market_cap", 0) / 1e8
+            market_cap_yi = DragonEyeTransformer._float(stock.get("total_market_cap")) / 1e8
 
             records.append({
                 "trade_date": target_date,
-                "stock_code": stock.get("code", ""),
-                "stock_name": stock.get("name", ""),
-                "continue_num": stock.get("continue_num", 0),
-                "high_days": stock.get("high_days", ""),
-                "limit_up_type": stock.get("limit_up_type", ""),
-                "open_num": stock.get("open_num"),
+                "stock_code": str(stock.get("code") or ""),
+                "stock_name": str(stock.get("name") or ""),
+                "continue_num": DragonEyeTransformer._int(stock.get("continue_num")),
+                "high_days": str(stock.get("high_days") or ""),
+                "limit_up_type": str(stock.get("limit_up_type") or ""),
+                "open_num": (
+                    DragonEyeTransformer._int(stock.get("open_num"))
+                    if stock.get("open_num") is not None
+                    else None
+                ),
                 "first_limit_up_minutes": minutes_from_open,
-                "order_amount": stock.get("order_amount", 0),
-                "turnover_rate": stock.get("turnover_rate", 0),
-                "actual_turnover_rate": stock.get("actual_turnover_rate", 0),
+                "order_amount": DragonEyeTransformer._int(stock.get("order_amount")),
+                "turnover_rate": DragonEyeTransformer._float(stock.get("turnover_rate")),
+                "actual_turnover_rate": DragonEyeTransformer._float(stock.get("actual_turnover_rate")),
                 "market_cap_yi": round(market_cap_yi, 2),
-                "latest_price": stock.get("latest", 0),
-                "change_rate": stock.get("change_rate", 0),
-                "trading_amount": stock.get("trading_amount", 0),
-                "limit_up_suc_rate": stock.get("limit_up_suc_rate", 0),
-                "is_again_limit": stock.get("is_again_limit", 0),
-                "is_new": stock.get("is_new", 0),
-                "change_tag": stock.get("change_tag", ""),
-                "theme": stock.get("jiuyangongshe_category_name", ""),
-                "reason_type": stock.get("reason_type", ""),
-                "industry": stock.get("industry", ""),
-                "is_regulation": stock.get("code", "") in stock_regulation,
-                "is_institution_buy": stock.get("code", "") in stock_institution_buy,
-                "leader_tag": ",".join(stock.get("tags", [])),
+                "latest_price": DragonEyeTransformer._float(stock.get("latest")),
+                "change_rate": DragonEyeTransformer._float(stock.get("change_rate")),
+                "trading_amount": DragonEyeTransformer._float(stock.get("trading_amount")),
+                "limit_up_suc_rate": DragonEyeTransformer._float(stock.get("limit_up_suc_rate")),
+                "is_again_limit": DragonEyeTransformer._int(stock.get("is_again_limit")),
+                "is_new": DragonEyeTransformer._int(stock.get("is_new")),
+                "change_tag": str(stock.get("change_tag") or ""),
+                "theme": str(stock.get("jiuyangongshe_category_name") or ""),
+                "reason_type": str(stock.get("reason_type") or ""),
+                "industry": str(stock.get("industry") or ""),
+                "is_regulation": str(stock.get("code") or "") in stock_regulation,
+                "is_institution_buy": str(stock.get("code") or "") in stock_institution_buy,
+                "leader_tag": ",".join(DragonEyeTransformer._tags(stock.get("tags"))),
             })
 
         return pl.DataFrame(records)
@@ -150,7 +180,7 @@ class DragonEyeTransformer:
         level_map = {5: "leader", 4: "fourth", 3: "third", 2: "second", 1: "first"}
 
         for board in boards:
-            level_key = int(board.get("level", 0))
+            level_key = DragonEyeTransformer._int(board.get("level"))
             level_name = level_map.get(level_key, f"level_{level_key}")
             stocks = board.get("stocks", [])
 
@@ -161,12 +191,12 @@ class DragonEyeTransformer:
                     "trade_date": target_date,
                     "sector_level": level_key,
                     "sector_name": level_name,
-                    "stock_code": stock.get("code", ""),
-                    "stock_name": stock.get("name", ""),
-                    "continue_num": stock.get("continue_num", 0),
-                    "order_amount": stock.get("order_amount", 0),
-                    "turnover_rate": stock.get("turnover_rate", 0),
-                    "leader_tag": ",".join(stock.get("tags", [])),
+                    "stock_code": str(stock.get("code") or ""),
+                    "stock_name": str(stock.get("name") or ""),
+                    "continue_num": DragonEyeTransformer._int(stock.get("continue_num")),
+                    "order_amount": DragonEyeTransformer._int(stock.get("order_amount")),
+                    "turnover_rate": DragonEyeTransformer._float(stock.get("turnover_rate")),
+                    "leader_tag": ",".join(DragonEyeTransformer._tags(stock.get("tags"))),
                 })
 
         return pl.DataFrame(records) if records else pl.DataFrame()
@@ -202,18 +232,21 @@ class DragonEyeTransformer:
         market = current_data.get("marketSentiment", {})
 
         limit_up_count = sum(len(stocks) for stocks in ladder.values()) if ladder else 0
-        max_height = max(map(int, ladder.keys())) if ladder else 0
+        max_height = max(
+            [DragonEyeTransformer._int(value) for value in ladder.keys()],
+            default=0,
+        )
 
         return pl.DataFrame([{
             "trade_date": target_date,
-            "broken_ratio": emotion.get("brokenRatio", 0),
-            "broken_count": emotion.get("brokenCount", 0),
-            "limit_down_count": emotion.get("limitDownCount", 0),
+            "broken_ratio": DragonEyeTransformer._float(emotion.get("brokenRatio")),
+            "broken_count": DragonEyeTransformer._int(emotion.get("brokenCount")),
+            "limit_down_count": DragonEyeTransformer._int(emotion.get("limitDownCount")),
             "limit_up_count": limit_up_count,
             "max_height": max_height,
-            "main_themes": ",".join([t.get("name", "") for t in themes]),
-            "rise_count": market.get("rise", 0),
-            "fall_count": market.get("fall", 0),
+            "main_themes": ",".join([str(t.get("name") or "") for t in themes]),
+            "rise_count": DragonEyeTransformer._int(market.get("rise")),
+            "fall_count": DragonEyeTransformer._int(market.get("fall")),
         }])
 
 
@@ -335,17 +368,27 @@ class DragonEyeAdapter(CrawlerEtiquette):
 
         start = max(start, today - timedelta(days=max_days))
 
-        missing = []
-        current = start
-        while current <= end:
-            if current.weekday() < 5:
-                date_str = current.strftime("%Y-%m-%d")
-                date_dir = self.data_lake_dir / date_str
-                if not date_dir.exists() or not any(date_dir.iterdir()):
-                    missing.append(date_str)
-            current += timedelta(days=1)
+        from data_svc.ingestion.gap_checker import get_expected_trading_dates
 
-        return missing
+        expected_dates = get_expected_trading_dates(
+            start.strftime("%Y-%m-%d"),
+            end.strftime("%Y-%m-%d"),
+        )
+        return [
+            date_text
+            for date_text in expected_dates
+            if not self.inspect_local_date(date_text)["complete"]
+        ]
+
+    def scan_missing_dates(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        max_days: int = 90,
+    ) -> List[str]:
+        """Public wrapper for the unified updater backfill flow."""
+
+        return self._scan_missing_dates(start_date, end_date, max_days)
 
     # ----------------------------------------------------------
     # 爬虫执行
@@ -376,11 +419,9 @@ class DragonEyeAdapter(CrawlerEtiquette):
 
     def _crawl_single(self, target_date: str) -> bool:
         """爬取单个日期"""
-        date_dir = self.data_lake_dir / target_date
-        limit_up_path = date_dir / "limit_up_filter.json"
-
-        if limit_up_path.exists():
-            logger.info(f"[DragonEye] {target_date} 数据已存在，跳过")
+        local_status = self.inspect_local_date(target_date)
+        if local_status["complete"]:
+            logger.info(f"[DragonEye] {target_date} 本地数据完整，跳过")
             return True
 
         spider_path = self.project_root / "data_svc" / "spiders" / "dragon_spider" / "main.py"
@@ -403,8 +444,6 @@ class DragonEyeAdapter(CrawlerEtiquette):
             )
             if result.returncode == 0:
                 logger.info(f"[DragonEye] {target_date} 爬虫成功")
-            elif limit_up_path.exists():
-                logger.info(f"[DragonEye] {target_date} 数据已生成(返回码{result.returncode})")
             else:
                 logger.warning(f"[DragonEye] 爬虫返回非零: {result.stderr[:200]}")
         except subprocess.TimeoutExpired:
@@ -412,7 +451,14 @@ class DragonEyeAdapter(CrawlerEtiquette):
         except Exception as e:
             logger.warning(f"[DragonEye] 爬虫执行异常: {e}")
 
-        if limit_up_path.exists():
+        refreshed_status = self.inspect_local_date(target_date)
+        if refreshed_status["has_leader_data"]:
+            if not refreshed_status["complete"]:
+                logger.warning(
+                    "[DragonEye] %s 龙头数据可用，但辅助文件仍不完整: %s",
+                    target_date,
+                    refreshed_status["missing_components"],
+                )
             return True
         logger.warning(f"[DragonEye] {target_date} 无数据可用")
         return False
@@ -491,6 +537,33 @@ class DragonEyeAdapter(CrawlerEtiquette):
 
         return result
 
+    def inspect_local_date(self, target_date: str) -> Dict[str, Any]:
+        """Inspect whether local JSON can produce leader and sentiment rows."""
+
+        raw = self.load_json_data(target_date)
+        limit_stocks = (
+            (raw.get("limit_up", {}).get("data") or {}).get("stocks") or []
+        )
+        ladder_stocks = self._extract_limit_up_from_ladder(raw.get("ladder_detail", {}))
+        sentiment_items = raw.get("sentiment", {}).get("data") or []
+
+        has_leader_data = bool(limit_stocks or ladder_stocks)
+        has_sentiment = bool(sentiment_items)
+        missing_components = []
+        if not has_leader_data:
+            missing_components.append("leader")
+        if not has_sentiment:
+            missing_components.append("sentiment")
+        return {
+            "target_date": target_date,
+            "complete": has_leader_data and has_sentiment,
+            "has_leader_data": has_leader_data,
+            "has_sentiment": has_sentiment,
+            "limit_up_count": len(limit_stocks),
+            "ladder_stock_count": len(ladder_stocks),
+            "missing_components": missing_components,
+        }
+
     def _extract_limit_up_from_ladder(self, ladder_detail: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         当 limit_up_filter.json 无数据时，从 ladder JSON 兜底提取涨停股票
@@ -516,7 +589,7 @@ class DragonEyeAdapter(CrawlerEtiquette):
                         "first_limit_up_time": s.get("first_limit_up_time", 0),
                         "order_amount": s.get("order_amount", 0),
                         "turnover_rate": s.get("turnover_rate", 0),
-                        "actual_turnover_rate": s.get("actual_currency_value", 0),
+                        "actual_turnover_rate": s.get("actual_turnover_rate", 0),
                         "total_market_cap": s.get("currency_value", 0),
                         "latest": s.get("latest", 0) or s.get("price", 0),
                         "change_rate": s.get("change_rate", 0),
@@ -531,6 +604,35 @@ class DragonEyeAdapter(CrawlerEtiquette):
                         "tags": s.get("tags", []),
                     })
         return stocks
+
+    @staticmethod
+    def _enrich_limit_up_from_ladder(
+        stocks: List[Dict[str, Any]],
+        ladder_stocks: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Fill leader tags and sparse fields from the ladder payload by code."""
+
+        ladder_by_code = {
+            str(stock.get("code", "")): stock
+            for stock in ladder_stocks
+            if stock.get("code")
+        }
+        enriched = []
+        for stock in stocks:
+            item = dict(stock)
+            ladder_item = ladder_by_code.get(str(item.get("code", "")), {})
+            for field in (
+                "tags", "continue_num", "high_days", "limit_up_type", "open_num",
+                "first_limit_up_time", "order_amount", "turnover_rate",
+                "jiuyangongshe_category_name", "reason_type", "industry",
+            ):
+                if (
+                    item.get(field) in (None, "", [], 0)
+                    and ladder_item.get(field) not in (None, "", [])
+                ):
+                    item[field] = ladder_item[field]
+            enriched.append(item)
+        return enriched
 
     def build_dataframes(self, target_date: str) -> Tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
         """
@@ -560,15 +662,18 @@ class DragonEyeAdapter(CrawlerEtiquette):
 
         # 涨停事实表
         # 优先从 limit_up_filter.json 提取，兜底从 ladder_hierarchy_detail.json
+        ladder_detail = raw.get("ladder_detail", {})
+        ladder_stocks = self._extract_limit_up_from_ladder(ladder_detail)
         stocks = raw.get("limit_up", {}).get("data", {}).get("stocks", [])
-        if not stocks:
-            stocks = self._extract_limit_up_from_ladder(raw.get("ladder_detail", {}))
+        if stocks:
+            stocks = self._enrich_limit_up_from_ladder(stocks, ladder_stocks)
+        else:
+            stocks = ladder_stocks
         df_limit_up = self.transformer.transform_limit_up(
             target_date, stocks, stock_regulation, stock_institution_buy
         )
 
         # 梯队维度表
-        ladder_detail = raw.get("ladder_detail", {})
         df_sector = self.transformer.transform_sector(target_date, ladder_detail)
 
         # 情绪指标表

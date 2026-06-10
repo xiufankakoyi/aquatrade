@@ -240,17 +240,49 @@ def check_and_repair_gaps(
     stock_codes: Optional[List[str]] = None,
     max_retries: int = 3,
     auto_repair: bool = True,
+    remove_unexpected_dates: bool = False,
+    precompute_factors: bool = True,
 ) -> Dict[str, Any]:
     """Check LanceDB coverage and repair missing dates from Tushare."""
 
     check_result = check_data_gaps(trading_dates, stock_codes)
     repair_dates = sorted(set(check_result.missing_dates) | set(check_result.incomplete_dates))
+    removed_unexpected_dates: List[str] = []
+
+    if remove_unexpected_dates and check_result.unexpected_dates:
+        db_path = getattr(Config, "LANCEDB_PATH", str(Path("data") / "lancedb"))
+        db = lancedb.connect(db_path)
+        tables = _table_names(db)
+        for date in sorted(check_result.unexpected_dates):
+            date_removed = False
+            for table_name in ("daily_ohlcv", "factors"):
+                if table_name not in tables:
+                    continue
+                table = db.open_table(table_name)
+                try:
+                    table.delete(f"trade_date = DATE '{date}'")
+                    date_removed = True
+                except Exception:
+                    try:
+                        table.delete(f'trade_date = "{date}"')
+                        date_removed = True
+                    except Exception as exc:
+                        logger.warning(
+                            "[GapCheck] failed to remove unexpected date %s from %s: %s",
+                            date,
+                            table_name,
+                            exc,
+                        )
+            if date_removed:
+                removed_unexpected_dates.append(date)
+                logger.warning("[GapCheck] removed non-trading date %s from local tables", date)
 
     if not repair_dates or not auto_repair:
         return {
             "check_result": check_result,
             "repair_results": [],
             "failed_repairs": [],
+            "removed_unexpected_dates": removed_unexpected_dates,
         }
 
     from data_svc.storage.factor_precompute_service import FactorPrecomputeService
@@ -274,7 +306,7 @@ def check_and_repair_gaps(
         if not success:
             failed_repairs.append({"date": date, "error": "no rows fetched", "retries": max_retries})
 
-    if repair_results:
+    if repair_results and precompute_factors:
         start = min(item["date"] for item in repair_results)
         end = max(item["date"] for item in repair_results)
         factor_result = FactorPrecomputeService().precompute_all_factors(start, end)
@@ -286,6 +318,7 @@ def check_and_repair_gaps(
         "repair_results": repair_results,
         "failed_repairs": failed_repairs,
         "factor_result": factor_result,
+        "removed_unexpected_dates": removed_unexpected_dates,
     }
 
 

@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 import pandas as pd
 
+from config.config import Config
 from server.data_providers.akshare_provider import AkshareProvider
 from server.data_providers.baostock_provider import BaostockProvider
 from server.data_providers.base import (
@@ -69,9 +70,12 @@ class ProviderRegistry:
         end_date: str,
         symbols: list[str] | None = None,
     ) -> pd.DataFrame:
+        provider_order = ["tushare", "efinance", "akshare", "baostock"]
+        if Config.parquet_fallback_enabled():
+            provider_order.insert(0, "local_parquet")
         return self._failover(
             method_name="get_daily_bars",
-            provider_order=["local_parquet", "tushare", "efinance", "akshare", "baostock"],
+            provider_order=provider_order,
             columns=DAILY_BARS_COLUMNS,
             start_date=start_date,
             end_date=end_date,
@@ -129,9 +133,12 @@ class ProviderRegistry:
         )
 
     def get_stock_basic_info(self, symbols: list[str] | None = None) -> pd.DataFrame:
+        provider_order = ["tushare", "akshare", "efinance", "baostock"]
+        if Config.parquet_fallback_enabled():
+            provider_order.insert(0, "local_stock_info")
         return self._failover(
             method_name="get_stock_basic_info",
-            provider_order=["local_stock_info", "tushare", "akshare", "efinance", "baostock"],
+            provider_order=provider_order,
             columns=STOCK_BASIC_INFO_COLUMNS,
             symbols=symbols,
         )

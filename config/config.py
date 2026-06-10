@@ -27,6 +27,7 @@ class Config:
     )
     DATABASE_PATH = DB_PATH
     DB_BACKEND = Setting.DB_BACKEND
+    ENABLE_PARQUET_FALLBACK = Setting.ENABLE_PARQUET_FALLBACK
     
     # 3. LanceDB 配置
     LANCEDB_PATH = Setting.LANCEDB_PATH or os.path.join(
@@ -96,6 +97,16 @@ class Config:
             bool: 是否使用 LanceDB 后端
         """
         return cls.DB_BACKEND.lower() == 'lancedb'
+
+    @classmethod
+    def parquet_fallback_enabled(cls):
+        """
+        Return True only when legacy Parquet reads are explicitly requested.
+
+        DB_BACKEND=parquet keeps the old Parquet mode available. In LanceDB mode,
+        Parquet fallbacks are disabled unless ENABLE_PARQUET_FALLBACK is set.
+        """
+        return cls.DB_BACKEND.lower() == 'parquet' or bool(cls.ENABLE_PARQUET_FALLBACK)
     
     @classmethod
     def get_data_interface(cls):

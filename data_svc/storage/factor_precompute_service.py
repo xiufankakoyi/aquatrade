@@ -19,7 +19,7 @@ if BASE_DIR not in sys.path:
 
 from config.config import Config
 from config.logger import get_logger
-from data_svc.storage.lancedb_reader import get_lancedb_reader
+from data_svc.storage.lancedb_reader import LanceDBDataReader
 
 logger = get_logger(__name__)
 
@@ -30,14 +30,19 @@ class FactorComputeResult:
     records_computed: int = 0
     message: str = ""
     error: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    table_name: str = "factors"
 
 
 class FactorPrecomputeService:
     """Computes rolling factors from daily_ohlcv and upserts factors by date."""
 
     def __init__(self):
-        self.reader = get_lancedb_reader()
         self.lancedb_path = getattr(Config, "LANCEDB_PATH", str(Path(BASE_DIR) / "data" / "lancedb"))
+        # Use a fresh reader for every compute job. The process-wide singleton can
+        # hold an older Lance dataset snapshot after the updater appends new rows.
+        self.reader = LanceDBDataReader(self.lancedb_path)
 
     def precompute_all_factors(self, start_date: Optional[str] = None, end_date: Optional[str] = None) -> FactorComputeResult:
         started = time.time()
@@ -61,6 +66,8 @@ class FactorPrecomputeService:
                 True,
                 records_computed=len(factor_df),
                 message=f"computed and stored {len(factor_df)} factor rows in {elapsed:.1f}s",
+                start_date=str(factor_df["trade_date"].min())[:10],
+                end_date=str(factor_df["trade_date"].max())[:10],
             )
         except Exception as exc:
             logger.exception("factor precompute failed")
@@ -147,6 +154,16 @@ class FactorPrecomputeService:
         return out.select([c for c in cols if c in out.columns])
 
     def _validate_factor_output(self, df: pl.DataFrame) -> None:
+        duplicate_keys = (
+            df.group_by(["trade_date", "stock_code"])
+            .len()
+            .filter(pl.col("len") > 1)
+        )
+        if not duplicate_keys.is_empty():
+            raise ValueError(
+                f"factor precompute produced {len(duplicate_keys)} duplicate date/symbol keys"
+            )
+
         required = ["rsi_6", "rsi_12", "rsi_24", "macd_dif", "macd_dea", "macd_bar"]
         missing = [col for col in required if col not in df.columns]
         if missing:
@@ -154,6 +171,13 @@ class FactorPrecomputeService:
         all_null = [col for col in required if df[col].null_count() == len(df)]
         if all_null:
             raise ValueError(f"factor precompute produced only null values for: {all_null}")
+        for column in ("rsi_6", "rsi_12", "rsi_24"):
+            invalid = df.filter(
+                pl.col(column).is_not_null()
+                & ((pl.col(column) < -1e-8) | (pl.col(column) > 100.0000001))
+            )
+            if not invalid.is_empty():
+                raise ValueError(f"factor precompute produced out-of-range values for {column}")
 
     def _write_to_lancedb(self, df: pl.DataFrame) -> bool:
         Path(self.lancedb_path).mkdir(parents=True, exist_ok=True)

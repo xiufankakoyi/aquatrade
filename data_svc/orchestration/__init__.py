@@ -167,11 +167,24 @@ class DataOrchestrator:
 
         ymd = target_date.replace("-", "")
         result = UnifiedDataUpdater().update_stock_daily(start_date=ymd, end_date=ymd)
+        expected_dates = result.get("expected_dates", 0)
+        updated_dates = result.get("dates_updated", 0)
+        failed_dates = result.get("failed_dates", [])
+        status = (
+            TaskStatus.SUCCESS
+            if expected_dates == updated_dates and not failed_dates
+            else TaskStatus.FAILED
+        )
         return TaskResult(
             "stock_daily",
-            TaskStatus.SUCCESS,
+            status,
             message=f"updated {result.get('dates_updated', 0)} days, {result.get('records_added', 0)} rows",
             rows_written=result.get("records_added", 0),
+            metadata={
+                "failed_dates": failed_dates,
+                "invalid_rows": result.get("invalid_rows", 0),
+                "missing_auxiliary": result.get("missing_auxiliary", {}),
+            },
         )
 
     def _ingest_index_daily(self, target_date: str) -> TaskResult:

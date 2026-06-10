@@ -549,6 +549,10 @@ class BacktestVisualizationAPI:
         except Exception as e:
             logger.warning(f"从 LanceDB 读取指数数据失败: {e}")
         
+        if not Config.parquet_fallback_enabled():
+            logger.info("Parquet fallback disabled, skip index parquet data for %s", symbol_code)
+            return []
+
         try:
             parquet_file = Path('data/parquet_data') / INDEX_PARQUET_MAPPING[symbol_code]
             
@@ -648,6 +652,10 @@ class BacktestVisualizationAPI:
             except Exception as e:
                 print(f"[K线查询] LanceDB 读取失败: {e}")
         
+        if not Config.parquet_fallback_enabled():
+            print(f"[Kline] LanceDB returned no data; Parquet fallback disabled: {symbol_code}")
+            return []
+
         try:
             import time
             t0 = time.perf_counter()
@@ -1906,6 +1914,10 @@ class BacktestVisualizationAPI:
         except Exception as e:
             logger.warning(f"从数据库获取股票市值失败，尝试 Parquet: {e}")
             
+            if not Config.parquet_fallback_enabled():
+                logger.info("Parquet fallback disabled, skip market cap fallback for %s symbols", len(needed_symbols or []))
+                return stock_info
+
             try:
                 import polars as pl
                 
