@@ -1,3 +1,10 @@
+import {
+  createMockStrategyDetail,
+  MOCK_STRATEGIES,
+  markMockResponse,
+  mockLatestPrices,
+} from './mockDataRegistry';
+
 /**
  * Fetch Mock 拦截器
  * 拦截原生 fetch 请求，返回模拟数据
@@ -548,6 +555,16 @@ const FETCH_MOCK_DATA: Record<string, any> = {
 /**
  * 查找匹配的 Mock 路由
  */
+FETCH_MOCK_DATA['/api/strategies'] = markMockResponse({
+  success: true,
+  data: MOCK_STRATEGIES,
+});
+FETCH_MOCK_DATA['/api/latest_price'] = markMockResponse(mockLatestPrices());
+FETCH_MOCK_DATA['/api/strategy/'] = (url: string) => {
+  const match = url.match(/\/strategy\/([^/]+)/)
+  return createMockStrategyDetail(match ? decodeURIComponent(match[1]) : 'MockStrategy')
+}
+
 function findMockKey(url: string): string | null {
   // 精确匹配
   if (FETCH_MOCK_DATA[url]) return url;
@@ -582,10 +599,10 @@ function getMockResponse(url: string): any {
 
   // 如果是函数，执行并返回结果
   if (typeof mockValue === 'function') {
-    return mockValue(url);
+    return markMockResponse(mockValue(url));
   }
 
-  return mockValue;
+  return markMockResponse(mockValue);
 }
 
 /**

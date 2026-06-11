@@ -6,6 +6,8 @@ export interface ChainInfo {
   aliases: string[];
   description: string;
   node_count: number;
+  source?: string;
+  is_fallback?: boolean;
 }
 
 export interface ChainNode {
@@ -78,6 +80,8 @@ export interface ChainGraphData {
   edges: ChainEdge[];
   layers: ChainLayer[];
   summary: ChainSummary;
+  source?: string;
+  is_fallback?: boolean;
 }
 
 export interface NodeDetail {

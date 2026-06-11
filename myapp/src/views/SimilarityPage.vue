@@ -125,6 +125,7 @@
               :data-source="resultData"
               :loading="loading"
               :pagination="false"
+              :locale="{ emptyText: '暂无匹配结果' }"
               :scroll="{ x: 880 }"
               :row-key="(record: any) => `${record.stock_code}-${record.start_date}-${record.end_date}`"
               :expanded-row-keys="expandedRowKeys"
@@ -309,7 +310,7 @@
         </div>
       </div>
 
-      <p v-if="radarError" class="radar-error">{{ radarError }}</p>
+      <ErrorState v-if="radarError" :message="radarError" :retryable="false" />
 
       <div class="radar-result-grid">
         <div class="result-panel radar-result-panel">
@@ -325,6 +326,7 @@
             :data-source="radarResults"
             :loading="radarLoading"
             :pagination="{ pageSize: 12, showSizeChanger: false }"
+            :locale="{ emptyText: '暂无雷达结果' }"
             :scroll="{ x: 1120 }"
             :row-key="radarRowKey"
             :custom-row="radarCustomRow"
@@ -400,6 +402,7 @@
 
 <script setup lang="ts">
 import { computed, ref, reactive, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import ErrorState from '@/components/common/ErrorState.vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 import { InboxOutlined } from '@ant-design/icons-vue'

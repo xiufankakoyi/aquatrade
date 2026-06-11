@@ -31,6 +31,7 @@ def register_routes(app):
         ('server.concept_lab.concept_api', 'concept_bp'),
         ('server.routes.news_routes', 'news_bp'),
         ('server.industry_chain.api', 'industry_chain_bp'),
+        ('server.routes.research_routes', 'research_bp'),
     ]
     
     for module_name, bp_name in route_modules:

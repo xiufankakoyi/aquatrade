@@ -4,6 +4,7 @@
  */
 
 import { ref } from 'vue'
+import { createMockBacktestGenerator, MOCK_STOCKS } from './mockDataRegistry'
 
 // Mock 状态
 const status = ref('OPEN')
@@ -14,6 +15,10 @@ const eventListeners: Map<string, Set<(data: any) => void>> = new Map()
 
 // Mock 回测数据生成器
 export function generateMockBacktestData(strategyName: string) {
+  return createMockBacktestGenerator(strategyName)
+}
+
+function legacyGenerateMockBacktestData(strategyName: string) {
   const totalDays = 252
   let currentDay = 0
   let equity = 1000000
@@ -45,7 +50,7 @@ export function generateMockBacktestData(strategyName: string) {
     // 生成交易信号 - 增加交易频率
     if (Math.random() < 0.15) { // 15% 概率每天产生交易，确保有足够多的交易
       const isBuy = Math.random() > 0.5
-      const symbols = ['000001.SZ', '000002.SZ', '600519.SH', '000858.SZ', '002415.SZ']
+      const symbols = MOCK_STOCKS.map((stock) => stock.symbol)
       const symbol = symbols[Math.floor(Math.random() * symbols.length)]
       const price = 100 + Math.random() * 50
       const shares = Math.floor(Math.random() * 1000) + 100

@@ -1,5 +1,19 @@
 # API Documentation
 
+## 研究工作台接口
+
+以下接口只读取本地结构化数据；无数据时返回明确 `message`，不使用随机或未标记的示例数据。
+
+- `GET /api/latest_price?symbols=000001.SZ&date=2026-01-01`
+- `GET /api/stock_posts_by_keyword?keyword=关键词`
+- `POST /api/screener/field_stats`
+- `POST /api/screener/export`
+- `POST /api/benchmark/{code}/equity`
+- `GET /api/strategies/{id}/params`
+- `GET /api/data/health`
+- `GET /api/quant-flow/latest`
+- `POST /api/quant-flow/run`
+
 ## Automatic API Docs (Swagger UI)
 The backend provides automatic API documentation using Swagger UI.
 
@@ -10,6 +24,7 @@ The backend provides automatic API documentation using Swagger UI.
 ### Strategies
 - `GET /api/strategies`: List all available strategies
 - `GET /api/strategies/<id>/params`: Get parameters for a strategy
+  - Returns an empty array with HTTP 200 when parameter metadata is unavailable.
 
 ### Data
 - `GET /api/kline`: Get K-line data

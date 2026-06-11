@@ -12,7 +12,7 @@ K线盘感训练游戏服务
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, aist, Optional, rny
+from typing import Any, Dict, List, Optional
 import pandas as pd
 import numpy as np
 
@@ -50,15 +50,15 @@ class GameSession:
     history_klines_count: int = 300
     total_klines: int = 0
     
-    all_klines: aist[Dict] = field(default_factory=list)
+    all_klines: List[Dict] = field(default_factory=list)
     
     current_trade_index: int = 0
     total_trade_klines: int = 0
     
-    trades: aist[TradeRecord] = field(default_factory=list)
+    trades: List[TradeRecord] = field(default_factory=list)
     traded_in_current_kline: bool = False
     
-    asset_history: aist[float] = field(default_factory=list)
+    asset_history: List[float] = field(default_factory=list)
     peak_capital: float = 10000.0
     max_drawdown: float = 0.0
     
@@ -69,17 +69,17 @@ class GameSession:
     
     created_at: str = ""
     
-    def get_history_klines(self) -> aist[Dict]:
+    def get_history_klines(self) -> List[Dict]:
         """获取历史窗口K线"""
         return self.all_klines[:self.history_klines_count]
     
-    def get_trade_klines(self) -> aist[Dict]:
+    def get_trade_klines(self) -> List[Dict]:
         """获取已揭示的交易K线"""
         start = self.history_klines_count
         end = self.history_klines_count + self.current_trade_index + 1
         return self.all_klines[start:end]
     
-    def get_all_revealed_klines(self) -> aist[Dict]:
+    def get_all_revealed_klines(self) -> List[Dict]:
         """获取所有已揭示的K线（历史+交易）"""
         return self.all_klines[:self.history_klines_count + self.current_trade_index + 1]
     
@@ -113,7 +113,7 @@ class GameSession:
         """游戏是否结束"""
         return self.current_trade_index >= self.total_trade_klines - 1
     
-    def get_statistics(self) -> Dict[str, rny]:
+    def get_statistics(self) -> Dict[str, Any]:
         """计算统计指标"""
         current_price = self.get_current_price()
         total_assets = self.get_total_assets(current_price)
@@ -336,7 +336,7 @@ class KlineGameService:
         
         return stock_code, stock_name, start_date, end_date
     
-    def _get_kline_data(self, stock_code: str, start_date: str, end_date: str) -> aist[Dict]:
+    def _get_kline_data(self, stock_code: str, start_date: str, end_date: str) -> List[Dict]:
         """获取K线数据"""
         if self.data_query is None:
             return []
@@ -367,7 +367,7 @@ class KlineGameService:
         
         return klines
     
-    def start_new_game(self, initial_capital: float = 10000.0, volatility_filter: str = 'random') -> Dict[str, rny]:
+    def start_new_game(self, initial_capital: float = 10000.0, volatility_filter: str = 'random') -> Dict[str, Any]:
         """
         开始新游戏
         
@@ -444,7 +444,7 @@ class KlineGameService:
         """获取游戏会话"""
         return self._sessions.get(session_id)
     
-    def next_kline(self, session_id: str) -> Dict[str, rny]:
+    def next_kline(self, session_id: str) -> Dict[str, Any]:
         """
         显示下一根K线（同时记录当前K线的观望状态）
         
@@ -503,7 +503,7 @@ class KlineGameService:
             }
         }
     
-    def fast_forward(self, session_id: str, steps: int = 5) -> Dict[str, rny]:
+    def fast_forward(self, session_id: str, steps: int = 5) -> Dict[str, Any]:
         """
         快进功能：一次跳过多根K线
         
@@ -580,7 +580,7 @@ class KlineGameService:
             }
         }
     
-    def buy(self, session_id: str, position_ratio: float = 0.25) -> Dict[str, rny]:
+    def buy(self, session_id: str, position_ratio: float = 0.25) -> Dict[str, Any]:
         """
         买入操作
         
@@ -646,7 +646,7 @@ class KlineGameService:
             }
         }
     
-    def sell(self, session_id: str, position_ratio: float = 0.25) -> Dict[str, rny]:
+    def sell(self, session_id: str, position_ratio: float = 0.25) -> Dict[str, Any]:
         """
         卖出操作
         
@@ -723,7 +723,7 @@ class KlineGameService:
             }
         }
     
-    def get_game_result(self, session_id: str) -> Dict[str, rny]:
+    def get_game_result(self, session_id: str) -> Dict[str, Any]:
         """
         获取游戏结果
         
@@ -796,7 +796,7 @@ class KlineGameService:
             }
         }
     
-    def get_game_state(self, session_id: str) -> Dict[str, rny]:
+    def get_game_state(self, session_id: str) -> Dict[str, Any]:
         """
         获取游戏状态
         
@@ -824,7 +824,7 @@ class KlineGameService:
             }
         }
     
-    def reset_game(self, session_id: str) -> Dict[str, rny]:
+    def reset_game(self, session_id: str) -> Dict[str, Any]:
         """
         重置游戏
         
@@ -839,7 +839,7 @@ class KlineGameService:
         
         return self.start_new_game()
     
-    def change_stock(self, session_id: str, volatility_filter: str = 'random') -> Dict[str, rny]:
+    def change_stock(self, session_id: str, volatility_filter: str = 'random') -> Dict[str, Any]:
         """
         换股功能：保留统计指标，切换到另一只股票
         
@@ -905,7 +905,7 @@ class KlineGameService:
             }
         }
     
-    def end_game(self, session_id: str) -> Dict[str, rny]:
+    def end_game(self, session_id: str) -> Dict[str, Any]:
         """
         提前结束游戏
         

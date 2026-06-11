@@ -46,13 +46,26 @@ async function request<T>(
       );
     }
 
-    const data: ApiResponse<T> = await response.json();
+    const data: ApiResponse<T> & {
+      ok?: boolean;
+      status?: string | number;
+      result?: T;
+      error?: string;
+    } = await response.json();
 
-    if (!data.success) {
+    const explicitFailure =
+      data.success === false ||
+      data.ok === false ||
+      data.status === 'error' ||
+      data.status === 'failed' ||
+      (typeof data.status === 'number' && data.status >= 400);
+    if (explicitFailure) {
       throw new ApiError(data.error || '请求失败', response.status);
     }
 
-    return data.data as T;
+    if ('data' in data) return data.data as T;
+    if ('result' in data) return data.result as T;
+    return data as unknown as T;
   } catch (error) {
     if (error instanceof ApiError) {
       throw error;

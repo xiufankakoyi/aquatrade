@@ -4,8 +4,8 @@
 from flask import Blueprint, jsonify, request
 import pandas as pd
 from datetime import datetime, timedelta
-import random
 from typing import List, Dict, Any
+import json
 import numpy as np
 from pathlib import Path
 import re
@@ -638,34 +638,27 @@ def get_sentiment_trends():
 
 @sentiment_bp.route('/lda_topics', methods=['GET'])
 def get_lda_topics():
-    """获取LDA主题分布数据"""
-    try:
-        topics = [
-            {'topic': '短期炒作', 'weight': random.uniform(0.1, 0.4)},
-            {'topic': '业绩利好', 'weight': random.uniform(0.1, 0.3)},
-            {'topic': '主力出货', 'weight': random.uniform(0.05, 0.25)},
-            {'topic': '重组传闻', 'weight': random.uniform(0.05, 0.2)},
-            {'topic': '散户被套', 'weight': random.uniform(0.05, 0.2)}
-        ]
-
-        total = sum(t['weight'] for t in topics)
-        for t in topics:
-            t['weight'] = round(t['weight'] / total, 2)
-
-        topics_sorted = sorted(topics, key=lambda x: x['weight'], reverse=True)
-
-        topic_names = [t['topic'] for t in topics_sorted]
-        topic_scores = [t['weight'] for t in topics_sorted]
-
-        return jsonify({
-            'success': True,
-            'data': {
-                'topics': topic_names,
-                'scores': topic_scores
-            }
-        })
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+    """Return persisted local LDA evidence only."""
+    candidates = [
+        Path("data/reports/lda_topics_latest.json"),
+        Path("data/analytics/lda_topics.json"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return jsonify({
+                "success": True,
+                "data": payload,
+                "source": "local_structured_evidence",
+                "message": "查询完成",
+            })
+        except Exception:
+            continue
+    return jsonify({
+        "success": True,
+        "data": [],
+        "source": "local_structured_evidence",
+        "message": "暂无本地证据",
+    })

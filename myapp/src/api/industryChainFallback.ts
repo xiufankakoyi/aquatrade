@@ -6,6 +6,8 @@ export const FALLBACK_CHAIN: ChainInfo = {
   aliases: ['光通讯', 'Optical Communication'],
   description: '缺少后端结构数据时使用的本地产业链结构示例，不包含真实股票映射。',
   node_count: 20,
+  source: 'fallback',
+  is_fallback: true,
 };
 
 const layers = [
@@ -127,6 +129,8 @@ export const FALLBACK_GRAPH: ChainGraphData = {
     node_count: 20,
     stock_count: 0,
   },
+  source: 'fallback',
+  is_fallback: true,
 };
 
 export function createFallbackNodeDetail(graph: ChainGraphData, selected: ChainNode): NodeDetail {

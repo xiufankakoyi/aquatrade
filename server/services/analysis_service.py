@@ -118,17 +118,6 @@ class AnalysisService:
 """
     
                 # 计算交易统计
-                profitable_trades = [t for t in trades_with_pnl if t.get('pnl', 0) > 0]
-                losing_trades = [t for t in trades_with_pnl if t.get('pnl', 0) < 0]
-                
-                summary['trade_stats'] = {
-                    "total_trades": len(trades_with_pnl),
-                    "profitable_count": len(profitable_trades),
-                    "losing_count": len(losing_trades),
-                    "avg_profit": round(sum(t.get('pnl', 0) for t in profitable_trades) / len(profitable_trades), 2) if profitable_trades else 0,
-                    "avg_loss": round(sum(t.get('pnl', 0) for t in losing_trades) / len(losing_trades), 2) if losing_trades else 0,
-                }
-
     def _prepare_data_for_llm(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
         将庞大的回测结果精简为特征数据

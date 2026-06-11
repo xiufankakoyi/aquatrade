@@ -4,7 +4,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
-import { createChart, IChartApi, ISeriesApi, HistogramSeries, LineSeries } from 'lightweight-charts';
+import { createChart, HistogramSeries, LineSeries } from 'lightweight-charts';
+import type { IChartApi, ISeriesApi } from 'lightweight-charts';
 
 interface KlineData {
   date: string;

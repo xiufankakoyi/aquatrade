@@ -84,7 +84,7 @@ def get_strategy_params(strategy_id: str):
         from config.logger import get_logger
         logger = get_logger(__name__)
         logger.error(f"获取策略参数失败: {e}", exc_info=True)
-        return json_response({"error": str(e)}, status_code=500)
+        return json_response([])
 
 
 @strategy_bp.route('/strategies/<strategy_name>/profiles', methods=['GET'])

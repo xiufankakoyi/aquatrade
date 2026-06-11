@@ -39,6 +39,7 @@ export const useScreenerStore = defineStore('screener', () => {
   const filterResult = ref<FilterResponse | null>(null)
   const allRecords = ref<any[]>([])
   const loading = ref(false)
+  const error = ref('')
   const fieldStats = ref<Record<string, any>>({})
   const templates = ref<FilterTemplate[]>([])
   const currentPage = ref(1)
@@ -71,15 +72,17 @@ export const useScreenerStore = defineStore('screener', () => {
    * 加载指标列表
    */
   async function loadIndicators() {
+    error.value = ''
     try {
       const res = await getIndicators()
       if (res.data.success) {
         categories.value = res.data.data.categories
         operators.value = res.data.data.operators
       }
-    } catch (error) {
+    } catch (caught) {
+      error.value = caught instanceof Error ? caught.message : '加载指标列表失败'
       message.error('加载指标列表失败')
-      console.error(error)
+      console.error(caught)
     }
   }
 
@@ -87,6 +90,7 @@ export const useScreenerStore = defineStore('screener', () => {
    * 加载交易日期
    */
   async function loadTradeDates() {
+    error.value = ''
     try {
       const res = await getTradeDates()
       if (res.data.success) {
@@ -96,9 +100,10 @@ export const useScreenerStore = defineStore('screener', () => {
           selectedDate.value = latestDate.value
         }
       }
-    } catch (error) {
+    } catch (caught) {
+      error.value = caught instanceof Error ? caught.message : '加载交易日期失败'
       message.error('加载交易日期失败')
-      console.error(error)
+      console.error(caught)
     }
   }
 
@@ -181,6 +186,7 @@ export const useScreenerStore = defineStore('screener', () => {
     }
 
     loading.value = true
+    error.value = ''
     try {
       const res = await filterStocks({
         date: date,
@@ -200,6 +206,9 @@ export const useScreenerStore = defineStore('screener', () => {
         message.error(res.data.error || '筛选失败')
       }
     } catch (error: any) {
+      error.value = error.response?.status === 404
+        ? `该日期暂无数据: ${date}`
+        : (error.message || '筛选请求失败')
       if (error.response?.status === 404) {
         message.error(`该日期暂无数据: ${date}`)
       } else {
@@ -385,6 +394,7 @@ export const useScreenerStore = defineStore('screener', () => {
     filterResult,
     allRecords,
     loading,
+    error,
     fieldStats,
     templates,
     currentPage,

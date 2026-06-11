@@ -5,6 +5,12 @@
 
 import type { AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import type { StrategyInfo, KlineData } from '../types/api';
+import {
+  createMockBacktestResult,
+  MOCK_STRATEGIES,
+  markMockResponse,
+  mockLatestPrices,
+} from './mockDataRegistry';
 
 // 模拟一些核心数据，让你能看到界面
 const MOCK_DATA: Record<string, any> = {
@@ -333,6 +339,19 @@ const MOCK_DATA: Record<string, any> = {
  * 设置 Mock 拦截器
  * @param axiosInstance Axios 实例
  */
+MOCK_DATA['/api/strategies'] = markMockResponse({
+  success: true,
+  data: MOCK_STRATEGIES,
+});
+MOCK_DATA['/api/latest_price'] = markMockResponse(mockLatestPrices());
+MOCK_DATA['/api/backtest_result'] = () => {
+  const result = createMockBacktestResult()
+  return markMockResponse({
+    success: true,
+    data: result,
+  })
+}
+
 export function setupMock(axiosInstance: AxiosInstance): void {
   // 添加请求拦截器
   axiosInstance.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -356,10 +375,11 @@ export function setupMock(axiosInstance: AxiosInstance): void {
           const mockValue = MOCK_DATA[mockKey];
 
           // 如果是函数，执行并返回结果
-          const data =
+          const data = markMockResponse(
             typeof mockValue === 'function'
               ? mockValue(config.params || {})
-              : mockValue;
+              : mockValue
+          );
 
           console.log(`[Mock Response] ${config.url} ->`, data);
 
@@ -367,7 +387,7 @@ export function setupMock(axiosInstance: AxiosInstance): void {
             data: data,
             status: 200,
             statusText: 'OK',
-            headers: {},
+            headers: { 'X-Mock-Response': 'true' },
             config: config,
           };
         };

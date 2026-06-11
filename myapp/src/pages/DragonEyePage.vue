@@ -68,6 +68,7 @@
         :style="{ width: `${jobProgress}%` }"
       ></div>
     </div>
+    <ErrorState v-if="pageError" class="m-3" :message="pageError" :retryable="false" />
 
     <!-- Main Content - Two Column Layout -->
     <div class="main-grid p-3">
@@ -407,6 +408,7 @@
 import { ref, computed, onMounted, watch, onUnmounted, nextTick } from 'vue';
 import * as echarts from 'echarts';
 import axios from '../api/index';
+import ErrorState from '../components/common/ErrorState.vue';
 
 import LimitUpTrendChart from '../components/charts/LimitUpTrendChart.vue';
 import BubbleMatrixChart from '../components/charts/BubbleMatrixChart.vue';
@@ -414,6 +416,7 @@ import ThemeFlowChart from '../components/charts/ThemeFlowChart.vue';
 
 // State
 const targetDate = ref('');
+const pageError = ref('');
 const isCrawling = ref(false);
 const isProcessing = ref(false);
 const isPushing = ref(false);
@@ -425,10 +428,10 @@ const activeTheme = ref<string | null>(null);
 
 // Metrics
 const metrics = ref({
-  limitUp: 72,
-  limitDown: 8,
-  maxHeight: '8板',
-  brokenRatio: '15.0%'
+  limitUp: 0,
+  limitDown: 0,
+  maxHeight: 'N/A',
+  brokenRatio: 'N/A'
 });
 
 // Chart refs
@@ -500,6 +503,7 @@ const fetchLatestDate = async () => {
       targetDate.value = new Date().toISOString().split('T')[0];
     }
   } catch (e) {
+    pageError.value = e instanceof Error ? e.message : '最新日期加载失败';
     console.error('Fetch latest date failed:', e);
     // 出错时使用今天
     targetDate.value = new Date().toISOString().split('T')[0];
@@ -520,6 +524,7 @@ const fetchStocks = async () => {
       metrics.value.maxHeight = maxBoard + '板';
     }
   } catch (e) {
+    pageError.value = e instanceof Error ? e.message : '龙头数据加载失败';
     console.error('Fetch stocks failed:', e);
   }
 };
@@ -530,6 +535,7 @@ const fetchBrief = async () => {
     const res = await axios.get('/api/dragon/brief', { params: { date: targetDate.value } });
     aiBrief.value = res.data.content;
   } catch (e) {
+    pageError.value = e instanceof Error ? e.message : '市场简报加载失败';
     console.error('Fetch brief failed:', e);
   } finally {
     isLoadingBrief.value = false;

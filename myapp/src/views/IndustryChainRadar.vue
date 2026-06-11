@@ -22,6 +22,11 @@
       @select-chain="selectChain"
       @search="runSearch"
     />
+    <p v-if="usingFallback" class="state-message">
+      当前展示示例数据 / 非真实证据，仅用于开发联调。
+    </p>
+    <ErrorState v-if="chainError && chainError !== '暂无本地证据'" :message="chainError" :retryable="false" />
+    <EmptyState v-else-if="chainError" title="产业链暂无数据" description="暂无本地证据" />
 
     <div class="main-layout">
       <section class="canvas-area">
@@ -86,14 +91,17 @@ import IndustryNodePanel from '@/components/industry/IndustryNodePanel.vue';
 import IndustryStockTable from '@/components/industry/IndustryStockTable.vue';
 import IndustryToolbar from '@/components/industry/IndustryToolbar.vue';
 import DataSourceStatusBar from '@/components/industry/DataSourceStatusBar.vue';
+import EmptyState from '@/components/common/EmptyState.vue';
+import ErrorState from '@/components/common/ErrorState.vue';
 
 const DEFAULT_CHAIN_ID = 'optical_communication';
+const fallbackAllowed = import.meta.env.DEV || import.meta.env.VITE_USE_MOCK === 'true';
 const DEFAULT_NODE_IDS = ['optical_module', 'optical_communication'];
 const EMPTY_STOCK_MESSAGE = '自动调度尚未生成产业链数据，请等待后端启动后的自动更新';
 
 const chains = ref<ChainInfo[]>([]);
 const currentChainId = ref(DEFAULT_CHAIN_ID);
-const currentChain = ref<ChainInfo | null>(FALLBACK_CHAIN);
+const currentChain = ref<ChainInfo | null>(fallbackAllowed ? FALLBACK_CHAIN : null);
 const graphData = ref<ChainGraphData | null>(null);
 const summary = ref<ChainGraphData['summary'] | null>(null);
 const selectedNode = ref<ChainNode | null>(null);
@@ -106,6 +114,7 @@ const stockLoading = ref(false);
 const searchKeyword = ref('');
 const searchMessage = ref('');
 const usingFallback = ref(false);
+const chainError = ref('');
 
 const dataSourceStatus = ref<DataSourceStatus | null>(null);
 const statusLoading = ref(false);
@@ -126,11 +135,13 @@ async function loadChains() {
     chains.value = ensureFallbackChain(remoteChains);
   } catch (err) {
     console.error('加载产业链列表失败:', err);
-    chains.value = [FALLBACK_CHAIN];
+    chains.value = fallbackAllowed ? [FALLBACK_CHAIN] : [];
+    chainError.value = '产业链列表加载失败';
   }
 }
 
 function ensureFallbackChain(remoteChains: ChainInfo[]): ChainInfo[] {
+  if (!fallbackAllowed) return remoteChains;
   if (!remoteChains.length) return [FALLBACK_CHAIN];
   if (remoteChains.some((item) => item.chain_id === DEFAULT_CHAIN_ID)) return remoteChains;
   return [FALLBACK_CHAIN, ...remoteChains];
@@ -159,6 +170,7 @@ async function selectChain(chainId: string) {
   stockMessage.value = EMPTY_STOCK_MESSAGE;
   searchMessage.value = '';
   usingFallback.value = false;
+  chainError.value = '';
 
   loading.value = true;
   try {
@@ -169,12 +181,13 @@ async function selectChain(chainId: string) {
     applyGraph(data, false);
   } catch (err) {
     console.error('加载产业链图谱失败:', err);
-    if (currentChainId.value === DEFAULT_CHAIN_ID) {
+    if (fallbackAllowed && currentChainId.value === DEFAULT_CHAIN_ID) {
       currentChain.value = FALLBACK_CHAIN;
       applyGraph(FALLBACK_GRAPH, true);
     } else {
       graphData.value = null;
       summary.value = null;
+      chainError.value = '暂无本地证据';
     }
   } finally {
     loading.value = false;
@@ -278,6 +291,17 @@ function runSearch() {
   searchMessage.value = '未在当前产业链中找到相关节点';
 }
 </script>
+
+<style scoped>
+.state-message {
+  margin: 12px 20px 0;
+  padding: 12px 16px;
+  border: 1px solid #f0d8aa;
+  border-radius: 10px;
+  background: #fff8ea;
+  color: #8a5a00;
+}
+</style>
 
 <style scoped>
 .industry-chain-page {

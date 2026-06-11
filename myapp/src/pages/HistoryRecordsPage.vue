@@ -2,6 +2,11 @@
   <div>
     <div class="bg-[#151925] rounded-lg p-6 border border-slate-800">
       <h2 class="text-xl font-semibold text-white mb-4">历史记录</h2>
+      <EmptyState
+        v-if="historySessions.length === 0"
+        title="暂无历史记录"
+        description="尚未完成可保存的回测"
+      />
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead class="bg-slate-800/50">
@@ -61,6 +66,7 @@ import { useRouter } from 'vue-router';
 import { useHistoryStore } from '../store/historyStore';
 import { useStrategyStore } from '../store/strategyStore';
 import type { StrategySession } from '../types/backtest';
+import EmptyState from '../components/common/EmptyState.vue';
 
 const router = useRouter();
 const historyStore = useHistoryStore();

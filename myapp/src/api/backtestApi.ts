@@ -211,7 +211,7 @@ export async function getStrategyDetail(versionId: string): Promise<BacktestResu
  */
 export async function getParameterSearchResults(versionId: string): Promise<ParameterSearchResult[]> {
   try {
-    const response = await fetch(`${API_BASE_URL}/strategy/${versionId}/parameters`);
+    const response = await fetch(`${API_BASE_URL}/strategies/${encodeURIComponent(versionId)}/params`);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }

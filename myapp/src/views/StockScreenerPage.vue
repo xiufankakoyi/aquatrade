@@ -19,6 +19,13 @@
     </div>
 
     <div class="page-content">
+      <ErrorState v-if="store.error" :message="store.error" @retry="onExecuteFilter" />
+      <LoadingState v-else-if="store.loading && !store.filterResult" title="正在加载筛选数据" />
+      <EmptyState
+        v-else-if="store.filterResult && store.allRecords.length === 0"
+        title="筛选结果为空"
+        description="当前日期范围或筛选条件暂无数据"
+      />
       <div class="screener-layout">
         <!-- 左侧筛选面板 - 自适应宽度 -->
         <div class="filter-panel-wrapper">
@@ -142,6 +149,9 @@ import { message } from 'ant-design-vue'
 import { useScreenerStore } from '@/store/screenerStore'
 import { FilterPanel, ResultTable } from '@/components/screener'
 import StockKlineModal from '@/components/screener/StockKlineModal.vue'
+import LoadingState from '@/components/common/LoadingState.vue'
+import EmptyState from '@/components/common/EmptyState.vue'
+import ErrorState from '@/components/common/ErrorState.vue'
 import type { FilterCondition } from '@/api/screener'
 
 const router = useRouter()
