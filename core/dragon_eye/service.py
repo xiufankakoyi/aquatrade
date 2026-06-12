@@ -8,14 +8,19 @@ import json
 import threading
 import queue
 import os
+import pandas as pd
 from pathlib import Path
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
 from datetime import datetime
 
 from config.config import Config
 from config.logger import get_logger
 from core.dragon_eye.manager import DragonEyeManager
 from core.dragon_eye.job_manager import job_manager, JobStatus
+from core.dragon_eye.sentiment_analyzer import (
+    analyze_sentiment,
+    score_to_dict,
+)
 
 logger = get_logger(__name__)
 
@@ -421,41 +426,70 @@ class DragonEyeService:
     def _persist_to_db(self, target_date: str, output_dir: Path):
         """
         将清洗后的数据持久化到 ArcticDB
-        
+
         从原始 JSON 数据文件中读取完整信息，包括涨停数量等
-        
+
         Args:
             target_date: 目标日期 (YYYY-MM-DD)
             output_dir: 清洗后数据目录
         """
-        import pandas as pd
-        
         data_lake_dir = self.data_lake_dir / target_date
-        
+
         # 1. 写入市场情绪数据（从原始 JSON 获取完整信息）
         sentiment_path = data_lake_dir / 'market_sentiment_cycle.json'
         if sentiment_path.exists():
             with open(sentiment_path, 'r', encoding='utf-8') as f:
                 sentiment_json = json.load(f)
-            
+
             data_list = sentiment_json.get('data', [])
             current_data = None
             for item in data_list:
                 if item.get('date') == target_date:
                     current_data = item
                     break
-            
+
             if current_data:
                 emotion = current_data.get('emotionMetrics', {})
                 ladder = current_data.get('ladder', {})
                 themes = current_data.get('themes', [])[:2]
-                
+
                 # 计算涨停总数（所有连板层级的股票数量之和）
                 limit_up_count = sum(len(stocks) for stocks in ladder.values()) if ladder else 0
-                
+
                 # 最高连板高度
                 max_height = max(map(int, ladder.keys())) if ladder else 0
-                
+
+                # 找前一交易日数据（用于周期阶段判断）
+                previous_data = None
+                prev2_data = None
+                try:
+                    target_ts = datetime.strptime(target_date, '%Y-%m-%d')
+                    sorted_data = sorted(
+                        [d for d in data_list if d.get('date')],
+                        key=lambda x: x['date'],
+                        reverse=True,
+                    )
+                    for d in sorted_data:
+                        if d.get('date') == target_date:
+                            continue
+                        try:
+                            d_ts = datetime.strptime(d['date'], '%Y-%m-%d')
+                            if d_ts < target_ts:
+                                if previous_data is None:
+                                    previous_data = d
+                                elif prev2_data is None:
+                                    prev2_data = d
+                                    break
+                        except (TypeError, ValueError):
+                            continue
+                except Exception:
+                    previous_data = None
+                    prev2_data = None
+
+                # 调用情绪分析器，补全周期/风险/接力/综合分
+                sentiment_score = analyze_sentiment(current_data, previous_data, prev2_data)
+                rates = emotion.get('promotionRates', {}) or {}
+
                 df_sentiment = pd.DataFrame([{
                     'trade_date': target_date,
                     'broken_ratio': emotion.get('brokenRatio', 0),
@@ -466,10 +500,26 @@ class DragonEyeService:
                     'main_themes': ','.join([t.get('name', '') for t in themes]),
                     'rise_count': current_data.get('marketSentiment', {}).get('rise', 0),
                     'fall_count': current_data.get('marketSentiment', {}).get('fall', 0),
+                    # 以下为情绪分析器扩展字段
+                    'cycle_phase': sentiment_score.cycle_phase,
+                    'cycle_reasons': '|'.join(sentiment_score.cycle_reasons),
+                    'risk_level': sentiment_score.risk_level,
+                    'promotion_1to2': sentiment_score.promotion_1to2,
+                    'promotion_2to3': sentiment_score.promotion_2to3,
+                    'promotion_high': sentiment_score.promotion_high,
+                    'theme_continuity': sentiment_score.theme_continuity,
+                    'theme_flow': sentiment_score.theme_flow,
+                    'sentiment_score': sentiment_score.total_score,
+                    'summary': sentiment_score.summary,
                 }])
-                
+
                 self.manager.upsert_sentiment(df_sentiment)
-                logger.info(f"Persisted market sentiment for {target_date}")
+                logger.info(
+                    f"Persisted market sentiment for {target_date}: "
+                    f"phase={sentiment_score.cycle_phase}, "
+                    f"risk={sentiment_score.risk_level}, "
+                    f"score={sentiment_score.total_score}"
+                )
         
         # 2. 写入龙头个股数据（从原始 JSON 获取完整信息）
         limit_up_path = data_lake_dir / 'limit_up_filter.json'
@@ -536,6 +586,127 @@ class DragonEyeService:
         if brief_path.exists():
             return brief_path.read_text(encoding='utf-8')
         return ""
+
+    def get_sentiment_score(self, target_date: str) -> Dict[str, Any]:
+        """
+        获取指定日期的综合情绪评分（结构化数据）
+
+        从 DB 读取已入库的市场情绪数据，并补全 cycle_phase / risk_level / summary 等扩展字段。
+        若该日尚未入库，则尝试从原始 JSON 实时分析，避免前端空白。
+
+        Args:
+            target_date: 目标日期 (YYYY-MM-DD)
+
+        Returns:
+            Dict: 综合情绪数据
+        """
+        default_empty: Dict[str, Any] = {
+            "trade_date": target_date,
+            "has_data": False,
+            "summary": "暂无数据",
+            "cycle_phase": "震荡期",
+            "cycle_reasons": [],
+            "risk_level": "风险可控",
+            "sentiment_score": 50.0,
+            "promotion_1to2": 0.0,
+            "promotion_2to3": 0.0,
+            "promotion_high": 0.0,
+            "theme_continuity": 0.0,
+            "theme_flow": "无主线",
+            "limit_up_count": 0,
+            "limit_down_count": 0,
+            "broken_ratio": 0.0,
+            "max_height": 0,
+            "rise_count": 0,
+            "fall_count": 0,
+            "main_themes": "",
+        }
+
+        try:
+            df = self.manager.get_market_sentiment(target_date, target_date)
+        except Exception as e:
+            logger.error(f"get_market_sentiment failed for {target_date}: {e}")
+            df = None
+
+        if df is None or df.is_empty():
+            return default_empty
+
+        # polars DataFrame → dict
+        try:
+            row = df.to_dicts()[0]
+        except Exception:
+            return default_empty
+
+        # 拆分 cycle_reasons（用 | 分隔存储）
+        reasons_raw = row.get("cycle_reasons") or ""
+        reasons = [r for r in str(reasons_raw).split("|") if r] if reasons_raw else []
+
+        return {
+            "trade_date": target_date,
+            "has_data": True,
+            "summary": row.get("summary") or "震荡",
+            "cycle_phase": row.get("cycle_phase") or "震荡期",
+            "cycle_reasons": reasons,
+            "risk_level": row.get("risk_level") or "风险可控",
+            "sentiment_score": float(row.get("sentiment_score") or 50.0),
+            "promotion_1to2": float(row.get("promotion_1to2") or 0.0),
+            "promotion_2to3": float(row.get("promotion_2to3") or 0.0),
+            "promotion_high": float(row.get("promotion_high") or 0.0),
+            "theme_continuity": float(row.get("theme_continuity") or 0.0),
+            "theme_flow": row.get("theme_flow") or "无主线",
+            "limit_up_count": int(row.get("limit_up_count") or 0),
+            "limit_down_count": int(row.get("limit_down_count") or 0),
+            "broken_ratio": float(row.get("broken_ratio") or 0.0),
+            "max_height": int(row.get("max_height") or 0),
+            "rise_count": int(row.get("rise_count") or 0),
+            "fall_count": int(row.get("fall_count") or 0),
+            "main_themes": row.get("main_themes") or "",
+        }
+
+    def get_sentiment_score_history(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        获取一段时间内的综合情绪评分历史
+
+        Args:
+            start_date: 开始日期 (YYYY-MM-DD)
+            end_date: 结束日期 (YYYY-MM-DD)
+
+        Returns:
+            List[Dict]: 每日情绪数据列表
+        """
+        try:
+            df = self.manager.get_market_sentiment(start_date, end_date)
+        except Exception as e:
+            logger.error(f"get_market_sentiment history failed: {e}")
+            return []
+
+        if df is None or df.is_empty():
+            return []
+
+        try:
+            rows = df.to_dicts()
+        except Exception:
+            return []
+
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            reasons_raw = row.get("cycle_reasons") or ""
+            reasons = [r for r in str(reasons_raw).split("|") if r] if reasons_raw else []
+            results.append({
+                "trade_date": str(row.get("trade_date")),
+                "sentiment_score": float(row.get("sentiment_score") or 50.0),
+                "cycle_phase": row.get("cycle_phase") or "震荡期",
+                "risk_level": row.get("risk_level") or "风险可控",
+                "summary": row.get("summary") or "震荡",
+                "theme_flow": row.get("theme_flow") or "无主线",
+                "limit_up_count": int(row.get("limit_up_count") or 0),
+                "limit_down_count": int(row.get("limit_down_count") or 0),
+                "broken_ratio": float(row.get("broken_ratio") or 0.0),
+                "max_height": int(row.get("max_height") or 0),
+                "promotion_1to2": float(row.get("promotion_1to2") or 0.0),
+                "cycle_reasons": reasons,
+            })
+        return results
 
     def send_to_feishu(self, target_date: str) -> tuple[bool, str]:
         """

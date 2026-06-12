@@ -167,6 +167,9 @@ export function useStreamingBacktest() {
             avgHoldingDays: event.data.avgHoldingDays ?? 0,
             calmarRatio: event.data.calmarRatio ?? 0,
             benchmarkReturn: event.data.benchmarkReturn ?? 0,
+            rejectedOrders: event.data.rejectedOrders,
+            slippageCost: event.data.slippageCost,
+            filterStats: event.data.filterStats,
           };
           backtestStore.setMetrics(metrics);
         }
@@ -230,6 +233,9 @@ export function useStreamingBacktest() {
               avgHoldingDays: event.data.avgHoldingDays ?? 0,
               calmarRatio: event.data.calmarRatio ?? 0,
               benchmarkReturn: event.data.benchmarkReturn ?? 0,
+              rejectedOrders: event.data.rejectedOrders,
+              slippageCost: event.data.slippageCost,
+              filterStats: event.data.filterStats,
             };
             backtestStore.setMetrics(metrics);
           }

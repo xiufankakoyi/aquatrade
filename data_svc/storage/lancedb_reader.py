@@ -210,6 +210,7 @@ class LanceDBDataReader:
         symbols: Union[str, List[str], None],
         start_date: Optional[str],
         end_date: Optional[str],
+        symbol_field: str = "stock_code",
     ) -> List[str]:
         filters = []
         if start_date:
@@ -218,12 +219,12 @@ class LanceDBDataReader:
             filters.append(f"trade_date <= date '{end_date}'")
         if symbols is not None:
             if isinstance(symbols, str):
-                filters.append(f"stock_code = '{symbols}'")
+                filters.append(f"{symbol_field} = '{symbols}'")
             elif len(symbols) == 1:
-                filters.append(f"stock_code = '{symbols[0]}'")
+                filters.append(f"{symbol_field} = '{symbols[0]}'")
             elif len(symbols) <= 100:
                 quoted = [f"'{s}'" for s in symbols]
-                filters.append(f"stock_code IN ({', '.join(quoted)})")
+                filters.append(f"{symbol_field} IN ({', '.join(quoted)})")
         return filters
 
     def _apply_filters_polars(self, df: pl.DataFrame, filters: List[str]) -> pl.DataFrame:
@@ -241,6 +242,13 @@ class LanceDBDataReader:
                 codes_str = filter_text.split("(")[1].rstrip(")")
                 codes = [c.strip().strip("'") for c in codes_str.split(",")]
                 df = df.filter(pl.col("stock_code").is_in(codes))
+            elif "symbol =" in filter_text:
+                code = filter_text.split("'")[1]
+                df = df.filter(pl.col("symbol") == code)
+            elif "symbol IN" in filter_text:
+                codes_str = filter_text.split("(")[1].rstrip(")")
+                codes = [c.strip().strip("'") for c in codes_str.split(",")]
+                df = df.filter(pl.col("symbol").is_in(codes))
         return df
 
     def read(
@@ -286,7 +294,14 @@ class LanceDBDataReader:
 
         t0 = time.perf_counter()
         try:
-            filters = self._build_filters(symbols, start_date, end_date)
+            schema_columns = self._get_schema_columns(table_name)
+            symbol_field = "symbol" if "symbol" in schema_columns else "stock_code"
+            filters = self._build_filters(
+                symbols,
+                start_date,
+                end_date,
+                symbol_field=symbol_field,
+            )
             scanner_kwargs: Dict[str, Any] = {}
             if fields:
                 scanner_kwargs["columns"] = fields

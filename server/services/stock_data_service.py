@@ -119,31 +119,35 @@ class StockDataService:
         Returns:
             包含 date 和 close 字段的字典列表
         """
-        if benchmark_code not in self.INDEX_MAPPING:
+        normalized_code = str(benchmark_code or '').strip().upper()
+        if normalized_code in self.INDEX_MAPPING:
+            ts_code = self.INDEX_MAPPING[normalized_code]
+        elif normalized_code in self.INDEX_MAPPING.values():
+            ts_code = normalized_code
+        else:
             self._logger.warning(f"不支持的基准代码: {benchmark_code}")
             return []
-        
-        ts_code = self.INDEX_MAPPING[benchmark_code]
-        
+
         try:
-            from data_svc.storage.unified_reader import LanceDBDataReader
-            
-            reader = LanceDBDataReader()
-            df = reader.read(
-                symbols=ts_code,
-                start_date=start_date,
-                end_date=end_date,
-                fields=['trade_date', 'close']
+            df = self.lancedb_reader.read_table(
+                "index_daily",
+                ts_code,
+                start_date,
+                end_date,
+                fields=["trade_date", "close"],
             )
-            
+
             if df.is_empty():
                 self._logger.warning(f"LanceDB 中未找到基准数据: {ts_code}, {start_date} ~ {end_date}")
                 return []
             
             df = df.select([
-                pl.col('trade_date').alias('date'),
-                pl.col('close')
-            ])
+                pl.col("trade_date")
+                .cast(pl.Date, strict=False)
+                .dt.strftime("%Y-%m-%d")
+                .alias("date"),
+                pl.col("close").cast(pl.Float64),
+            ]).sort("date")
             
             df = normalize_nulls(df)
             df = safe_round(df, ['close'])

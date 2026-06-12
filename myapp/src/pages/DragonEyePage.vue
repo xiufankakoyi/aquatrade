@@ -69,6 +69,28 @@
       ></div>
     </div>
     <ErrorState v-if="pageError" class="m-3" :message="pageError" :retryable="false" />
+    <section class="evidence-panel">
+      <div class="evidence-heading">
+        <div>
+          <h2>本地证据完整度</h2>
+          <p>缺失组件不会按 0 或完整结果展示。</p>
+        </div>
+        <span class="evidence-mode">{{ evidenceMode }}</span>
+      </div>
+      <LoadingState v-if="evidenceLoading" title="正在读取 DragonEye 证据" />
+      <ErrorState v-else-if="evidenceError" :message="evidenceError" @retry="fetchEvidenceStatus" />
+      <EmptyState v-else-if="!evidenceStatus" title="暂无证据完整度" description="暂无本地证据" />
+      <dl v-else class="evidence-grid">
+        <div><dt>has_ladder</dt><dd>{{ formatAvailability(evidenceStatus.has_ladder) }}</dd></div>
+        <div><dt>has_limit_up</dt><dd>{{ formatAvailability(evidenceStatus.has_limit_up) }}</dd></div>
+        <div><dt>has_sentiment</dt><dd>{{ formatAvailability(evidenceStatus.has_sentiment) }}</dd></div>
+        <div><dt>has_theme_flow</dt><dd>{{ formatAvailability(evidenceStatus.has_theme_flow) }}</dd></div>
+        <div><dt>证据日期</dt><dd>{{ evidenceStatus.evidence_date || 'unavailable' }}</dd></div>
+        <div><dt>完整度分数</dt><dd>{{ formatScore(evidenceStatus.completeness_score) }}</dd></div>
+        <div class="wide"><dt>缺失组件</dt><dd>{{ formatMissingParts(evidenceStatus.missing_parts) }}</dd></div>
+        <div class="wide"><dt>状态</dt><dd>{{ evidenceMode }}</dd></div>
+      </dl>
+    </section>
 
     <!-- Main Content - Two Column Layout -->
     <div class="main-grid p-3">
@@ -79,13 +101,13 @@
           <div class="bg-[#111] rounded-lg p-3 flex items-center">
             <div class="flex flex-col gap-0.5">
               <span class="text-[10px] text-slate-500 uppercase tracking-wider">涨停家数</span>
-              <span class="text-lg font-semibold font-mono" :class="metrics.limitUp >= 50 ? 'text-[#00d084]' : 'text-slate-300'">{{ metrics.limitUp }}</span>
+              <span class="text-lg font-semibold font-mono" :class="(metrics.limitUp ?? 0) >= 50 ? 'text-[#00d084]' : 'text-slate-300'">{{ metrics.limitUp ?? 'unavailable' }}</span>
             </div>
           </div>
           <div class="bg-[#111] rounded-lg p-3 flex items-center">
             <div class="flex flex-col gap-0.5">
               <span class="text-[10px] text-slate-500 uppercase tracking-wider">跌停家数</span>
-              <span class="text-lg font-semibold font-mono" :class="metrics.limitDown > 10 ? 'text-[#ff4757]' : 'text-slate-300'">{{ metrics.limitDown }}</span>
+              <span class="text-lg font-semibold font-mono" :class="(metrics.limitDown ?? 0) > 10 ? 'text-[#ff4757]' : 'text-slate-300'">{{ metrics.limitDown ?? 'unavailable' }}</span>
             </div>
           </div>
           <div class="bg-[#111] rounded-lg p-3 flex items-center">
@@ -142,8 +164,8 @@
                       {{ stock.continue_num }}板
                     </span>
                   </td>
-                  <td class="px-3 py-2 text-right font-mono text-slate-300">{{ (stock.order_amount / 100000000).toFixed(2) }}亿</td>
-                  <td class="px-3 py-2 text-right font-mono text-slate-300">{{ stock.turnover_rate.toFixed(2) }}%</td>
+                  <td class="px-3 py-2 text-right font-mono text-slate-300">{{ formatYi(stock.order_amount) }}</td>
+                  <td class="px-3 py-2 text-right font-mono text-slate-300">{{ formatPercentValue(stock.turnover_rate) }}</td>
                   <td class="px-3 py-2 text-center">
                     <i v-if="stock.is_regulation" class="fas fa-exclamation-triangle text-[#ff4757] text-xs" title="处于监管监控"></i>
                     <span v-else class="text-slate-600">-</span>
@@ -202,7 +224,7 @@
               </div>
               <div class="bg-[#0a0a0a] rounded p-2 text-center">
                 <div class="text-[10px] text-slate-500 mb-0.5">涨停家数</div>
-                <div class="text-xs font-medium text-[#00d084]">{{ metrics.limitUp }}</div>
+                <div class="text-xs font-medium text-[#00d084]">{{ metrics.limitUp ?? 'unavailable' }}</div>
               </div>
               <div class="bg-[#0a0a0a] rounded p-2 text-center">
                 <div class="text-[10px] text-slate-500 mb-0.5">最高连板</div>
@@ -219,11 +241,11 @@
               <div class="flex flex-wrap gap-1.5">
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-[#00d084]/10 text-[#00d084]">
                   <i class="fas fa-arrow-up text-[8px]"></i>
-                  涨停{{ metrics.limitUp }}家
+                  涨停{{ metrics.limitUp ?? 'unavailable' }}家
                 </span>
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-[#ff4757]/10 text-[#ff4757]">
                   <i class="fas fa-arrow-down text-[8px]"></i>
-                  跌停{{ metrics.limitDown }}家
+                  跌停{{ metrics.limitDown ?? 'unavailable' }}家
                 </span>
                 <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] bg-[#ffa502]/10 text-[#ffa502]">
                   <i class="fas fa-layer-group text-[8px]"></i>
@@ -350,20 +372,7 @@
         <div class="bg-[#111] rounded-lg h-[140px] flex flex-col">
           <div class="px-3 py-2 flex items-center justify-between border-b border-[#1a1a1a]">
             <span class="text-xs font-medium text-white">涨停强度矩阵</span>
-            <div class="flex items-center gap-2">
-              <span class="flex items-center gap-1 text-[10px] text-slate-400">
-                <span class="w-1.5 h-1.5 rounded-full" style="background: #00D2FF"></span>
-                AI
-              </span>
-              <span class="flex items-center gap-1 text-[10px] text-slate-400">
-                <span class="w-1.5 h-1.5 rounded-full" style="background: #00FF88"></span>
-                新能源
-              </span>
-              <span class="flex items-center gap-1 text-[10px] text-slate-400">
-                <span class="w-1.5 h-1.5 rounded-full" style="background: #FF6B35"></span>
-                半导体
-              </span>
-            </div>
+            <span class="text-[10px] text-slate-500">来源：本地结构化证据</span>
           </div>
           <div class="flex-1 min-h-0">
             <BubbleMatrixChart
@@ -409,6 +418,8 @@ import { ref, computed, onMounted, watch, onUnmounted, nextTick } from 'vue';
 import * as echarts from 'echarts';
 import axios from '../api/index';
 import ErrorState from '../components/common/ErrorState.vue';
+import LoadingState from '../components/common/LoadingState.vue';
+import EmptyState from '../components/common/EmptyState.vue';
 
 import LimitUpTrendChart from '../components/charts/LimitUpTrendChart.vue';
 import BubbleMatrixChart from '../components/charts/BubbleMatrixChart.vue';
@@ -425,11 +436,15 @@ const dragonStocks = ref<any[]>([]);
 const aiBrief = ref('');
 const aiBriefCollapsed = ref(false);
 const activeTheme = ref<string | null>(null);
+const evidenceLoading = ref(false);
+const evidenceError = ref('');
+const evidenceStatus = ref<any>(null);
+const evidenceOnly = ref(false);
 
 // Metrics
 const metrics = ref({
-  limitUp: 0,
-  limitDown: 0,
+  limitUp: null as number | null,
+  limitDown: null as number | null,
   maxHeight: 'N/A',
   brokenRatio: 'N/A'
 });
@@ -460,20 +475,26 @@ const logContainer = ref<HTMLElement | null>(null);
 let eventSource: EventSource | null = null;
 
 // Hot themes
-const hotThemes = ref([
-  { name: '人工智能', icon: 'fa-arrow-up', color: '#00D2FF' },
-  { name: '新能源', icon: 'fa-bolt', color: '#00FF88' },
-  { name: '半导体', icon: 'fa-microchip', color: '#FF6B35' },
-  { name: '其他', icon: 'fa-car', color: '#787B86' }
-]);
+const hotThemes = ref<any[]>([]);
 
 // Computed
 const sentimentText = computed(() => {
-  const ratio = metrics.value.limitUp / (metrics.value.limitUp + metrics.value.limitDown);
+  const limitUp = metrics.value.limitUp;
+  const limitDown = metrics.value.limitDown;
+  if (limitUp == null || limitDown == null || limitUp + limitDown <= 0) return 'unavailable';
+  const ratio = limitUp / (limitUp + limitDown);
   if (ratio > 0.9) return '强势';
   if (ratio > 0.8) return '偏暖';
   if (ratio > 0.6) return '震荡';
   return '偏冷';
+});
+const evidenceMode = computed(() => {
+  if (!evidenceStatus.value) return 'unavailable';
+  const partial = evidenceStatus.value.partial_success || evidenceStatus.value.status === 'partial';
+  if (evidenceOnly.value && partial) return 'evidence_only / partial_success';
+  if (evidenceOnly.value) return 'evidence_only';
+  if (partial) return 'partial_success';
+  return 'complete';
 });
 
 const sentimentColor = computed(() => {
@@ -499,19 +520,59 @@ const fetchLatestDate = async () => {
     if (res.data && res.data.latest_date) {
       targetDate.value = res.data.latest_date;
     } else {
-      // 如果 API 返回空，使用今天
-      targetDate.value = new Date().toISOString().split('T')[0];
+      targetDate.value = '';
     }
   } catch (e) {
     pageError.value = e instanceof Error ? e.message : '最新日期加载失败';
     console.error('Fetch latest date failed:', e);
-    // 出错时使用今天
-    targetDate.value = new Date().toISOString().split('T')[0];
+    targetDate.value = '';
+  }
+};
+
+const fetchEvidenceStatus = async () => {
+  evidenceLoading.value = true;
+  evidenceError.value = '';
+  try {
+    const res = await axios.get('/api/quant-flow/latest');
+    const report = res.data?.data || res.data;
+    const stage = report?.stages?.find((item: any) => item.stage === 'dragon_eye_summary');
+    const stageData = stage?.data;
+    if (!stageData) {
+      evidenceStatus.value = null;
+      evidenceOnly.value = false;
+      return;
+    }
+    const partial = stageData.latest_partial_status;
+    evidenceStatus.value = partial?.evidence_date === report.global_latest_trade_date
+      ? { ...partial, partial_success: true }
+      : stageData;
+    evidenceOnly.value = report?.final_brief?.data?.research_output_level === 'evidence_only';
+    const selectedCurrentEvidence = evidenceStatus.value === stageData
+      && stageData.evidence_date === report.global_latest_trade_date;
+    const themes = selectedCurrentEvidence
+      ? stageData.evidence?.sector_heat_stats?.data
+      : [];
+    hotThemes.value = Array.isArray(themes)
+      ? themes.slice(0, 8).map((item: any) => ({
+          name: item.name,
+          icon: 'fa-circle',
+          color: '#787B86',
+        }))
+      : [];
+  } catch (error) {
+    evidenceStatus.value = null;
+    evidenceError.value = error instanceof Error ? error.message : '证据完整度加载失败';
+  } finally {
+    evidenceLoading.value = false;
   }
 };
 
 // API Functions
 const fetchStocks = async () => {
+  if (!targetDate.value) {
+    dragonStocks.value = [];
+    return;
+  }
   try {
     const res = await axios.get('/api/dragon/stocks', {
       params: { start_date: targetDate.value, end_date: targetDate.value }
@@ -530,6 +591,10 @@ const fetchStocks = async () => {
 };
 
 const fetchBrief = async () => {
+  if (!targetDate.value) {
+    aiBrief.value = '';
+    return;
+  }
   isLoadingBrief.value = true;
   try {
     const res = await axios.get('/api/dragon/brief', { params: { date: targetDate.value } });
@@ -766,6 +831,11 @@ const formatTime = (timestamp: string) => {
   if (!timestamp) return '';
   return new Date(timestamp).toLocaleTimeString('zh-CN', { hour12: false });
 };
+const formatAvailability = (value: unknown) => typeof value === 'boolean' ? (value ? '是' : '否') : 'unavailable';
+const formatScore = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value.toFixed(4) : 'unavailable';
+const formatMissingParts = (value: unknown) => Array.isArray(value) ? (value.length ? value.join('、') : '无') : 'unavailable';
+const formatYi = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? `${(value / 1e8).toFixed(2)}亿` : 'unavailable';
+const formatPercentValue = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(2)}%` : 'unavailable';
 
 const confirmAndPush = async () => {
   isPushing.value = true;
@@ -787,13 +857,15 @@ onMounted(async () => {
   }
   
   // 先获取数据库最新日期
-  await fetchLatestDate();
+  await Promise.all([fetchLatestDate(), fetchEvidenceStatus()]);
   
   // Init date range
-  const today = new Date();
-  const startDate = new Date(today.getTime() - 15 * 24 * 60 * 60 * 1000);
-  chartStartDate.value = startDate.toISOString().split('T')[0];
-  chartEndDate.value = today.toISOString().split('T')[0];
+  if (targetDate.value) {
+    const endDate = new Date(targetDate.value);
+    const startDate = new Date(endDate.getTime() - 15 * 24 * 60 * 60 * 1000);
+    chartStartDate.value = startDate.toISOString().split('T')[0];
+    chartEndDate.value = targetDate.value;
+  }
   
   // Fetch data
   fetchStocks();
@@ -829,6 +901,74 @@ onUnmounted(() => {
   gap: 12px;
   flex: 1;
   min-height: 0;
+}
+
+.evidence-panel {
+  margin: 12px 12px 0;
+  padding: 12px;
+  border: 1px solid #242936;
+  border-radius: 8px;
+  color: #D1D4DC;
+  background: #111;
+}
+
+.evidence-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.evidence-heading h2,
+.evidence-heading p {
+  margin: 0;
+}
+
+.evidence-heading h2 {
+  font-size: 13px;
+}
+
+.evidence-heading p {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 10px;
+}
+
+.evidence-mode {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.12);
+  font-size: 10px;
+}
+
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.evidence-grid div {
+  padding: 8px;
+  border-radius: 6px;
+  background: #0a0a0a;
+}
+
+.evidence-grid .wide {
+  grid-column: span 2;
+}
+
+.evidence-grid dt {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.evidence-grid dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
 }
 
 .left-column,

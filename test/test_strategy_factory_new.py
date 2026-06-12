@@ -94,6 +94,39 @@ class TestStrategyFactoryRegistry:
         factory._register_strategy_instance(mock_strategy_class)
         
         assert len(factory.registry) == 0
+
+    def test_register_strategy_template_class_skipped(self):
+        """模板基类即使有名称也不能注册为可运行策略"""
+        from core.strategies.strategy_factory import StrategyFactory
+        from core.strategies.strategy_framework import StrategyBase
+
+        class TemplateStrategy(StrategyBase):
+            strategy_name = "模板策略"
+            strategy_template = True
+
+        factory = StrategyFactory()
+        factory._initialized = True
+        factory._register_strategy_instance(TemplateStrategy)
+
+        assert "模板策略" not in factory.registry
+
+    def test_register_concrete_template_subclass(self):
+        """模板子类声明具体名称后仍可正常注册"""
+        from core.strategies.strategy_factory import StrategyFactory
+        from core.strategies.strategy_framework import StrategyBase
+
+        class TemplateStrategy(StrategyBase):
+            strategy_template = True
+
+        class ConcreteStrategy(TemplateStrategy):
+            strategy_id = "concrete_strategy"
+            strategy_name = "具体策略"
+
+        factory = StrategyFactory()
+        factory._initialized = True
+        factory._register_strategy_instance(ConcreteStrategy)
+
+        assert factory.registry["concrete_strategy"] is ConcreteStrategy
     
     def test_register_duplicate_strategy(self):
         """测试重复注册策略"""

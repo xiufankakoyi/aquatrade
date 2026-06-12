@@ -2,8 +2,12 @@
 tushare==1.2.61
 flask==2.3.3
 flask-cors==4.0.0
+flask-socketio>=5.3.0
+python-dotenv>=1.0.0
 pandas>=2.2.0
 numpy>=1.26.0
+scipy>=1.12.0
+numba>=0.59.0
 efinance>=0.5.3
 akshare>=1.16.0
 baostock>=0.8.9
@@ -13,6 +17,8 @@ pyarrow>=15.0.0
 polars>=0.20.0
 msgpack>=1.0.0
 openpyxl>=3.1.0
+PyYAML>=6.0.0
+duckdb>=1.0.0
 
 # NLP
 jieba==0.42.1
@@ -20,9 +26,13 @@ snownlp==0.12.3
 
 # Database & Cache
 redis>=4.5.0
+lancedb==0.29.2
+pylance==3.0.0
 
 # Task Queue (Celery)
 celery[redis]>=5.3.0
+deap>=1.4.0
+optuna>=4.0.0
 
 # AI
 openai>=1.0.0
@@ -33,6 +43,7 @@ python-socketio>=5.0.0
 
 # Development
 watchdog>=4.0.0
+loguru>=0.7.0
 
 # Similarity matching
 dtaidistance>=2.3.0

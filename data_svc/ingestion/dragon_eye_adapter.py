@@ -537,8 +537,25 @@ class DragonEyeAdapter(CrawlerEtiquette):
 
         return result
 
+    REQUIRED_COMPONENTS = (
+        "ladder",
+        "limit_up",
+        "sentiment",
+        "theme_flow",
+    )
+
     def inspect_local_date(self, target_date: str) -> Dict[str, Any]:
-        """Inspect whether local JSON can produce leader and sentiment rows."""
+        """Inspect whether local JSON can produce leader and sentiment rows.
+
+        完整性字段:
+        - has_ladder:    梯队数据 (ladder_hierarchy_detail.json)
+        - has_limit_up:  涨停事实 (limit_up_filter.json)
+        - has_sentiment: 情绪周期 (market_sentiment_cycle.json)
+        - has_theme_flow:板块热度 (sector_heat_stats.json)
+        - evidence_date: 本次检查的交易日
+        - completeness_score: 0.0 ~ 1.0，四个组件中有多少个齐备
+        - missing_parts: 缺哪个组件的清单
+        """
 
         raw = self.load_json_data(target_date)
         limit_stocks = (
@@ -546,22 +563,40 @@ class DragonEyeAdapter(CrawlerEtiquette):
         )
         ladder_stocks = self._extract_limit_up_from_ladder(raw.get("ladder_detail", {}))
         sentiment_items = raw.get("sentiment", {}).get("data") or []
+        sector_data = raw.get("sector_heat_stats", {}) or {}
+        theme_payload = sector_data.get("data") if isinstance(sector_data, dict) else None
+        has_theme_flow = bool(theme_payload)
 
-        has_leader_data = bool(limit_stocks or ladder_stocks)
+        has_ladder = bool(limit_stocks or ladder_stocks)
+        has_limit_up = bool(limit_stocks)
         has_sentiment = bool(sentiment_items)
-        missing_components = []
-        if not has_leader_data:
-            missing_components.append("leader")
-        if not has_sentiment:
-            missing_components.append("sentiment")
+
+        flags = {
+            "ladder": has_ladder,
+            "limit_up": has_limit_up,
+            "sentiment": has_sentiment,
+            "theme_flow": has_theme_flow,
+        }
+        missing_components = [name for name, ok in flags.items() if not ok]
+        completeness_score = round(sum(1 for ok in flags.values() if ok) / len(flags), 2)
+        complete = has_ladder and has_sentiment
+
         return {
             "target_date": target_date,
-            "complete": has_leader_data and has_sentiment,
-            "has_leader_data": has_leader_data,
+            "evidence_date": target_date,
+            "complete": complete,
+            "has_ladder": has_ladder,
+            "has_limit_up": has_limit_up,
             "has_sentiment": has_sentiment,
+            "has_theme_flow": has_theme_flow,
+            "has_leader_data": has_ladder,
             "limit_up_count": len(limit_stocks),
             "ladder_stock_count": len(ladder_stocks),
+            "sentiment_item_count": len(sentiment_items),
             "missing_components": missing_components,
+            "missing_parts": missing_components,
+            "completeness_score": completeness_score,
+            "status": "complete" if complete else "partial",
         }
 
     def _extract_limit_up_from_ladder(self, ladder_detail: Dict[str, Any]) -> List[Dict[str, Any]]:

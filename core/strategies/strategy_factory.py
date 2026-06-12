@@ -248,6 +248,11 @@ class StrategyFactory:
         module_name = strategy_class.__module__
         class_name = strategy_class.__name__
 
+        # 模板类用于继承和代码生成，不能作为可执行策略展示。
+        # 只检查类自身，避免继承模板类的具体策略被一并过滤。
+        if strategy_class.__dict__.get("strategy_template", False):
+            return
+
         raw_id: Any = getattr(strategy_class, "strategy_id", None)
         raw_name: Any = getattr(strategy_class, "strategy_name", None)
 
@@ -311,6 +316,8 @@ class StrategyFactory:
         """创建策略实例（支持 strategy_id / strategy_name / 旧 ID / 配置化策略）。"""
         sid = self._resolve_identifier_to_id(strategy_identifier)
         if not sid:
+            if strategy_identifier == "AI策略基类":
+                raise ValueError("AI策略基类是代码模板，不能直接回测，请选择具体策略。")
             available = ", ".join(sorted(self.registry.keys()))
             raise ValueError(
                 f"未找到策略：'{strategy_identifier}'。\n可用策略 ID：{available}"

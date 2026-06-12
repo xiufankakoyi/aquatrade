@@ -22,6 +22,11 @@ export interface BacktestResult {
   equityCurve: Array<{ date: string; equity: number; benchmarkEquity?: number }>;
   monthlyReturns: MonthlyReturn[];
   trades: Trade[];
+  rejectedOrders?: Record<string, number>;
+  slippageCost?: number;
+  filterStats?: Record<string, number | boolean | string | null>;
+  startDate?: string;
+  endDate?: string;
   radarScores?: {
     excessReturn: number;
     riskConsistency: number;

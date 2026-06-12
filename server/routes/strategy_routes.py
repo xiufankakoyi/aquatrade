@@ -13,7 +13,7 @@ def get_strategies():
     """获取策略列表"""
     # 延迟导入避免循环依赖
     from server.app import _normalize_strategy_id
-    
+
     try:
         from core.strategies.strategy_factory import get_factory
         factory = get_factory()
@@ -64,7 +64,7 @@ def get_strategy_params(strategy_id: str):
     """获取指定策略的可优化参数列表"""
     # 延迟导入避免循环依赖
     from server.app import get_api, _normalize_strategy_id
-    
+
     try:
         resolved_id = unquote(strategy_id)
         try:
@@ -108,13 +108,13 @@ def create_strategy_profile(strategy_name: str):
         data = request.get_json() or {}
         profile_name = data.get('name', '')
         params = data.get('params', {})
-        
+
         if not profile_name:
             return json_response({"success": False, "error": "预设名称不能为空"}, status_code=400)
-        
+
         from core.profiles.profile_repository import create_profile as create_strategy_profile
         profile_id = create_strategy_profile(strategy_name, profile_name, params)
-        
+
         return json_response({"success": True, "data": {"id": profile_id}})
     except Exception as e:
         from config.logger import get_logger
@@ -146,24 +146,24 @@ def generate_strategy():
         data = request.get_json() or {}
         user_description = data.get('description', '').strip()
         strategy_name = data.get('name', 'AI策略').strip()
-        
+
         if not user_description:
             return json_response(
-                {"success": False, "error": "策略描述不能为空"}, 
+                {"success": False, "error": "策略描述不能为空"},
                 status_code=400
             )
-        
+
         if not strategy_name:
             strategy_name = "AI策略"
-        
+
         from server.services.strategy_generator import StrategyGenerator
         generator = StrategyGenerator()
-        
+
         filename = generator.create_strategy(
             user_description=user_description,
             strategy_name=strategy_name
         )
-        
+
         return json_response({
             "success": True,
             "data": {
@@ -171,13 +171,13 @@ def generate_strategy():
                 "message": f"策略已成功生成并保存为 {filename}"
             }
         })
-        
+
     except Exception as e:
         from config.logger import get_logger
         logger = get_logger(__name__)
         logger.error(f"生成策略失败: {e}", exc_info=True)
         return json_response(
-            {"success": False, "error": f"生成策略失败: {str(e)}"}, 
+            {"success": False, "error": f"生成策略失败: {str(e)}"},
             status_code=500
         )
 
@@ -186,7 +186,7 @@ def generate_strategy():
 def reload_strategies():
     """
     手动触发策略热重载
-    
+
     请求体:
         - strategy_id: 指定策略ID（可选）
         - file_path: 指定文件路径（可选）
@@ -197,11 +197,11 @@ def reload_strategies():
         strategy_id = data.get('strategy_id')
         file_path = data.get('file_path')
         refresh_all = data.get('refresh_all', False)
-        
+
         from core.strategies.hot_reload import StrategyLoader, get_watcher
-        
+
         watcher = get_watcher()
-        
+
         if strategy_id:
             StrategyLoader.reload_strategy(strategy_id)
             return json_response({
@@ -255,13 +255,13 @@ def reload_strategies():
                     "success": False,
                     "error": "重载失败"
                 }, status_code=500)
-                
+
     except Exception as e:
         from config.logger import get_logger
         logger = get_logger(__name__)
         logger.error(f"策略重载失败: {e}", exc_info=True)
         return json_response(
-            {"success": False, "error": f"策略重载失败: {str(e)}"}, 
+            {"success": False, "error": f"策略重载失败: {str(e)}"},
             status_code=500
         )
 
@@ -271,14 +271,14 @@ def get_discovered_strategies():
     """获取已发现的策略列表（来自热重载模块）"""
     try:
         from core.strategies.hot_reload import StrategyLoader
-        
+
         strategies = StrategyLoader.discover_strategies()
-        
+
         result = [
             {"id": sid, "module_path": mpath}
             for sid, mpath in strategies.items()
         ]
-        
+
         return json_response({
             "success": True,
             "data": {
@@ -286,13 +286,13 @@ def get_discovered_strategies():
                 "count": len(result)
             }
         })
-        
+
     except Exception as e:
         from config.logger import get_logger
         logger = get_logger(__name__)
         logger.error(f"获取已发现策略失败: {e}", exc_info=True)
         return json_response(
-            {"success": False, "error": str(e)}, 
+            {"success": False, "error": str(e)},
             status_code=500
         )
 
@@ -301,7 +301,7 @@ def get_discovered_strategies():
 def save_strategy():
     """
     保存策略代码到文件
-    
+
     请求体:
         - name: 策略名称（必需）
         - description: 策略描述（可选）
@@ -314,35 +314,35 @@ def save_strategy():
         description = data.get('description', '').strip()
         code = data.get('code', '').strip()
         is_temp = data.get('temp', False)
-        
+
         if not strategy_name:
             return json_response(
-                {"success": False, "error": "策略名称不能为空"}, 
+                {"success": False, "error": "策略名称不能为空"},
                 status_code=400
             )
-        
+
         if not code:
             return json_response(
-                {"success": False, "error": "策略代码不能为空"}, 
+                {"success": False, "error": "策略代码不能为空"},
                 status_code=400
             )
-        
+
         # 生成文件名（使用策略名称的拼音或英文）
         import re
         import os
-        
+
         # 将策略名称转换为有效的文件名
         # 移除特殊字符，替换空格为下划线
         safe_name = re.sub(r'[^\w\u4e00-\u9fff]', '_', strategy_name)
         safe_name = re.sub(r'_+', '_', safe_name).strip('_')
-        
+
         # 如果名称是中文，使用时间戳作为后缀
         if re.search(r'[\u4e00-\u9fff]', safe_name):
             import time
             safe_name = f"user_strategy_{int(time.time())}"
-        
+
         filename = f"{safe_name}.py"
-        
+
         # 如果是临时保存，使用临时目录
         if is_temp:
             import tempfile
@@ -354,18 +354,18 @@ def save_strategy():
                 os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
                 'core', 'strategies', 'user'
             )
-            
+
             # 确保目录存在
             os.makedirs(user_strategies_dir, exist_ok=True)
             file_path = os.path.join(user_strategies_dir, filename)
-        
+
         # 写入文件
         with open(file_path, 'w', encoding='utf-8') as f:
             # 添加文件头注释
             if description:
                 f.write(f'"""\n{description}\n"""\n\n')
             f.write(code)
-        
+
         # 如果不是临时保存，触发策略重载
         if not is_temp:
             try:
@@ -375,7 +375,7 @@ def save_strategy():
                 from config.logger import get_logger
                 logger = get_logger(__name__)
                 logger.warning(f"策略保存后重载失败: {reload_error}")
-        
+
         return json_response({
             "success": True,
             "data": {
@@ -384,12 +384,104 @@ def save_strategy():
                 "message": f"策略已成功保存为 {filename}"
             }
         })
-        
+
     except Exception as e:
         from config.logger import get_logger
         logger = get_logger(__name__)
         logger.error(f"保存策略失败: {e}", exc_info=True)
         return json_response(
-            {"success": False, "error": f"保存策略失败: {str(e)}"}, 
+            {"success": False, "error": f"保存策略失败: {str(e)}"},
             status_code=500
+        )
+
+
+# ============================================================
+# 策略信号质量评估接口
+# ============================================================
+@strategy_bp.route('/strategies/<strategy_id>/quality', methods=['POST'])
+def evaluate_strategy_quality(strategy_id: str):
+    """
+    综合评估策略信号质量
+
+    Request Body (JSON):
+        - start_date: 开始日期 (YYYY-MM-DD, 必需)
+        - end_date: 结束日期 (YYYY-MM-DD, 必需)
+        - params: 策略参数字典（可选）
+        - param_grid: 参数稳健性测试网格（可选），形如 {"fast_window": [3, 5, 7]}
+        - n_windows: 长期有效性窗口数（默认 4）
+        - n_permutations: 过拟合检测扰动次数（默认 3）
+
+    Returns:
+        包含 total_score / grade / dimensions 等字段的综合质量报告
+    """
+    from config.logger import get_logger
+    logger = get_logger(__name__)
+
+    data = request.get_json(silent=True) or {}
+    start_date = data.get('start_date')
+    end_date = data.get('end_date')
+    if not start_date or not end_date:
+        return json_response(
+            {"success": False, "error": "start_date 和 end_date 必填"},
+            status_code=400,
+        )
+
+    user_params = data.get('params') or {}
+    param_grid = data.get('param_grid') or {}
+    n_windows = int(data.get('n_windows') or 4)
+    n_permutations = int(data.get('n_permutations') or 3)
+
+    try:
+        from core.strategies.strategy_factory import get_factory
+        from core.strategies.signal_quality import SignalQualityEvaluator
+        from core.backtest.unified_engine import UnifiedBacktestEngine
+
+        factory = get_factory()
+        strategy_cls = (
+            factory.get_strategy_by_id(strategy_id)
+            or factory.get_strategy_by_name(strategy_id)
+        )
+        if strategy_cls is None:
+            return json_response(
+                {"success": False, "error": f"未找到策略: {strategy_id}"},
+                status_code=404,
+            )
+
+        # 构造策略工厂
+        def strategy_factory(**extra):
+            merged = {**user_params, **extra}
+            return factory.create_strategy(strategy_id, True, **merged)
+
+        # 构造回测引擎：尝试用项目内的 data_query，缺失则容错为 None（依赖 SignalQualityEvaluator 的失败降级）
+        data_query = None
+        try:
+            from data_svc.database.optimized_data_query import OptimizedStockDataQuery
+            data_query = OptimizedStockDataQuery(warmup=False)
+        except Exception as inner_e:
+            logger.warning(f"无法初始化策略质量评估 data_query: {inner_e}")
+
+        engine = UnifiedBacktestEngine(data_query=data_query) if data_query is not None else None
+
+        evaluator = SignalQualityEvaluator(engine=engine) if engine is not None else None
+        if evaluator is None:
+            return json_response(
+                {"success": False, "error": "策略质量评估依赖回测引擎，但 data_query 不可用"},
+                status_code=500,
+            )
+
+        report = evaluator.evaluate_all(
+            strategy_factory=strategy_factory,
+            strategy_id=strategy_id,
+            start_date=start_date,
+            end_date=end_date,
+            param_grid=param_grid,
+            n_windows=n_windows,
+            n_permutations=n_permutations,
+        )
+        return json_response({"success": True, "data": report.to_dict()})
+    except Exception as e:
+        logger.error(f"evaluate_strategy_quality failed: {e}", exc_info=True)
+        return json_response(
+            {"success": False, "error": f"评估失败: {str(e)}"},
+            status_code=500,
         )

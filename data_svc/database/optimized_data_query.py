@@ -153,6 +153,10 @@ class OptimizedStockDataQuery:
         
         【Polars 实现】直接读取 Parquet 文件，比 DuckDB 快 10 倍
         """
+        if self._use_lancedb:
+            # LanceDB 是行情主源，按实际回测区间查询，避免扫描全表和使用过期快照。
+            return
+
         try:
             # 优先从 benchmark_daily.parquet 读取（数据量小）
             benchmark_path = Path(self.parquet_dir) / "benchmark_daily.parquet"
@@ -177,6 +181,42 @@ class OptimizedStockDataQuery:
             
         except Exception as e:
             self._logger.warning(f"[DB] 预加载交易日期异常: {e}")
+
+    def _get_lancedb_trading_dates(
+        self,
+        start_date: Optional[str],
+        end_date: Optional[str],
+    ) -> Optional[List[str]]:
+        """从 LanceDB 主行情表读取交易日；读取异常时返回 None 以允许降级。"""
+        try:
+            from data_svc.storage.lancedb_reader import get_lancedb_reader
+
+            df = get_lancedb_reader().read_table(
+                "daily_ohlcv",
+                None,
+                start_date,
+                end_date,
+                fields=["trade_date"],
+            )
+            if df.is_empty() or "trade_date" not in df.columns:
+                return []
+
+            return (
+                df.select(
+                    pl.col("trade_date")
+                    .cast(pl.Date, strict=False)
+                    .dt.strftime("%Y-%m-%d")
+                    .alias("trade_date")
+                )
+                .drop_nulls()
+                .unique()
+                .sort("trade_date")
+                .get_column("trade_date")
+                .to_list()
+            )
+        except Exception as e:
+            self._logger.warning(f"[DB] LanceDB 交易日期读取失败，降级到快照: {e}")
+            return None
     
     def _get_parquet_path(self, table_name: str) -> Optional[Path]:
         """
@@ -442,6 +482,14 @@ class OptimizedStockDataQuery:
         cache_key = f"trading_dates_{start_str}_{end_str}"
         if cache_key in self._cache:
             return self._cache[cache_key].copy()
+
+        if self._use_lancedb:
+            dates = self._get_lancedb_trading_dates(start_str, end_str)
+            if dates is not None:
+                if start_str is None and end_str is None:
+                    self._all_trading_dates_cache = dates.copy()
+                self._add_to_cache(cache_key, dates)
+                return dates
         
         # 优化：如果查询所有日期，使用预加载的缓存
         if start_str is None and end_str is None:

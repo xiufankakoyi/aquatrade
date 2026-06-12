@@ -130,7 +130,7 @@ class UnifiedDataQuery:
         if _stock_basic_polars_cache is not None:
             return _stock_basic_polars_cache.clone()
 
-        df = self._read_polars(None, "1900-01-01", "2100-12-31", table_name="stock_info")
+        df = self._read_polars(None, None, None, table_name="stock_info")
         if not df.is_empty():
             _stock_basic_polars_cache = df.clone()
         return df

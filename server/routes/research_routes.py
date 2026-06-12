@@ -247,6 +247,32 @@ def data_health():
     return _success(report, report["message"])
 
 
+@research_bp.route("/data/matrix-cache/rebuild", methods=["POST"])
+def rebuild_matrix_cache():
+    from scripts.update.update_market_data_incremental import parse_args_with, run
+
+    payload = request.get_json(silent=True) or {}
+    argv = ["--target", "matrix-cache"]
+    if payload.get("start_date"):
+        argv.extend(["--start-date", str(payload["start_date"])])
+    if payload.get("end_date"):
+        argv.extend(["--end-date", str(payload["end_date"])])
+    report = run(parse_args_with(argv))
+    matrix_stage = next(
+        (item for item in report.get("stages", []) if item.get("name") == "matrix_cache"),
+        {},
+    )
+    if matrix_stage.get("status") == "failed":
+        return jsonify(
+            {
+                "success": False,
+                "data": report,
+                "error": matrix_stage.get("message") or "回测缓存重建失败",
+            }
+        ), 500
+    return _success(report, matrix_stage.get("message") or "回测缓存重建完成")
+
+
 @research_bp.route("/quant-flow/latest", methods=["GET"])
 def quant_flow_latest():
     path = REPORT_DIR / "quant_flow_latest.json"

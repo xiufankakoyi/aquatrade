@@ -205,6 +205,47 @@ export async function getStrategyDetail(versionId: string): Promise<BacktestResu
   }
 }
 
+export interface StrategyQualityDimension {
+  name: string;
+  score: number;
+  weight: number;
+  summary: string;
+  detail?: Record<string, any>;
+}
+
+export interface StrategyQualityReport {
+  strategy_id: string;
+  start_date: string;
+  end_date: string;
+  total_score: number;
+  grade: string;
+  summary: string;
+  dimensions: StrategyQualityDimension[];
+  metadata?: Record<string, any>;
+}
+
+export async function getStrategyQuality(
+  strategyId: string,
+  startDate: string,
+  endDate: string
+): Promise<StrategyQualityReport> {
+  const response = await fetch(`${API_BASE_URL}/strategies/${encodeURIComponent(strategyId)}/quality`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      start_date: startDate,
+      end_date: endDate,
+      n_windows: 4,
+      n_permutations: 3,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok || payload?.success === false) {
+    throw new Error(payload?.error || payload?.message || `HTTP ${response.status}`);
+  }
+  return payload.data || payload;
+}
+
 /**
  * 获取参数搜索结果
  * @param versionId 策略版本 ID

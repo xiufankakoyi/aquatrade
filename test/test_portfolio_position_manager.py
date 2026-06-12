@@ -85,17 +85,19 @@ class TestPositionDataStructure:
 
 class TestPositionManagerInit:
     """PositionManager 初始化测试"""
-    
+
     def test_init(self):
-        """测试初始化"""
+        """测试初始化：使用 Parquet 存储路径，不再持有 _arctic/_library"""
         from core.portfolio.position_manager import PositionManager
-        
+
         with patch('core.portfolio.position_manager.os.path.exists', return_value=False):
             with patch('core.portfolio.position_manager.os.makedirs'):
                 manager = PositionManager()
-                
-                assert manager._arctic is None
-                assert manager._library is None
+
+                # 当前实现：使用 Parquet 文件，不再持有 _arctic/_library
+                assert not hasattr(manager, "_arctic")
+                assert not hasattr(manager, "_library")
+                assert manager.parquet_path.endswith("portfolio_positions.parquet")
 
 
 class TestPositionManagerOperations:
@@ -141,25 +143,27 @@ class TestPositionManagerSaveLoad:
     """PositionManager 保存加载测试"""
     
     def test_save_positions_df_converts_bool(self):
-        """测试保存时转换布尔类型"""
+        """测试保存时转换布尔类型为 0/1，写入 Parquet 文件"""
         from core.portfolio.position_manager import PositionManager
-        
-        manager = PositionManager()
-        mock_library = Mock()
-        
-        df = pd.DataFrame({
-            'id': [1],
-            'stock_code': ['000001.SZ'],
-            'is_active': [True]
-        })
-        
-        manager._library = mock_library
-        manager._save_positions_df(df)
-        
-        call_args = mock_library.write.call_args
-        saved_df = call_args[0][1]
-        
-        assert saved_df['is_active'].iloc[0] == 1
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = PositionManager()
+            manager.parquet_path = os.path.join(tmp, "positions.parquet")
+
+            df = pd.DataFrame({
+                'id': [1],
+                'stock_code': ['000001.SZ'],
+                'is_active': [True]
+            })
+
+            manager._save_positions_df(df)
+
+            # 验证 Parquet 文件被写入，且 is_active 被规范化为 0/1
+            assert os.path.exists(manager.parquet_path)
+            saved_df = pd.read_parquet(manager.parquet_path)
+            assert int(saved_df['is_active'].iloc[0]) == 1
     
     def test_get_positions_df_empty(self):
         """测试获取空持仓"""

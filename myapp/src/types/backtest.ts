@@ -115,6 +115,9 @@ export type Metrics = {
   calmarRatio?: number;
   benchmarkReturn?: number;
   benchmarkVolatility?: number;
+  rejectedOrders?: Record<string, number>;
+  slippageCost?: number;
+  filterStats?: Record<string, number | boolean | string | null>;
 };
 
 // 月度收益类型

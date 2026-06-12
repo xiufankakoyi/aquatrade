@@ -26,6 +26,14 @@
       </div>
     </div>
 
+    <div v-if="matrixCacheMissing" class="cache-warning">
+      <span>回测缓存缺失，可点击重建</span>
+      <button :disabled="cacheRebuilding" @click="rebuildMatrixCache">
+        {{ cacheRebuilding ? '重建中' : '重建缓存' }}
+      </button>
+      <span v-if="cacheError" class="cache-error">{{ cacheError }}</span>
+    </div>
+
     <!-- 内容区域 -->
     <div class="center-content">
       <!-- AI 策略生成器 -->
@@ -42,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import StrategyGenerator from '../components/strategy-center/StrategyGenerator.vue';
 import StrategyWorkbench from '../components/strategy-center/StrategyWorkbench.vue';
 
@@ -57,9 +65,52 @@ const tabs = [
 ];
 
 const activeTab = ref('generator');
+const dataHealth = ref<any>(null);
+const cacheRebuilding = ref(false);
+const cacheError = ref('');
+const matrixCacheMissing = computed(() => {
+  const cache = dataHealth.value?.datasets?.find((item: any) => item.name === 'matrix_cache');
+  return cache?.status === 'backtest_cache_missing';
+});
 
 const activeTabDesc = computed(() => {
   return tabs.find(t => t.key === activeTab.value)?.desc || '';
+});
+
+async function fetchJson(url: string, init?: RequestInit) {
+  const response = await fetch(url, init);
+  const payload = await response.json();
+  if (!response.ok || payload.success === false) {
+    throw new Error(payload.error || payload.message || `HTTP ${response.status}`);
+  }
+  return payload.data;
+}
+
+async function loadDataHealth() {
+  dataHealth.value = await fetchJson('/api/data/health');
+}
+
+async function rebuildMatrixCache() {
+  cacheRebuilding.value = true;
+  cacheError.value = '';
+  try {
+    await fetchJson('/api/data/matrix-cache/rebuild', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    await loadDataHealth();
+  } catch (error) {
+    cacheError.value = error instanceof Error ? error.message : '回测缓存重建失败';
+  } finally {
+    cacheRebuilding.value = false;
+  }
+}
+
+onMounted(() => {
+  loadDataHealth().catch((error) => {
+    cacheError.value = error instanceof Error ? error.message : '数据状态加载失败';
+  });
 });
 </script>
 
@@ -152,6 +203,35 @@ const activeTabDesc = computed(() => {
   flex: 1;
   overflow: hidden;
   position: relative;
+}
+
+.cache-warning {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  color: #f6c453;
+  background: #2b2515;
+  border-bottom: 1px solid #5b4a1c;
+  font-size: 12px;
+}
+
+.cache-warning button {
+  padding: 5px 10px;
+  color: #fff;
+  background: #8a6a16;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.cache-warning button:disabled {
+  opacity: .55;
+  cursor: default;
+}
+
+.cache-error {
+  color: #ff8a80;
 }
 
 .tab-panel {

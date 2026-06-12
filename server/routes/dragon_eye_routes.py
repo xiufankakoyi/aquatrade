@@ -312,26 +312,81 @@ def get_dragon_stocks():
 def get_market_sentiment():
     """
     获取指定时间段的市场情绪数据
-    
+
     Query Parameters:
         - start_date: 开始日期 (YYYY-MM-DD)
         - end_date: 结束日期 (YYYY-MM-DD)
-        
+
     Returns:
         - sentiment: 市场情绪数据列表
     """
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
-    
+
     if not start_date or not end_date:
         return jsonify({"error": "Missing start_date or end_date"}), 400
-    
+
     try:
         service = get_dragon_service()
         df = service.manager.get_market_sentiment(start_date, end_date)
         return jsonify(df.to_dicts())
     except Exception as e:
         logger.error(f"Failed to get sentiment: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@dragon_bp.route('/sentiment/score', methods=['GET'])
+def get_sentiment_score():
+    """
+    获取指定日期的综合情绪评分（含周期阶段、风险等级、接力情绪、连续性、题材轮动）
+
+    Query Parameters:
+        - date: 目标日期 (YYYY-MM-DD)
+
+    Returns:
+        - trade_date, summary, cycle_phase, cycle_reasons, risk_level,
+          sentiment_score, promotion_1to2, promotion_2to3, promotion_high,
+          theme_continuity, theme_flow, limit_up_count, limit_down_count,
+          broken_ratio, max_height, rise_count, fall_count, main_themes,
+          has_data
+    """
+    target_date = request.args.get('date')
+    if not target_date:
+        return jsonify({"error": "Missing date parameter"}), 400
+
+    try:
+        service = get_dragon_service()
+        data = service.get_sentiment_score(target_date)
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"Failed to get sentiment score: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@dragon_bp.route('/sentiment/score/history', methods=['GET'])
+def get_sentiment_score_history():
+    """
+    获取综合情绪评分的历史曲线
+
+    Query Parameters:
+        - start_date: 开始日期 (YYYY-MM-DD)
+        - end_date: 结束日期 (YYYY-MM-DD)
+
+    Returns:
+        - history: 每日综合情绪数据列表
+    """
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+
+    if not start_date or not end_date:
+        return jsonify({"error": "Missing start_date or end_date"}), 400
+
+    try:
+        service = get_dragon_service()
+        history = service.get_sentiment_score_history(start_date, end_date)
+        return jsonify({"history": history, "count": len(history)})
+    except Exception as e:
+        logger.error(f"Failed to get sentiment score history: {e}")
         return jsonify({"error": str(e)}), 500
 
 

@@ -81,6 +81,7 @@ class AIStrategyBase(StrategyBase):
     """
     
     strategy_name = "AI策略基类"
+    strategy_template = True
     
     def __init__(self, config: AIStrategyConfig, name: str | None = None):
         """

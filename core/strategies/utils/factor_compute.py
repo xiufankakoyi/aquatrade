@@ -169,7 +169,16 @@ class FactorCompute:
                 'death_cross': 死叉信号 (布尔)
             }
         """
-        return _calc_macd_njit(np.asarray(close_array, dtype=np.float32), fast, slow, signal)
+        dif, dea, macd_hist, golden_cross, death_cross = _calc_macd_njit(
+            np.asarray(close_array, dtype=np.float32), fast, slow, signal
+        )
+        return {
+            "dif": dif,
+            "dea": dea,
+            "macd": macd_hist,
+            "golden_cross": golden_cross,
+            "death_cross": death_cross,
+        }
     
     @staticmethod
     def calc_rsi(close_array: np.ndarray, period: int = 14) -> np.ndarray:
@@ -412,7 +421,9 @@ def _calc_bias_njit(close_array: np.ndarray, ma_period: int) -> np.ndarray:
 
 
 @njit
-def _calc_macd_njit(close_array: np.ndarray, fast: int, slow: int, signal: int) -> dict:
+def _calc_macd_njit(
+    close_array: np.ndarray, fast: int, slow: int, signal: int
+) -> tuple:
     """MACD 计算（Numba加速）"""
     if close_array.ndim == 1:
         T = len(close_array)
@@ -462,13 +473,7 @@ def _calc_macd_njit(close_array: np.ndarray, fast: int, slow: int, signal: int) 
                     dea[t, n] = dif[t, n]
                     has_signal = True
     
-    return {
-        'dif': dif,
-        'dea': dea,
-        'macd': macd_hist,
-        'golden_cross': golden_cross,
-        'death_cross': death_cross
-    }
+    return dif, dea, macd_hist, golden_cross, death_cross
 
 
 @njit

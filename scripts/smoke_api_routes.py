@@ -41,6 +41,7 @@ def main() -> int:
     ]
     if strategy_id:
         checks.append(("GET", f"/api/strategies/{quote(strategy_id, safe='')}/params", None))
+        checks.append(("POST", f"/api/strategies/{quote(strategy_id, safe='')}/quality", {}))
 
     results = []
     failed = not strategy_id
@@ -64,6 +65,7 @@ def main() -> int:
         "/api/screener/export",
         "/api/benchmark/<code>/equity",
         "/api/strategies/<strategy_id>/params",
+        "/api/strategies/<strategy_id>/quality",
     }
     rules = {rule.rule for rule in app.url_map.iter_rules()}
     missing_rules = sorted(required_rules - rules)

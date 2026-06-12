@@ -428,29 +428,42 @@ class BacktestVisualizationAPI:
             '000016': '000016.SH',
             '399006': '399006.SZ',
         }
-        
-        if benchmark_code not in INDEX_MAPPING:
+
+        normalized_code = str(benchmark_code or '').strip().upper()
+        if normalized_code in INDEX_MAPPING:
+            ts_code = INDEX_MAPPING[normalized_code]
+        elif normalized_code in INDEX_MAPPING.values():
+            ts_code = normalized_code
+        else:
             logger.warning(f"不支持的基准代码: {benchmark_code}")
             return pd.DataFrame()
         
-        ts_code = INDEX_MAPPING[benchmark_code]
-        
         try:
-            from data_svc.storage.lancedb_manager import get_lancedb_manager
-            
-            manager = get_lancedb_manager()
-            df = manager.read_data('market_data', ts_code, start_date, end_date)
-            
-            if df.empty:
+            from data_svc.storage.lancedb_reader import get_lancedb_reader
+
+            df = get_lancedb_reader().read_table(
+                "index_daily",
+                ts_code,
+                start_date,
+                end_date,
+                fields=["trade_date", "close"],
+            )
+
+            if df.is_empty():
                 logger.warning(f"LanceDB 中未找到基准数据: {ts_code}, {start_date} ~ {end_date}")
                 return pd.DataFrame()
-            
-            result_df = pd.DataFrame({
-                'date': df.index.strftime('%Y-%m-%d'),
-                'close': df['close'].values
-            })
-            
-            return result_df
+
+            return (
+                df.select(
+                    pl.col("trade_date")
+                    .cast(pl.Date, strict=False)
+                    .dt.strftime("%Y-%m-%d")
+                    .alias("date"),
+                    pl.col("close").cast(pl.Float64),
+                )
+                .sort("date")
+                .to_pandas()
+            )
 
         except Exception as e:
             logger.warning(f"读取基准数据时发生错误: {e}")

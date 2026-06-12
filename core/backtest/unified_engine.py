@@ -251,7 +251,7 @@ class BacktestConfig:
     min_commission: float = 5.0
     sell_tax: float = 0.001  # 印花税
     time_granularity: TimeGranularity = TimeGranularity.DAILY
-    
+
     # 风控参数
     max_positions: Optional[int] = None
     position_ratio: float = 0.1
@@ -259,10 +259,53 @@ class BacktestConfig:
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None  # 止盈比例
     max_holding_days: Optional[int] = None
-    
+
     # 执行参数
     warmup_days: int = 30  # 预热期天数
     execution_price: str = "open"  # 执行价格: open/close
+
+    # ===== 回测真实性参数 =====
+    # 滑点：买入按 (1+slippage_rate) 加价，卖出按 (1-slippage_rate) 减价
+    slippage_rate: float = 0.001  # 0.1%，A股市场常见水平
+    # 是否启用 ST 股票过滤（默认 True，避免踩雷）
+    exclude_st: bool = True
+    # 成交量约束：单笔买入股数 <= 当日成交量 × volume_cap_ratio（剩余仓位会被拒绝）
+    volume_cap_ratio: float = 0.05  # 单笔不超过日成交量 5%
+    # 最小可买入金额（资金不足阈值）
+    min_trade_amount: float = 1000.0
+
+
+@dataclass
+class RejectedOrderStat:
+    """不可成交订单统计"""
+    suspended: int = 0       # 停牌
+    limit_up: int = 0        # 涨停未开板
+    limit_down: int = 0      # 跌停
+    st: int = 0              # ST 股
+    volume: int = 0          # 成交量不足
+    insufficient_cash: int = 0  # 现金不足
+    invalid_price: int = 0   # 价格无效
+    other: int = 0
+
+    def total(self) -> int:
+        return (
+            self.suspended + self.limit_up + self.limit_down
+            + self.st + self.volume + self.insufficient_cash
+            + self.invalid_price + self.other
+        )
+
+    def to_dict(self) -> Dict[str, int]:
+        return {
+            "suspended": self.suspended,
+            "limitUp": self.limit_up,
+            "limitDown": self.limit_down,
+            "st": self.st,
+            "volume": self.volume,
+            "insufficientCash": self.insufficient_cash,
+            "invalidPrice": self.invalid_price,
+            "other": self.other,
+            "total": self.total(),
+        }
 
 
 @dataclass
@@ -327,6 +370,10 @@ class BacktestResult:
     calmar_ratio: float
     equity_curve: List[Dict[str, Any]] = field(default_factory=list)
     trades: List[TradeRecord] = field(default_factory=list)
+    # 真实性统计
+    rejected_orders: Dict[str, int] = field(default_factory=dict)
+    slippage_cost: float = 0.0
+    filter_stats: Dict[str, Any] = field(default_factory=dict)
 
 
 def _make_json_serializable(obj: Any, max_depth: int = 10, _current_depth: int = 0) -> Any:
@@ -474,12 +521,29 @@ class UnifiedBacktestEngine:
         
         # 因子矩阵（三维数组）
         self._factor_matrix: Optional[Any] = None  # FactorMatrix 对象
-        
+
+        # 回测真实性统计（每次 run_backtest 时重置）
+        self._rejected_stats = RejectedOrderStat()
+        self._slippage_cost_total: float = 0.0
+
         logger.info(
             f"✅ UnifiedBacktestEngine 初始化完成 "
             f"(资金: {self.config.initial_capital:,.0f}, "
-            f"粒度: {self.config.time_granularity.value})"
+            f"粒度: {self.config.time_granularity.value}, "
+            f"滑点: {self.config.slippage_rate*100:.2f}%, "
+            f"排除ST: {self.config.exclude_st})"
         )
+
+    def reset_realism_stats(self) -> None:
+        """重置回测真实性统计计数器（每次 run_backtest 入口自动调用）"""
+        self._rejected_stats = RejectedOrderStat()
+        self._slippage_cost_total = 0.0
+
+    def get_rejected_stats(self) -> RejectedOrderStat:
+        return self._rejected_stats
+
+    def get_slippage_cost(self) -> float:
+        return self._slippage_cost_total
     
     @property
     def initial_capital(self) -> float:
@@ -534,20 +598,23 @@ class UnifiedBacktestEngine:
         # 标准化日期
         start_ts = self._normalize_datetime(start_date)
         end_ts = self._normalize_datetime(end_date)
-        
+
         if start_ts >= end_ts:
             yield {"type": "error", "data": {"message": "开始日期必须早于结束日期"}}
             return
-        
+
+        # 重置回测真实性统计
+        self.reset_realism_stats()
+
         # 获取时间序列
         time_series = self._get_time_series(start_ts, end_ts)
         if not time_series:
             yield {"type": "error", "data": {"message": "未找到有效的时间序列"}}
             return
-        
+
         # 清除历史数据
         self._equity_history = []
-        
+
         # [性能优化] 清除矩阵缓存，确保新回测从头开始
         from core.strategies.vectorized_base import clear_matrix_cache
         clear_matrix_cache()
@@ -723,7 +790,11 @@ class UnifiedBacktestEngine:
                 "avgTradeReturn": round(result.avg_trade_return, 2),
                 "maxWinningStreak": result.max_winning_streak,
                 "maxLosingStreak": result.max_losing_streak,
-                "calmarRatio": round(result.calmar_ratio, 2)
+                "calmarRatio": round(result.calmar_ratio, 2),
+                # 回测真实性统计
+                "rejectedOrders": result.rejected_orders,
+                "slippageCost": result.slippage_cost,
+                "filterStats": result.filter_stats,
             }
         }
         
@@ -813,7 +884,11 @@ class UnifiedBacktestEngine:
                 "equityCurve": result.equity_curve,
                 "benchmarkCurve": benchmark_curve,
                 "monthlyReturns": monthly_returns,
-                "trades": [_trade_to_dict(t) for t in result.trades]
+                "trades": [_trade_to_dict(t) for t in result.trades],
+                # 回测真实性统计（同步 final_metrics）
+                "rejectedOrders": result.rejected_orders,
+                "slippageCost": result.slippage_cost,
+                "filterStats": result.filter_stats,
             }
         }
     
@@ -1964,36 +2039,49 @@ class UnifiedBacktestEngine:
             sig_type = signal.get('action') if isinstance(signal, dict) else signal
             if sig_type not in ('sell', 'exit'):
                 continue
-            
+
             current_position = new_portfolio.get(code, 0)
             if current_position <= 0:
                 continue
-            
+
             if code not in signal_data:
                 continue
-            
+
             data = signal_data[code]
             price = float(data.get('open', 0))
             is_suspended = bool(data.get('is_suspended', 0))
             is_limit_down = bool(data.get('is_limit_down', 0))
-            
-            if price <= 0 or is_suspended or is_limit_down:
+
+            if price <= 0:
+                self._rejected_stats.invalid_price += 1
                 continue
-            
+            if is_suspended:
+                self._rejected_stats.suspended += 1
+                continue
+            if is_limit_down:
+                self._rejected_stats.limit_down += 1
+                continue
+
+            # 应用滑点：卖出按 (1 - slippage_rate) 减价
+            slippage = self.config.slippage_rate
+            filled_price = price * (1.0 - slippage)
+            slippage_cost_per_share = price * slippage
+            self._slippage_cost_total += current_position * slippage_cost_per_share
+
             # 执行卖出
-            revenue = current_position * price
+            revenue = current_position * filled_price
             commission = max(revenue * self.config.commission_rate, self.config.min_commission)
             tax = revenue * self.config.sell_tax
             net_revenue = revenue - commission - tax
-            
+
             # 计算盈亏
             pos_data = position_info.get(code, {})
-            avg_cost = pos_data.get('cost', price)
+            avg_cost = pos_data.get('cost', filled_price)
             entry_date = pos_data.get('entry_date', date_str)
             cost_basis = avg_cost * current_position
             profit_loss = net_revenue - cost_basis
             roi = (profit_loss / cost_basis * 100) if cost_basis > 0 else 0
-            
+
             # 计算持有天数
             try:
                 d1 = datetime.strptime(entry_date, "%Y-%m-%d")
@@ -2001,20 +2089,20 @@ class UnifiedBacktestEngine:
                 holding_days = (d2 - d1).days
             except:
                 holding_days = 0
-            
+
             new_cash += net_revenue
             del new_portfolio[code]
             if code in position_info:
                 del position_info[code]
-            
+
             position_id = f"{entry_date}-{code}"
-            
+
             trades.append(TradeRecord(
                 date=date_str,
                 code=code,
                 action="sell",
                 shares=current_position,
-                price=price,
+                price=filled_price,
                 amount=net_revenue,
                 commission=commission,
                 tax=tax,
@@ -2022,89 +2110,123 @@ class UnifiedBacktestEngine:
                 roi=roi,
                 entry_price=avg_cost,
                 entry_date=entry_date,
-                exit_price=price,
+                exit_price=filled_price,
                 exit_date=date_str,
                 holding_days=holding_days,
                 position_id=position_id,
                 indicators=signal.get('indicators', {}) if isinstance(signal, dict) else {}
             ))
-        
+
         # 阶段2: 处理买入
         buy_signals = {code: sig for code, sig in signals.items()
                       if (sig.get('action') if isinstance(sig, dict) else sig) in ('buy', 'enter')}
-        
+
         # 检查持仓限制
         current_positions_count = len(new_portfolio)
         max_positions = self.config.max_positions
-        
+
         if max_positions is not None and current_positions_count >= max_positions:
             buy_signals = {}
         elif max_positions is not None:
             can_buy = max_positions - current_positions_count
             buy_signals = dict(list(buy_signals.items())[:can_buy])
-        
+
         # 检查单日买入限制
         max_stocks_per_day = self.config.max_stocks_per_day
         if max_stocks_per_day is not None:
             buy_signals = dict(list(buy_signals.items())[:max_stocks_per_day])
-        
+
         for code, signal in buy_signals.items():
             if new_portfolio.get(code, 0) > 0:
                 continue
-            
+
             if code not in signal_data:
                 continue
-            
+
             data = signal_data[code]
             price = float(data.get('open', 0))
             is_suspended = bool(data.get('is_suspended', 0))
             is_limit_up = bool(data.get('is_limit_up', 0))
-            
-            if price <= 0 or is_suspended or is_limit_up:
+            is_st = bool(data.get('is_st', 0))
+            volume = float(data.get('volume', 0))
+
+            if price <= 0:
+                self._rejected_stats.invalid_price += 1
                 continue
-            
+            if is_suspended:
+                self._rejected_stats.suspended += 1
+                continue
+            if is_limit_up:
+                self._rejected_stats.limit_up += 1
+                continue
+            if self.config.exclude_st and is_st:
+                self._rejected_stats.st += 1
+                continue
+
             # 计算买入金额
             target_investment = new_cash * self.config.position_ratio
             if target_investment > new_cash:
                 target_investment = new_cash
-            
-            if target_investment <= 1000:
+
+            if target_investment < self.config.min_trade_amount:
+                self._rejected_stats.insufficient_cash += 1
                 continue
-            
+
+            # 应用滑点：买入按 (1 + slippage_rate) 加价
+            slippage = self.config.slippage_rate
+            filled_price = price * (1.0 + slippage)
+            slippage_cost_per_share = price * slippage
+
             # 计算股数（100股整数倍）
-            shares = int(target_investment / (price * (1 + self.config.commission_rate)))
+            shares = int(target_investment / (filled_price * (1 + self.config.commission_rate)))
             shares = (shares // 100) * 100
-            
-            if shares >= 100:
-                cost = shares * price
-                commission = max(cost * self.config.commission_rate, self.config.min_commission)
-                total_outlay = cost + commission
-                
-                if total_outlay <= new_cash:
-                    new_portfolio[code] = shares
-                    new_cash -= total_outlay
-                    
-                    position_id = f"{date_str}-{code}"
-                    
-                    position_info[code] = {
-                        'cost': total_outlay / shares,
-                        'entry_date': date_str,
-                        'position_id': position_id
-                    }
-                    
-                    trades.append(TradeRecord(
-                        date=date_str,
-                        code=code,
-                        action="buy",
-                        shares=shares,
-                        price=price,
-                        amount=total_outlay,
-                        commission=commission,
-                        holding_days=0,
-                        position_id=position_id,
-                        indicators=signal.get('indicators', {}) if isinstance(signal, dict) else {}
-                    ))
-        
+
+            if shares < 100:
+                self._rejected_stats.insufficient_cash += 1
+                continue
+
+            # 成交量约束：单笔买入股数 <= 当日成交量 × volume_cap_ratio
+            if volume > 0 and self.config.volume_cap_ratio > 0:
+                max_shares = int(volume * self.config.volume_cap_ratio)
+                max_shares = (max_shares // 100) * 100
+                if shares > max_shares:
+                    if max_shares < 100:
+                        self._rejected_stats.volume += 1
+                        continue
+                    shares = max_shares
+
+            cost = shares * filled_price
+            commission = max(cost * self.config.commission_rate, self.config.min_commission)
+            total_outlay = cost + commission
+
+            if total_outlay <= new_cash:
+                new_portfolio[code] = shares
+                new_cash -= total_outlay
+                self._slippage_cost_total += shares * slippage_cost_per_share
+
+                position_id = f"{date_str}-{code}"
+
+                position_info[code] = {
+                    'cost': total_outlay / shares,
+                    'entry_date': date_str,
+                    'position_id': position_id
+                }
+
+                trades.append(TradeRecord(
+                    date=date_str,
+                    code=code,
+                    action="buy",
+                    shares=shares,
+                    price=filled_price,
+                    amount=total_outlay,
+                    commission=commission,
+                    holding_days=0,
+                    position_id=position_id,
+                    indicators=signal.get('indicators', {}) if isinstance(signal, dict) else {}
+                ))
+            else:
+                self._rejected_stats.insufficient_cash += 1
+
         return new_portfolio, new_cash, trades
     
     def _execute_trades_vectorized(
@@ -2141,9 +2263,9 @@ class UnifiedBacktestEngine:
         
         if not signal_rows:
             return new_portfolio, new_cash, trades
-        
+
         signals_df = pl.DataFrame(signal_rows)
-        
+
         if self._factor_matrix is not None and isinstance(data_dict, dict) and '_factor_slice' in data_dict:
             factor_slice = data_dict['_factor_slice']
             fm = self._factor_matrix
@@ -2158,10 +2280,12 @@ class UnifiedBacktestEngine:
                     'is_suspended': bool(data.get('is_suspended') or 0),
                     'is_limit_up': bool(data.get('is_limit_up') or 0),
                     'is_limit_down': bool(data.get('is_limit_down') or 0),
+                    'is_st': bool(data.get('is_st') or 0),
+                    'volume': float(data.get('volume') or 0),
                     'adj_factor': float(data.get('adj_factor') or 1.0),
                     'total_mv': float(data.get('total_mv') or 0)
                 })
-            
+
             market_df = pl.DataFrame(market_rows)
         
         # =========================================================================
@@ -2189,16 +2313,30 @@ class UnifiedBacktestEngine:
         # Step 4: 向量化处理卖出信号
         # =========================================================================
         sell_signals = signals_df.filter(pl.col('action') == 'sell')
-        
+
         if not sell_signals.is_empty() and not positions_df.is_empty():
             # 关联持仓数据
             sell_with_position = sell_signals.join(
                 positions_df, on='code', how='inner'
             ).join(
-                market_df.select(['code', 'open', 'is_suspended', 'is_limit_down']), 
+                market_df.select(['code', 'open', 'is_suspended', 'is_limit_down']),
                 on='code', how='inner'
             )
-            
+
+            # 统计被拒绝的原因
+            try:
+                self._rejected_stats.suspended += int(
+                    sell_with_position.filter(pl.col('is_suspended') == True).height
+                )
+                self._rejected_stats.limit_down += int(
+                    sell_with_position.filter(pl.col('is_limit_down') == True).height
+                )
+                self._rejected_stats.invalid_price += int(
+                    sell_with_position.filter(pl.col('open') <= 0).height
+                )
+            except Exception:
+                pass
+
             # 筛选可卖出的股票
             sellable = sell_with_position.filter(
                 (pl.col('shares') > 0) &
@@ -2206,11 +2344,23 @@ class UnifiedBacktestEngine:
                 (pl.col('is_suspended') == False) &
                 (pl.col('is_limit_down') == False)
             )
-            
+
             if not sellable.is_empty():
+                # 应用滑点：卖出按 (1 - slippage_rate) 减价
+                slippage = self.config.slippage_rate
+                sellable = sellable.with_columns([
+                    (pl.col('open') * (1.0 - slippage)).alias('filled_price'),
+                ])
+                # 累计滑点成本
+                try:
+                    slippage_sum = (sellable['open'] * slippage * sellable['shares']).sum()
+                    self._slippage_cost_total += float(slippage_sum)
+                except Exception:
+                    pass
+
                 # 向量化计算卖出参数
                 sellable = sellable.with_columns([
-                    (pl.col('shares') * pl.col('open')).alias('revenue'),
+                    (pl.col('shares') * pl.col('filled_price')).alias('revenue'),
                 ]).with_columns([
                     pl.max_horizontal([
                         pl.col('revenue') * self.config.commission_rate,
@@ -2227,35 +2377,35 @@ class UnifiedBacktestEngine:
                       .then(pl.col('profit_loss') / pl.col('cost_basis') * 100)
                       .otherwise(0).alias('roi')
                 ])
-                
+
                 # 计算持有天数
                 current_date = datetime.strptime(date_str, "%Y-%m-%d")
                 sellable = sellable.with_columns([
                     pl.col('entry_date').map_elements(
-                        lambda d: (current_date - datetime.strptime(d, "%Y-%m-%d")).days 
+                        lambda d: (current_date - datetime.strptime(d, "%Y-%m-%d")).days
                         if d else 0,
                         return_dtype=pl.Int64
                     ).alias('holding_days')
                 ])
-                
+
                 # 执行卖出并创建交易记录
                 total_net_revenue = sellable.select(pl.col('net_revenue').sum()).item()
                 new_cash += total_net_revenue
-                
+
                 for row in sellable.iter_rows(named=True):
                     code = row['code']
                     del new_portfolio[code]
                     if code in position_info:
                         del position_info[code]
-                    
+
                     position_id = f"{row['entry_date']}-{code}"
-                    
+
                     trades.append(TradeRecord(
                         date=date_str,
                         code=code,
                         action="sell",
                         shares=int(row['shares']),
-                        price=row['open'],
+                        price=row['filled_price'],
                         amount=row['net_revenue'],
                         commission=row['commission'],
                         tax=row['tax'],
@@ -2263,76 +2413,141 @@ class UnifiedBacktestEngine:
                         roi=row['roi'],
                         entry_price=row['cost'],
                         entry_date=row['entry_date'],
-                        exit_price=row['open'],
+                        exit_price=row['filled_price'],
                         exit_date=date_str,
                         holding_days=int(row['holding_days']),
                         position_id=position_id,
                         indicators=row.get('indicators', {})
                     ))
-        
+
         # =========================================================================
         # Step 5: 向量化处理买入信号
         # =========================================================================
         buy_signals = signals_df.filter(pl.col('action') == 'buy')
-        
+
         if not buy_signals.is_empty():
             # 检查持仓限制
             current_positions_count = len(new_portfolio)
             max_positions = self.config.max_positions
-            
+
             if max_positions is not None:
                 if current_positions_count >= max_positions:
                     buy_signals = buy_signals.head(0)
                 else:
                     can_buy = max_positions - current_positions_count
                     buy_signals = buy_signals.head(can_buy)
-            
+
             # 检查单日买入限制
             max_stocks_per_day = self.config.max_stocks_per_day
             if max_stocks_per_day is not None:
                 buy_signals = buy_signals.head(max_stocks_per_day)
-            
+
             # 过滤已持仓股票
             if not positions_df.is_empty():
                 existing_codes = set(positions_df['code'].to_list())
                 buy_signals = buy_signals.filter(
                     ~pl.col('code').is_in(existing_codes)
                 )
-            
+
             # 关联市场数据
+            market_cols = ['code', 'close', 'open', 'is_suspended', 'is_limit_up']
+            if self.config.exclude_st:
+                market_cols.append('is_st')
+            if self.config.volume_cap_ratio > 0:
+                market_cols.append('volume')
             buyable = buy_signals.join(
-                market_df.select(['code', 'close', 'open', 'is_suspended', 'is_limit_up']),
+                market_df.select(market_cols),
                 on='code', how='inner'
-            ).filter(
+            )
+
+            # 统计被拒绝原因（在主过滤之前）
+            try:
+                self._rejected_stats.suspended += int(
+                    buyable.filter(pl.col('is_suspended') == True).height
+                )
+                self._rejected_stats.limit_up += int(
+                    buyable.filter(pl.col('is_limit_up') == True).height
+                )
+                if self.config.exclude_st and 'is_st' in buyable.columns:
+                    self._rejected_stats.st += int(
+                        buyable.filter(pl.col('is_st') == True).height
+                    )
+            except Exception:
+                pass
+
+            # 主体可买过滤
+            buy_filter_expr = (
                 ((pl.col('close') > 0) | (pl.col('open') > 0)) &
                 (pl.col('is_suspended') == False) &
                 (pl.col('is_limit_up') == False)
             )
-            
+            if self.config.exclude_st and 'is_st' in buyable.columns:
+                buy_filter_expr = buy_filter_expr & (pl.col('is_st') == False)
+            buyable = buyable.filter(buy_filter_expr)
+
             if not buyable.is_empty():
                 # 向量化计算买入参数 - 使用 close 价格（如果 open 为 0）
                 target_investment = new_cash * self.config.position_ratio
-                
+
+                # 应用滑点：买入按 (1 + slippage_rate) 加价
+                slippage = self.config.slippage_rate
+
                 buyable = buyable.with_columns([
                     pl.when(pl.col('open') > 0)
                     .then(pl.col('open'))
                     .otherwise(pl.col('close'))
-                    .alias('trade_price')
+                    .alias('trade_price'),
+                ]).with_columns([
+                    (pl.col('trade_price') * (1.0 + slippage)).alias('filled_price'),
                 ])
-                
+
+                # 成交量约束：单笔买入股数 <= 当日成交量 × volume_cap_ratio
+                if self.config.volume_cap_ratio > 0 and 'volume' in buyable.columns:
+                    buyable = buyable.with_columns([
+                        ((pl.col('volume') * self.config.volume_cap_ratio).floor().cast(pl.Int64) // 100 * 100).alias('volume_cap_shares'),
+                    ])
+                    # 当 volume_cap_shares < 100 视为被成交量限制
+                    try:
+                        self._rejected_stats.volume += int(
+                            buyable.filter(
+                                (pl.col('volume') > 0) & (pl.col('volume_cap_shares') < 100)
+                            ).height
+                        )
+                    except Exception:
+                        pass
+                    buyable = buyable.filter(
+                        (pl.col('volume') <= 0) | (pl.col('volume_cap_shares') >= 100)
+                    )
+
                 buyable = buyable.with_columns([
-                    (target_investment / (pl.col('trade_price') * (1 + self.config.commission_rate)))
+                    (target_investment / (pl.col('filled_price') * (1 + self.config.commission_rate)))
                     .floor().alias('raw_shares'),
                 ]).with_columns([
                     ((pl.col('raw_shares') // 100) * 100).alias('shares'),
-                ]).filter(
+                ])
+
+                # 成交量上限钳制
+                if self.config.volume_cap_ratio > 0 and 'volume_cap_shares' in buyable.columns:
+                    buyable = buyable.with_columns([
+                        pl.min_horizontal([pl.col('shares'), pl.col('volume_cap_shares')]).alias('shares'),
+                    ])
+
+                # 资金不足统计（在过滤之前）
+                try:
+                    self._rejected_stats.insufficient_cash += int(
+                        buyable.filter(pl.col('shares') < 100).height
+                    )
+                except Exception:
+                    pass
+
+                buyable = buyable.filter(
                     (pl.col('shares') >= 100) &
-                    (pl.col('shares') * pl.col('trade_price') <= new_cash)
+                    (pl.col('shares') * pl.col('filled_price') <= new_cash)
                 )
-                
+
                 if not buyable.is_empty():
                     buyable = buyable.with_columns([
-                        (pl.col('shares') * pl.col('trade_price')).alias('cost'),
+                        (pl.col('shares') * pl.col('filled_price')).alias('cost'),
                     ]).with_columns([
                         pl.max_horizontal([
                             pl.col('cost') * self.config.commission_rate,
@@ -2341,42 +2556,49 @@ class UnifiedBacktestEngine:
                     ]).with_columns([
                         (pl.col('cost') + pl.col('commission')).alias('total_outlay'),
                     ])
-                    
+
+                    # 累计滑点成本
+                    try:
+                        slippage_sum = (buyable['trade_price'] * slippage * buyable['shares']).sum()
+                        self._slippage_cost_total += float(slippage_sum)
+                    except Exception:
+                        pass
+
                     # 按可用资金排序，选择可负担的交易
                     buyable = buyable.sort('total_outlay')
-                    
+
                     for row in buyable.iter_rows(named=True):
                         total_outlay = row['total_outlay']
                         if total_outlay > new_cash:
                             continue
-                        
+
                         code = row['code']
                         shares = int(row['shares'])
-                        
+
                         position_id = f"{date_str}-{code}"
-                        
+
                         new_portfolio[code] = shares
                         new_cash -= total_outlay
-                        
+
                         position_info[code] = {
                             'cost': total_outlay / shares,
                             'entry_date': date_str,
                             'position_id': position_id
                         }
-                        
+
                         trades.append(TradeRecord(
                             date=date_str,
                             code=code,
                             action="buy",
                             shares=shares,
-                            price=row['open'],
+                            price=row['filled_price'],
                             amount=total_outlay,
                             commission=row['commission'],
                             holding_days=0,
                             position_id=position_id,
                             indicators=row.get('indicators', {})
                         ))
-        
+
         return new_portfolio, new_cash, trades
     
     def _process_dividends(
@@ -2732,7 +2954,7 @@ class UnifiedBacktestEngine:
         # Step 5: 生成权益曲线数据
         # =========================================================================
         equity_curve = [{"date": d, "equity": round(v, 2)} for d, v in self._equity_history]
-        
+
         return BacktestResult(
             final_equity=final_equity,
             total_return=total_return,
@@ -2749,7 +2971,15 @@ class UnifiedBacktestEngine:
             max_losing_streak=max_losing_streak,
             calmar_ratio=calmar_ratio,
             equity_curve=equity_curve,
-            trades=all_trades
+            trades=all_trades,
+            rejected_orders=self._rejected_stats.to_dict(),
+            slippage_cost=round(self._slippage_cost_total, 2),
+            filter_stats={
+                "slippageRate": self.config.slippage_rate,
+                "excludeSt": self.config.exclude_st,
+                "volumeCapRatio": self.config.volume_cap_ratio,
+                "minTradeAmount": self.config.min_trade_amount,
+            },
         )
     
     def _persist_results(

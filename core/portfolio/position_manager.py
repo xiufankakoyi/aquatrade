@@ -23,12 +23,18 @@ from config.config import Config
 
 @dataclass
 class Position:
-    """持仓数据结构"""
+    """持仓数据结构
+
+    持仓数量字段统一以 ``quantity`` 为准；``shares`` 仍可读以兼容历史数据。
+    访问时请优先使用 :py:meth:`quantity` 获取真实持仓数量。
+    """
+
     id: Optional[int] = None
     stock_code: str = ""
     stock_name: str = ""
     buy_price: float = 0.0
     shares: float = 0.0
+    quantity: Optional[float] = None
     cost: float = 0.0
     buy_date: str = ""
     stop_loss: Optional[float] = None
@@ -43,6 +49,13 @@ class Position:
     profit_loss: Optional[float] = None
     profit_loss_pct: Optional[float] = None
     weight: Optional[float] = None
+
+    def effective_quantity(self) -> float:
+        """统一返回持仓数量：优先 quantity，再 fallback shares。"""
+
+        if self.quantity is not None and self.quantity > 0:
+            return float(self.quantity)
+        return float(self.shares or 0.0)
 
 
 class PositionManager:
@@ -283,13 +296,23 @@ class PositionManager:
         return [self._row_to_position(row) for _, row in df.iterrows()]
 
     def _row_to_position(self, row: pd.Series) -> Position:
-        """将 DataFrame 行转换为 Position 对象"""
+        """将 DataFrame 行转换为 Position 对象，兼容 quantity / shares。"""
+
+        raw_quantity = row.get('quantity', None)
+        raw_shares = row.get('shares', 0)
+        if pd.notna(raw_quantity) and float(raw_quantity) > 0:
+            quantity_value: Optional[float] = float(raw_quantity)
+            shares_value = float(raw_shares) if pd.notna(raw_shares) else float(raw_quantity)
+        else:
+            quantity_value = None
+            shares_value = float(raw_shares) if pd.notna(raw_shares) else 0.0
         return Position(
             id=int(row.get('id', 0)) if pd.notna(row.get('id')) else None,
             stock_code=str(row.get('stock_code', '')),
             stock_name=str(row.get('stock_name', '')),
             buy_price=float(row.get('buy_price', 0)) if pd.notna(row.get('buy_price')) else 0.0,
-            shares=float(row.get('shares', 0)) if pd.notna(row.get('shares')) else 0.0,
+            shares=shares_value,
+            quantity=quantity_value,
             cost=float(row.get('cost', 0)) if pd.notna(row.get('cost')) else 0.0,
             buy_date=str(row.get('buy_date', '')),
             stop_loss=float(row.get('stop_loss')) if pd.notna(row.get('stop_loss')) else None,
@@ -319,16 +342,22 @@ class PositionManager:
 
         for pos in positions:
             current_price = price_data.get(pos.stock_code)
+            held_quantity = pos.effective_quantity()
 
-            if current_price:
+            if current_price and held_quantity > 0:
                 pos.current_price = current_price
-                pos.market_value = current_price * pos.shares
-                pos.profit_loss = pos.market_value - pos.cost
-                pos.profit_loss_pct = (pos.profit_loss / pos.cost * 100) if pos.cost > 0 else 0
+                pos.market_value = current_price * held_quantity
+                if pos.cost and pos.cost > 0:
+                    pos.profit_loss = pos.market_value - pos.cost
+                    pos.profit_loss_pct = (pos.profit_loss / pos.cost * 100) if pos.cost > 0 else 0
+                else:
+                    pos.profit_loss = None
+                    pos.profit_loss_pct = None
 
                 total_market_value += pos.market_value
                 total_cost += pos.cost
-                total_profit_loss += pos.profit_loss
+                if pos.profit_loss is not None:
+                    total_profit_loss += pos.profit_loss
 
             analyzed_positions.append(pos)
 

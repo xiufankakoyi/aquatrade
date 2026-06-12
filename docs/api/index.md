@@ -10,7 +10,9 @@
 - `POST /api/screener/export`
 - `POST /api/benchmark/{code}/equity`
 - `GET /api/strategies/{id}/params`
+- `POST /api/strategies/{id}/quality`
 - `GET /api/data/health`
+- `POST /api/data/matrix-cache/rebuild`
 - `GET /api/quant-flow/latest`
 - `POST /api/quant-flow/run`
 
@@ -25,6 +27,20 @@ The backend provides automatic API documentation using Swagger UI.
 - `GET /api/strategies`: List all available strategies
 - `GET /api/strategies/<id>/params`: Get parameters for a strategy
   - Returns an empty array with HTTP 200 when parameter metadata is unavailable.
+- `POST /api/strategies/<id>/quality`: 基于真实回测引擎返回信号正收益性、长期有效性、参数稳健性、过拟合风险、综合分数与等级。请求体必须包含 `start_date`、`end_date`。
+
+### QuantFlow 最终简报
+
+`GET /api/quant-flow/latest` 与 `POST /api/quant-flow/run` 的 `final_brief.data` 包含：
+
+- `market_strength_conclusion`
+- `strong_direction_conclusion`
+- `candidate_stock_conclusion`
+- `signal_conclusion`
+- `portfolio_risk_conclusion`
+- `data_gap_conclusion`
+
+缺失或过期证据会进入 `data_gap_conclusion.items`，不会用 0 或历史证据伪装成今日完整结论。
 
 ### Data
 - `GET /api/kline`: Get K-line data
@@ -65,3 +81,20 @@ The backend provides automatic API documentation using Swagger UI.
 - `connect`: Client connection
 - `start_backtest`: Trigger a backtest
 - `backtest_update`: Real-time backtest progress
+## 数据维护
+
+### 重建回测缓存
+
+`POST /api/data/matrix-cache/rebuild`
+
+从 LanceDB 主行情源重建 `data/matrix_cache`。请求体可选：
+
+```json
+{
+  "start_date": "2026-01-01",
+  "end_date": "2026-06-10"
+}
+```
+
+`matrix_cache` 是非阻塞回测加速缓存。缺失时今日工作台仍可使用，策略回测页面显示
+`warning` 和“回测缓存缺失，可点击重建”。

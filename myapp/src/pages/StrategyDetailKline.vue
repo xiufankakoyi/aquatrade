@@ -74,8 +74,18 @@
       </div>
     </div>
 
+    <LoadingState
+      v-if="strategyStore.isLoading && !strategyStore.currentBacktestResult"
+      title="正在加载策略详情"
+    />
+    <ErrorState
+      v-else-if="strategyStore.error"
+      :message="strategyStore.error"
+      @retry="loadStrategyDetail"
+    />
+
     <!-- 主要内容区域 -->
-    <div class="main-area">
+    <div v-else class="main-area">
       <!-- 左侧图表区域：净值曲线 + 回撤 + 交易频率 -->
       <div class="charts-container" v-if="hasBacktestData">
         <!-- 净值曲线 -->
@@ -151,11 +161,7 @@
 
       <!-- 无数据状态 -->
       <div class="empty-state" v-else>
-        <div class="empty-icon">
-          <i class="fas fa-chart-line"></i>
-        </div>
-        <h3 class="empty-title">暂无回测数据</h3>
-        <p class="empty-hint">请点击"运行回测"按钮开始策略回测</p>
+        <EmptyState title="暂无回测数据" description="当前策略没有可展示的真实回测曲线" />
         <button @click="runBacktest" class="empty-action-btn" :disabled="isBacktestRunning">
           <i class="fas fa-play"></i>
           <span>{{ isBacktestRunning ? '运行中...' : '立即运行回测' }}</span>
@@ -174,6 +180,71 @@
         />
       </div>
     </div>
+
+    <section class="quality-auth-section">
+      <div class="report-panel">
+        <div class="report-heading">
+          <div>
+            <h3>策略质量报告</h3>
+            <p>{{ qualityPeriod }}</p>
+          </div>
+          <button class="refresh-report-btn" :disabled="qualityLoading" @click="loadStrategyQuality">
+            {{ qualityLoading ? '评估中' : '重新评估' }}
+          </button>
+        </div>
+        <LoadingState v-if="qualityLoading" title="正在评估策略质量" />
+        <ErrorState v-else-if="qualityError" :message="qualityError" @retry="loadStrategyQuality" />
+        <EmptyState v-else-if="!qualityReport" title="暂无策略质量报告" description="质量接口未返回有效结果" />
+        <template v-else>
+          <div class="quality-grid">
+            <article v-for="item in qualityDimensions" :key="item.key">
+              <span>{{ item.label }}</span>
+              <strong>{{ formatScore(item.dimension?.score) }}</strong>
+              <small>{{ item.dimension?.summary || 'unavailable' }}</small>
+            </article>
+          </div>
+          <dl class="report-summary">
+            <div><dt>最终等级</dt><dd>{{ qualityReport.grade || 'unavailable' }}</dd></div>
+            <div><dt>综合分数</dt><dd>{{ formatScore(qualityReport.total_score) }}</dd></div>
+            <div><dt>警告原因</dt><dd>{{ qualityWarningReason }}</dd></div>
+          </dl>
+        </template>
+      </div>
+
+      <div class="report-panel">
+        <div class="report-heading">
+          <div>
+            <h3>回测真实性</h3>
+            <p>缺失字段显示 unavailable，不从历史指标补零。</p>
+          </div>
+        </div>
+        <EmptyState
+          v-if="!authenticityAvailable"
+          title="暂无真实性统计"
+          description="当前回测结果未返回 rejectedOrders、slippageCost 或 filterStats"
+        />
+        <template v-else>
+          <dl class="report-summary two-columns">
+            <div><dt>拒单总数</dt><dd>{{ rejectedOrderTotal ?? 'unavailable' }}</dd></div>
+            <div><dt>滑点成本</dt><dd>{{ formatOptionalAmount(authenticity.slippageCost) }}</dd></div>
+            <div><dt>成交率</dt><dd>{{ formatPercent(fillRate) }}</dd></div>
+            <div><dt>拒单率</dt><dd>{{ formatPercent(rejectRate) }}</dd></div>
+            <div><dt>理论收益</dt><dd>{{ formatPercent(theoreticalReturn) }}</dd></div>
+            <div><dt>真实成交收益</dt><dd>{{ formatPercent(realisticFilledReturn) }}</dd></div>
+          </dl>
+          <div class="reason-distribution">
+            <strong>拒单原因分布</strong>
+            <span v-if="rejectedReasonItems.length === 0">unavailable</span>
+            <span v-for="item in rejectedReasonItems" :key="item.key">{{ item.label }}：{{ item.value }}</span>
+          </div>
+          <div class="reason-distribution">
+            <strong>过滤参数</strong>
+            <span v-if="filterStatItems.length === 0">unavailable</span>
+            <span v-for="item in filterStatItems" :key="item.key">{{ item.label }}：{{ item.value }}</span>
+          </div>
+        </template>
+      </div>
+    </section>
 
     <!-- 回放控制器 -->
     <PlaybackController v-if="hasBacktestData && backtestStore.equitySeries.length > 0" />
@@ -275,7 +346,13 @@ import { useKlineStore } from '../store/klineStore';
 import { useBacktestStore } from '../store/backtestStore';
 import { useSocketIO } from '../composables/useSocketIO';
 import { useStreamingBacktest } from '../composables/useStreamingBacktest';
-import { getStrategyDetail, getLatestPrices, getAvailableVersions } from '../api/backtestApi';
+import {
+  getStrategyDetail,
+  getLatestPrices,
+  getAvailableVersions,
+  getStrategyQuality,
+  type StrategyQualityReport,
+} from '../api/backtestApi';
 import EquityCurve from '../components/EquityCurve.vue';
 import DrawdownChart from '../components/charts/DrawdownChart.vue';
 import TradeFrequencyChart from '../components/charts/TradeFrequencyChart.vue';
@@ -284,6 +361,9 @@ import TradeTable from '../components/tables/TradeTable.vue';
 import TradeDeepDive from '../components/modals/TradeDeepDive.vue';
 import PositionCard from '../components/PositionCard.vue';
 import PlaybackController from '../components/PlaybackController.vue';
+import LoadingState from '../components/common/LoadingState.vue';
+import EmptyState from '../components/common/EmptyState.vue';
+import ErrorState from '../components/common/ErrorState.vue';
 import type { Trade, HoldingPeriod as HoldingPeriodType } from '../types/backtest';
 
 /**
@@ -306,6 +386,9 @@ const isResizing = ref(false);
 const isFullscreen = ref(false);
 const chartScale = ref<'linear' | 'log'>('linear');
 const syncDate = ref('');
+const qualityLoading = ref(false);
+const qualityError = ref('');
+const qualityReport = ref<StrategyQualityReport | null>(null);
 
 const showKlineModal = ref(false);
 const selectedTrade = ref<Trade | null>(null);
@@ -319,6 +402,113 @@ const isPaneResizing = ref(false);
 const currentResizingPane = ref<string | null>(null);
 
 const strategyId = computed(() => route.params.id as string);
+const qualityStartDate = computed(() => (
+  backtestStore.lastRunParams?.startDate
+  || strategyStore.currentBacktestResult?.startDate
+  || '2024-01-01'
+));
+const qualityEndDate = computed(() => (
+  backtestStore.lastRunParams?.endDate
+  || strategyStore.currentBacktestResult?.endDate
+  || new Date().toISOString().slice(0, 10)
+));
+const qualityPeriod = computed(() => `${qualityStartDate.value} 至 ${qualityEndDate.value}`);
+const qualityDimensions = computed(() => {
+  const dimensions = qualityReport.value?.dimensions || [];
+  const find = (name: string) => dimensions.find(item => item.name === name);
+  return [
+    { key: 'profitability', label: '信号正收益性', dimension: find('signal_profitability') },
+    { key: 'long_term_validity', label: '长期有效性', dimension: find('long_term_validity') },
+    { key: 'parameter_stability', label: '参数稳健性', dimension: find('parameter_stability') },
+    { key: 'overfitting_risk', label: '过拟合风险', dimension: find('overfit_risk') },
+  ];
+});
+const qualityWarningReason = computed(() => {
+  if (!qualityReport.value) return 'unavailable';
+  const explicit = qualityReport.value.metadata?.warning_reason;
+  if (explicit) return String(explicit);
+  const failed = qualityReport.value.dimensions
+    .filter(item => item.detail?.error)
+    .map(item => item.summary || item.name);
+  if (failed.length) return failed.join('；');
+  return ['C', 'D'].includes(qualityReport.value.grade)
+    ? qualityReport.value.summary
+    : '无';
+});
+const authenticity = computed(() => {
+  const result = strategyStore.currentBacktestResult as any;
+  const metrics = (backtestStore.metrics || result?.metrics || {}) as any;
+  return {
+    rejectedOrders: metrics.rejectedOrders ?? result?.rejectedOrders,
+    slippageCost: metrics.slippageCost ?? result?.slippageCost,
+    filterStats: metrics.filterStats ?? result?.filterStats,
+    theoreticalReturn: metrics.theoreticalReturn ?? result?.theoreticalReturn,
+    realisticFilledReturn: metrics.realisticFilledReturn ?? result?.realisticFilledReturn ?? metrics.totalReturn,
+    filledCount: metrics.tradesCount ?? metrics.totalTrades,
+  };
+});
+const authenticityAvailable = computed(() => (
+  authenticity.value.rejectedOrders != null
+  || authenticity.value.slippageCost != null
+  || authenticity.value.filterStats != null
+));
+const rejectedOrderTotal = computed<number | null>(() => {
+  const data = authenticity.value.rejectedOrders;
+  if (!data) return null;
+  if (Number.isFinite(data.total)) return Number(data.total);
+  return Object.entries(data)
+    .filter(([key, value]) => key !== 'total' && Number.isFinite(value))
+    .reduce((sum, [, value]) => sum + Number(value), 0);
+});
+const fillRate = computed<number | null>(() => {
+  const filled = authenticity.value.filledCount;
+  const rejected = rejectedOrderTotal.value;
+  if (!Number.isFinite(filled) || rejected == null || filled + rejected <= 0) return null;
+  return filled / (filled + rejected);
+});
+const rejectRate = computed<number | null>(() => fillRate.value == null ? null : 1 - fillRate.value);
+const theoreticalReturn = computed<number | null>(() => (
+  Number.isFinite(authenticity.value.theoreticalReturn) ? authenticity.value.theoreticalReturn : null
+));
+const realisticFilledReturn = computed<number | null>(() => (
+  authenticityAvailable.value && Number.isFinite(authenticity.value.realisticFilledReturn)
+    ? authenticity.value.realisticFilledReturn
+    : null
+));
+const rejectedReasonItems = computed(() => {
+  const data = authenticity.value.rejectedOrders;
+  if (!data) return [];
+  const labels: Record<string, string> = {
+    suspended: '停牌',
+    limitUp: '涨停未开板',
+    limitDown: '跌停',
+    st: 'ST',
+    volume: '成交量不足',
+    insufficientCash: '现金不足',
+    invalidPrice: '价格无效',
+    other: '其他',
+  };
+  return Object.entries(data)
+    .filter(([key, value]) => key !== 'total' && Number.isFinite(value))
+    .map(([key, value]) => ({ key, label: labels[key] || key, value }));
+});
+const filterStatItems = computed(() => {
+  const stats = authenticity.value.filterStats;
+  if (!stats) return [];
+  const labels: Record<string, string> = {
+    slippageRate: '滑点率',
+    excludeSt: '过滤 ST',
+    volumeCapRatio: '成交量上限',
+    minTradeAmount: '最小成交额',
+  };
+  return Object.entries(stats).map(([key, value]) => ({
+    key,
+    label: labels[key] || key,
+    value: key.toLowerCase().includes('rate') || key.toLowerCase().includes('ratio')
+      ? formatPercent(typeof value === 'number' ? value : null)
+      : typeof value === 'boolean' ? (value ? '是' : '否') : String(value ?? 'unavailable'),
+  }));
+});
 
 const hasBacktestData = computed(() => {
   // 只要有权益曲线数据就显示图表，不依赖 metrics
@@ -696,12 +886,25 @@ async function fetchLatestPrices(symbols: string[]) {
   }
 }
 
-function formatPercent(value: number, isDrawdown = false): string {
+function formatPercent(value?: number | null, isDrawdown = false): string {
+  if (value == null || !Number.isFinite(value)) return 'unavailable';
   if (isDrawdown) {
     return `-${Math.abs(value).toFixed(2)}%`;
   }
   const sign = value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(2)}%`;
+}
+
+function formatScore(value?: number | null): string {
+  return value == null || !Number.isFinite(value) ? 'unavailable' : value.toFixed(4);
+}
+
+function formatOptionalAmount(value?: number | null): string {
+  if (value == null || !Number.isFinite(value)) return 'unavailable';
+  const abs = Math.abs(value);
+  if (abs >= 1e8) return `${(value / 1e8).toFixed(2)}亿`;
+  if (abs >= 1e4) return `${(value / 1e4).toFixed(2)}万`;
+  return value.toFixed(2);
 }
 
 function handleChartHover(data: any) {
@@ -895,7 +1098,34 @@ function runBacktest() {
     initial_capital: 1000000,
     commission: 0.0003,
     slippage: 0.001
+  }, {
+    onComplete: () => {
+      void loadStrategyQuality();
+    },
   });
+}
+
+async function loadStrategyQuality(targetStrategyId?: string) {
+  const id = targetStrategyId || strategyId.value;
+  if (!id) {
+    qualityReport.value = null;
+    qualityError.value = '';
+    return;
+  }
+  qualityLoading.value = true;
+  qualityError.value = '';
+  try {
+    qualityReport.value = await getStrategyQuality(
+      id,
+      qualityStartDate.value,
+      qualityEndDate.value,
+    );
+  } catch (error) {
+    qualityReport.value = null;
+    qualityError.value = error instanceof Error ? error.message : '策略质量评估失败';
+  } finally {
+    qualityLoading.value = false;
+  }
 }
 
 async function loadStrategyDetail() {
@@ -935,6 +1165,7 @@ async function loadStrategyDetail() {
       if (result) {
         strategyStore.setCurrentBacktestResult(result);
         strategyStore.setCurrentVersion(versionId);
+        void loadStrategyQuality(versionId);
       } else {
         strategyStore.setError('未找到该策略版本的回测结果');
       }
@@ -960,7 +1191,6 @@ onMounted(() => {
   // 使用相对路径 ''，让 Socket.IO 自动使用当前域名
   // 这样 Vite 代理可以正确代理 /socket.io 请求到后端
   connect('');
-  loadStrategyDetail();
 });
 </script>
 
@@ -1158,6 +1388,142 @@ onMounted(() => {
   display: flex;
   overflow: hidden;
   min-height: 0;
+}
+
+.quality-auth-section {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  max-height: 38vh;
+  overflow: auto;
+  flex-shrink: 0;
+  background: #2A2E39;
+  border-top: 1px solid #2A2E39;
+}
+
+.report-panel {
+  padding: 0.875rem;
+  color: #D1D4DC;
+  background: #131722;
+}
+
+.report-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.report-heading h3,
+.report-heading p {
+  margin: 0;
+}
+
+.report-heading h3 {
+  font-size: 0.875rem;
+}
+
+.report-heading p {
+  margin-top: 0.25rem;
+  color: #787B86;
+  font-size: 0.6875rem;
+}
+
+.refresh-report-btn {
+  padding: 0.375rem 0.625rem;
+  border: 1px solid #363A45;
+  border-radius: 0.375rem;
+  color: #D1D4DC;
+  background: #252932;
+  cursor: pointer;
+}
+
+.refresh-report-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.quality-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.quality-grid article {
+  min-width: 0;
+  padding: 0.625rem;
+  border: 1px solid #2A2E39;
+  border-radius: 0.375rem;
+  background: #1E222D;
+}
+
+.quality-grid span,
+.quality-grid small {
+  display: block;
+  color: #787B86;
+  font-size: 0.625rem;
+}
+
+.quality-grid strong {
+  display: block;
+  margin: 0.375rem 0;
+  color: #7AA2FF;
+  font-size: 1rem;
+}
+
+.report-summary {
+  display: grid;
+  gap: 0;
+  margin: 0.75rem 0 0;
+}
+
+.report-summary.two-columns {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 1rem;
+}
+
+.report-summary div {
+  display: grid;
+  grid-template-columns: 7rem 1fr;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #2A2E39;
+}
+
+.report-summary dt {
+  color: #787B86;
+}
+
+.report-summary dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.reason-distribution {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.875rem;
+  margin-top: 0.75rem;
+  padding: 0.625rem;
+  border-radius: 0.375rem;
+  color: #A6ACB8;
+  background: #1E222D;
+  font-size: 0.6875rem;
+}
+
+.reason-distribution strong {
+  color: #D1D4DC;
+}
+
+@media (max-width: 1100px) {
+  .quality-auth-section {
+    grid-template-columns: 1fr;
+  }
+
+  .quality-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .charts-container {

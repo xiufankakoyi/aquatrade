@@ -106,8 +106,8 @@ class SignalEngine:
     def _get_data_adapter(self):
         """Lazy load data adapter"""
         if self._data_adapter is None:
-            from data_svc.unified_data_query import UnifiedDataQueryAdapter
-            self._data_adapter = UnifiedDataQueryAdapter()
+            from data_svc.unified_data_query import UnifiedDataQuery
+            self._data_adapter = UnifiedDataQuery()
         return self._data_adapter
     
     def _load_rules(self) -> Dict[str, Any]:
@@ -127,7 +127,12 @@ class SignalEngine:
             json.dump(rules, f, ensure_ascii=False, indent=2)
         self.rules = rules
     
-    def get_stock_data(self, stock_code: str, days: int = 100) -> Dict[str, np.ndarray]:
+    def get_stock_data(
+        self,
+        stock_code: str,
+        days: int = 100,
+        end_date: Optional[str] = None,
+    ) -> Dict[str, np.ndarray]:
         """
         获取股票历史数据
         
@@ -142,16 +147,32 @@ class SignalEngine:
         if adapter is None:
             return {}
         
-        end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
-        
+        end_date = end_date or datetime.now().strftime("%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        start_date = (end_dt - timedelta(days=days * 2)).strftime("%Y-%m-%d")
+
         try:
-            df = adapter.get_stock_history(stock_code, start_date, end_date)
+            from server.data_providers.base import normalize_symbol
+
+            symbol = normalize_symbol(stock_code)["symbol"]
+            df = adapter.get_stock_history(symbol, start_date, end_date)
             if df is None or df.empty:
                 return {}
-            
-            df = df.sort_index().tail(days)
-            trade_dates = [d.strftime('%Y%m%d') for d in df.index]
+
+            if "trade_date" in df.columns:
+                df = df.sort_values("trade_date").tail(days)
+                trade_dates = (
+                    pd.to_datetime(df["trade_date"], errors="coerce")
+                    .dt.strftime("%Y%m%d")
+                    .fillna("")
+                    .tolist()
+                )
+            else:
+                df = df.sort_index().tail(days)
+                trade_dates = [
+                    d.strftime("%Y%m%d") if hasattr(d, "strftime") else str(d)[:10].replace("-", "")
+                    for d in df.index
+                ]
             
             data = {
                 'trade_date': np.array(trade_dates),
@@ -159,7 +180,9 @@ class SignalEngine:
                 'high': df['high'].values.astype(np.float32) if 'high' in df.columns else np.array([]),
                 'low': df['low'].values.astype(np.float32) if 'low' in df.columns else np.array([]),
                 'close': df['close'].values.astype(np.float32) if 'close' in df.columns else np.array([]),
-                'volume': df['vol'].values.astype(np.float32) if 'vol' in df.columns else np.array([]),
+                'volume': df['volume'].values.astype(np.float32) if 'volume' in df.columns else (
+                    df['vol'].values.astype(np.float32) if 'vol' in df.columns else np.array([])
+                ),
                 'amount': df['amount'].values.astype(np.float32) if 'amount' in df.columns else np.array([]),
                 'pe_ttm': df['pe_ttm'].values.astype(np.float32) if 'pe_ttm' in df.columns else np.array([]),
                 'pb': df['pb'].values.astype(np.float32) if 'pb' in df.columns else np.array([]),
@@ -188,7 +211,7 @@ class SignalEngine:
             return {c: c for c in stock_codes}
         
         try:
-            df = adapter._get_stock_info_df()
+            df = adapter.get_stock_basic()
             if df is None or df.empty:
                 return {c: c for c in stock_codes}
             
@@ -232,7 +255,7 @@ class SignalEngine:
         stock_names = self.get_stock_names(stock_codes)
         
         for code in stock_codes:
-            data = self.get_stock_data(code)
+            data = self.get_stock_data(code, end_date=signal_date)
             if not data or len(data.get('close', [])) < 30:
                 continue
             

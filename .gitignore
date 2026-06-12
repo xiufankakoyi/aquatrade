@@ -88,6 +88,7 @@ data/marketdata/
 data/questdb/db/
 data/questdb/import/
 data/factor_matrix_cache/
+data/lancedb/
 data/migration_report_*.json
 data/migration_documentation_*.md
 data/reports/
@@ -160,3 +161,5 @@ temp/
 *.swp
 *.swo
 *~
+diff_stat.txt
+git_status.txt

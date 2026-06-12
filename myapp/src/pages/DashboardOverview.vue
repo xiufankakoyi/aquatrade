@@ -22,6 +22,12 @@
     <section v-if="mockVisible" class="mock-banner">
       当前展示的是 Mock 回测数据，不代表真实策略结果。
     </section>
+    <section v-if="matrixCacheMissing" class="cache-warning">
+      <span>策略回测性能提示：回测缓存缺失，可点击重建。今日工作台仍可正常使用。</span>
+      <button class="link-button" :disabled="cacheRebuilding" @click="rebuildMatrixCache">
+        {{ cacheRebuilding ? '重建中' : '重建缓存' }}
+      </button>
+    </section>
 
     <section class="filters card">
       <label>开始日期<input v-model="startDate" type="date"></label>
@@ -66,6 +72,37 @@
             <p class="brief">{{ quantFlow.final_brief?.summary }}</p>
           </template>
         </aside>
+      </section>
+
+      <section class="card authenticity-card">
+        <div class="section-title">
+          <div>
+            <h2>今日真实性摘要</h2>
+            <p>只展示 QuantFlow 与真实回测已经返回的字段，缺失项不补零。</p>
+          </div>
+          <DataStatusBadge :status="quantFlow?.status || 'unknown'" />
+        </div>
+        <div class="truth-grid">
+          <dl class="truth-list">
+            <div><dt>今日数据日期</dt><dd>{{ quantFlow?.global_latest_trade_date || 'unavailable' }}</dd></div>
+            <div><dt>过期模块</dt><dd>{{ formatList(quantFlow?.stale_modules) }}</dd></div>
+            <div><dt>DragonEye 完整度</dt><dd>{{ formatScore(dragonEvidence?.completeness_score) }}</dd></div>
+            <div><dt>缺失证据</dt><dd>{{ formatList(dragonEvidence?.missing_parts) }}</dd></div>
+            <div><dt>题材流向</dt><dd>{{ dragonThemeFlow }}</dd></div>
+          </dl>
+          <dl class="truth-list">
+            <div><dt>策略扫描状态</dt><dd>{{ signalStage?.status || 'unavailable' }}</dd></div>
+            <div><dt>今日强信号</dt><dd>{{ strongSignalLabel }}</dd></div>
+            <div><dt>无信号原因</dt><dd>{{ noSignalReason }}</dd></div>
+            <div><dt>拒单总数</dt><dd>{{ rejectedOrderTotal ?? 'unavailable' }}</dd></div>
+            <div><dt>滑点成本</dt><dd>{{ formatOptionalAmount(slippageCost) }}</dd></div>
+          </dl>
+        </div>
+        <div class="filter-summary">
+          <strong>真实性参数</strong>
+          <span v-if="filterStatItems.length === 0">unavailable</span>
+          <span v-for="item in filterStatItems" :key="item.key">{{ item.label }}：{{ item.value }}</span>
+        </div>
       </section>
 
       <section class="support-grid">
@@ -120,6 +157,7 @@ const pageError = ref('')
 const quantLoading = ref(false)
 const quantRunning = ref(false)
 const quantError = ref('')
+const cacheRebuilding = ref(false)
 const dataHealth = ref<any>(null)
 const quantFlow = ref<any>(null)
 const mockVisible = ref(false)
@@ -134,6 +172,69 @@ const tradeCount = computed(() => metrics.value?.tradesCount ?? metrics.value?.t
 const hasBacktestData = computed(() => backtestStore.equitySeries.length > 0)
 const profitRatioText = computed(() => tradeCount.value > 0 ? formatScore(metrics.value?.profitLossRatio ?? metrics.value?.profitFactor) : 'N/A')
 const equityVersions = computed(() => hasBacktestData.value ? [{ versionId: 'current', versionName: strategyStore.currentVersion?.name || '当前策略', data: backtestStore.equitySeries }] : [])
+const matrixCacheMissing = computed(() => {
+  const cache = dataHealth.value?.datasets?.find((item: any) => item.name === 'matrix_cache')
+  return cache?.status === 'backtest_cache_missing'
+})
+const stageMap = computed<Record<string, any>>(() => Object.fromEntries(
+  (quantFlow.value?.stages || []).map((stage: any) => [stage.stage, stage]),
+))
+const dragonStage = computed(() => stageMap.value.dragon_eye_summary)
+const signalStage = computed(() => stageMap.value.strategy_signal_scan)
+const dragonEvidence = computed(() => {
+  const data = dragonStage.value?.data
+  if (!data) return null
+  const partial = data.latest_partial_status
+  if (partial?.evidence_date === quantFlow.value?.global_latest_trade_date) return partial
+  return data
+})
+const dragonThemeFlow = computed(() => {
+  const data = dragonStage.value?.data
+  return data?.theme_flow || data?.sentiment?.theme_flow || 'unavailable'
+})
+const signalData = computed(() => signalStage.value?.data || {})
+const strongSignalCount = computed(() => (
+  (signalData.value.buy?.length || 0) + (signalData.value.sell?.length || 0)
+))
+const strongSignalLabel = computed(() => {
+  if (!signalStage.value || ['error', 'skipped'].includes(signalStage.value.status)) return 'unavailable'
+  return strongSignalCount.value > 0 ? `有信号（${strongSignalCount.value} 条）` : '无信号'
+})
+const noSignalReason = computed(() => {
+  if (strongSignalCount.value > 0) return '不适用'
+  if (!signalStage.value) return 'unavailable'
+  return signalData.value.blocked_reason
+    || signalData.value.diagnosis?.top_blocked_reasons?.[0]?.reason
+    || signalStage.value.reason
+    || 'unavailable'
+})
+const rejectedOrders = computed(() => backtestStore.metrics?.rejectedOrders)
+const rejectedOrderTotal = computed<number | null>(() => {
+  const data = rejectedOrders.value
+  if (!data) return null
+  if (Number.isFinite(data.total)) return data.total
+  return Object.entries(data)
+    .filter(([key, value]) => key !== 'total' && Number.isFinite(value))
+    .reduce((sum, [, value]) => sum + Number(value), 0)
+})
+const slippageCost = computed(() => backtestStore.metrics?.slippageCost)
+const filterStatItems = computed(() => {
+  const stats = backtestStore.metrics?.filterStats
+  if (!stats) return []
+  const labels: Record<string, string> = {
+    slippageRate: '滑点率',
+    excludeSt: '过滤 ST',
+    volumeCapRatio: '成交量上限',
+    minTradeAmount: '最小成交额',
+  }
+  return Object.entries(stats).map(([key, value]) => ({
+    key,
+    label: labels[key] || key,
+    value: key.toLowerCase().includes('rate') || key.toLowerCase().includes('ratio')
+      ? formatPercent(typeof value === 'number' ? value : null)
+      : typeof value === 'boolean' ? (value ? '是' : '否') : String(value ?? 'unavailable'),
+  }))
+})
 
 function formatPercent(value?: number | null) {
   if (value == null || !Number.isFinite(value)) return 'N/A'
@@ -142,8 +243,13 @@ function formatPercent(value?: number | null) {
 }
 function formatScore(value?: number | null) { return value == null || !Number.isFinite(value) ? 'N/A' : value.toFixed(4) }
 function formatAmount(value: number) { const abs = Math.abs(value); if (abs >= 1e8) return `${(value / 1e8).toFixed(2)}亿`; if (abs >= 1e4) return `${(value / 1e4).toFixed(2)}万`; return value.toFixed(2) }
+function formatOptionalAmount(value?: number | null) { return value == null || !Number.isFinite(value) ? 'unavailable' : formatAmount(value) }
 function formatInteger(value: number | null) { return value == null ? 'N/A' : value.toLocaleString('zh-CN') }
 function formatDateTime(value: string) { return new Date(value).toLocaleString('zh-CN', { hour12: false }) }
+function formatList(value?: unknown[]) {
+  if (!Array.isArray(value)) return 'unavailable'
+  return value.length ? value.join('、') : '无'
+}
 function stageLabel(stage: string) { return ({ data_health_check: '数据健康', market_regime_detect: '市场状态', dragon_eye_summary: '市场雷达', stock_screener_candidates: '研究候选', strategy_signal_scan: '策略信号', portfolio_risk_check: '持仓风险', final_research_brief: '最终简报' } as Record<string, string>)[stage] || stage }
 
 async function fetchJson(url: string, init?: RequestInit) {
@@ -159,6 +265,18 @@ async function loadStrategies() {
   if (!strategyStore.currentVersionId && versions.length) strategyStore.setCurrentVersion(versions[0].id)
 }
 async function loadDataHealth() { dataHealth.value = await fetchJson('/api/data/health') }
+async function rebuildMatrixCache() {
+  cacheRebuilding.value = true
+  pageError.value = ''
+  try {
+    await fetchJson('/api/data/matrix-cache/rebuild', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start_date: startDate.value, end_date: endDate.value }) })
+    await loadDataHealth()
+  } catch (error) {
+    pageError.value = error instanceof Error ? error.message : '回测缓存重建失败'
+  } finally {
+    cacheRebuilding.value = false
+  }
+}
 async function loadQuantFlow() {
   quantLoading.value = true; quantError.value = ''
   try { quantFlow.value = await fetchJson('/api/quant-flow/latest') } catch (error) { quantError.value = error instanceof Error ? error.message : 'QuantFlow 加载失败' } finally { quantLoading.value = false }
@@ -204,10 +322,12 @@ button { border: 0; border-radius: 10px; padding: 10px 16px; font-weight: 700; c
 .primary { color: white; background: #3569ad; }.secondary { color: #315f98; background: #e8f0fa; }.link-button { color: #315f98; background: #edf3fa; padding: 8px 12px; }
 .filters { margin-top: 14px; padding: 14px 18px; }.filters label { display: grid; gap: 4px; color: #64748b; font-size: 12px; }.filters input,.filters select { min-width: 150px; padding: 8px 10px; border: 1px solid #d9dee7; border-radius: 8px; color: #334155; background: white; }
 .mock-banner { margin-top: 14px; padding: 12px 16px; border: 1px solid #f4c86d; border-radius: 12px; color: #7c4b00; background: #fff7df; font-weight: 700; }
+.cache-warning { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 14px; padding: 12px 16px; border: 1px solid #f4c86d; border-radius: 12px; color: #7c4b00; background: #fff7df; font-weight: 700; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 16px; }.kpi { padding: 18px; }.kpi span,.kpi small { display: block; color: #7b8799; }.kpi strong { display: block; margin: 8px 0 4px; font-size: 25px; color: #244e83; }.kpi strong.risk { color: #b45353; }
 .main-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, .8fr); gap: 14px; margin-top: 14px; }.chart-card,.quant-card,.support-card,.details { padding: 18px; }.section-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }.section-title p { color: #8a94a4; font-size: 12px; }.chart-body { height: 430px; }.run-time,.brief { color: #64748b; font-size: 13px; line-height: 1.7; }.stage-list { display: grid; gap: 9px; padding: 0; list-style: none; }.stage-list li { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px; color: #526174; font-size: 12px; }
+.authenticity-card { margin-top: 14px; padding: 18px; }.truth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }.truth-list { margin: 0; }.truth-list div { display: grid; grid-template-columns: 120px 1fr; gap: 12px; padding: 9px 0; border-bottom: 1px solid #edf0f4; }.truth-list dt { color: #64748b; }.truth-list dd { margin: 0; color: #27364a; font-weight: 700; overflow-wrap: anywhere; }.filter-summary { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 14px; padding: 12px; border-radius: 10px; color: #526174; background: #f7f8fa; font-size: 12px; }.filter-summary strong { color: #27364a; }
 .support-grid { display: grid; grid-template-columns: 1.05fr 1.4fr .8fr; gap: 14px; margin-top: 14px; }.support-chart { height: 210px; }.month-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }.month-grid span { padding: 8px; border-radius: 8px; text-align: center; color: #475569; background: #f1f5f9; font-size: 12px; }.risk-list,.metric-explain { display: grid; gap: 0; }.risk-list div,.metric-explain div { display: flex; justify-content: space-between; gap: 16px; padding: 11px 0; border-bottom: 1px solid #edf0f4; }.risk-list dt,.metric-explain dt { color: #64748b; }.risk-list dd,.metric-explain dd { margin: 0; font-weight: 700; }
 .details { margin-top: 14px; }.tabs { display: flex; gap: 6px; border-bottom: 1px solid #e5e7eb; }.tabs button { border-radius: 8px 8px 0 0; color: #64748b; background: transparent; }.tabs button.active { color: #24578f; background: #eaf1f9; }.tab-body { min-height: 190px; padding-top: 16px; } table { width: 100%; border-collapse: collapse; } th,td { padding: 10px; border-bottom: 1px solid #edf0f4; text-align: left; font-size: 12px; }.data-list { display: grid; gap: 8px; padding: 0; list-style: none; }.data-list li { display: flex; justify-content: space-between; gap: 14px; padding: 10px 0; border-bottom: 1px solid #edf0f4; color: #64748b; }.data-list strong { color: #334155; }
 @media (max-width: 1050px) { .kpis,.support-grid { grid-template-columns: repeat(2, 1fr); }.main-grid { grid-template-columns: 1fr; } }
-@media (max-width: 680px) { .dashboard { padding: 12px; }.hero { flex-direction: column; }.kpis,.support-grid { grid-template-columns: 1fr; }.chart-body { height: 320px; } }
+@media (max-width: 680px) { .dashboard { padding: 12px; }.hero { flex-direction: column; }.kpis,.support-grid,.truth-grid { grid-template-columns: 1fr; }.chart-body { height: 320px; } }
 </style>
